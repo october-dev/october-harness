@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
@@ -63,7 +63,11 @@ async function startHookServer(options?: {
 			if (url === "/hook/pre-prompt") {
 				const status = options?.prePromptStatus ?? 200;
 				response.writeHead(status, { "Content-Type": "application/json" });
-				response.end(typeof options?.prePrompt === "string" ? options.prePrompt : JSON.stringify(options?.prePrompt ?? { inject: null }));
+				response.end(
+					typeof options?.prePrompt === "string"
+						? options.prePrompt
+						: JSON.stringify(options?.prePrompt ?? { inject: null }),
+				);
 				return;
 			}
 			response.writeHead(204).end();
@@ -193,7 +197,9 @@ describe("october lifecycle hooks", () => {
 			harness.setResponses([fauxAssistantMessage("ok")]);
 			await harness.session.prompt("hello");
 			expect(
-				harness.session.messages.some((message) => message.role === "custom" && message.customType === "october-bus"),
+				harness.session.messages.some(
+					(message) => message.role === "custom" && message.customType === "october-bus",
+				),
 			).toBe(false);
 			expect(harness.session.messages.some((message) => message.role === "assistant")).toBe(true);
 			harness.cleanup();

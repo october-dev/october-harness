@@ -522,7 +522,7 @@ discard October's commits.
 | Phase 3: Lifecycle hooks (session / pre-prompt / stop) | **done** — `/hook/session`, `/hook/pre-prompt`, `/hook/stop`; `willRetry` approximated from last assistant error |
 | Phase 4: Permission-mode flags | **done** — ask/accept-edits/bypass; headless modes that would prompt block |
 | Phase 5: `--resume <id>` | **done** — bare `--resume` still opens the picker |
-| Phase 6: Branding (`octo`) | not started |
+| Phase 6: Branding (`octo`) | **done** — bin `octo`, config dir `.octo`, October TUI header |
 | Phase 7: Verification + interface doc | not started |
 | Rebase procedure + recorded base | done — synced to upstream 0.84.2 on 2026-08-14 |
 

@@ -35,7 +35,7 @@
 				"@mariozechner/clipboard": "0.3.9"
 			},
 			"bin": {
-				"pi": "dist/cli.js"
+				"octo": "dist/cli.js"
 			},
 			"engines": {
 				"node": ">=22.19.0"

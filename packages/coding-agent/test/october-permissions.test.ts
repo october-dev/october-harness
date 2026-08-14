@@ -65,7 +65,7 @@ describe("october permission modes", () => {
 		expect(toolResult(edit)?.role === "toolResult" && toolResult(edit)?.isError).toBe(true);
 		expect(
 			toolResult(edit)?.role === "toolResult" &&
-				toolResult(edit).content.some(
+				toolResult(edit)?.content.some(
 					(part) =>
 						part.type === "text" && part.text.includes("blocked by permission mode ask in non-interactive mode"),
 				),
@@ -86,7 +86,7 @@ describe("october permission modes", () => {
 		expect(toolResult(bash)?.role === "toolResult" && toolResult(bash)?.isError).toBe(true);
 		expect(
 			toolResult(bash)?.role === "toolResult" &&
-				toolResult(bash).content.some(
+				toolResult(bash)?.content.some(
 					(part) =>
 						part.type === "text" &&
 						part.text.includes("blocked by permission mode accept-edits in non-interactive mode"),
