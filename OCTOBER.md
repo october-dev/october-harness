@@ -518,7 +518,7 @@ discard October's commits.
 | Fork created | done |
 | Code audit + execution plan | **done** — this document, 2026-08-14 |
 | Phase 1: October inference provider | **done** — provider + offline tests; live-token E2E skipped (no `OCTOBER_INFERENCE_TOKEN`) |
-| Phase 2: Bus MCP client (env-driven) | not started |
+| Phase 2: Bus MCP client (env-driven) | **done** — inert when `OCTOBER_BUS_*` unset; JSON + SSE stub coverage |
 | Phase 3: Lifecycle hooks (session / pre-prompt / stop) | not started |
 | Phase 4: Permission-mode flags | not started |
 | Phase 5: `--resume <id>` | not started |

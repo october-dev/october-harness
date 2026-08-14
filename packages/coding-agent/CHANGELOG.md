@@ -5,6 +5,7 @@
 ### Added
 
 - Added a built-in October inference provider (`--provider october`) that discovers model ids from `/v1/models` without rewriting them.
+- Added an env-driven October bus MCP client that registers tools as `mcp__october-bus__<name>` when `OCTOBER_BUS_*` is set.
 
 ### Fixed
 
