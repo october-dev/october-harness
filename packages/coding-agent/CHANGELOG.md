@@ -8,6 +8,7 @@
 - Added an env-driven October bus MCP client that registers tools as `mcp__october-bus__<name>` when `OCTOBER_BUS_*` is set.
 - Added October bus lifecycle hooks for session start/end, pre-prompt injection, and stop.
 - Added `--permission-mode ask|accept-edits|bypass` via the October extension (default bypass).
+- Added `--resume <id>` so `--resume` can open a session by id as well as the TUI picker.
 
 ### Fixed
 

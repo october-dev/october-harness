@@ -188,3 +188,48 @@ describe("--session-id validation", () => {
 		}
 	});
 });
+
+describe("--resume <id>", () => {
+	it("opens an existing session file by id in print mode", async () => {
+		const result = await runCli(
+			(dirs) => [
+				"--session-dir",
+				dirs.sessionDir,
+				"--resume",
+				"existing-resume-id",
+				"--model",
+				"missing-model",
+				"-p",
+				"hi",
+			],
+			(dirs) => {
+				mkdirSync(dirs.sessionDir, { recursive: true });
+				writeSession(dirs.sessionDir, dirs.projectDir, "existing-resume-id");
+			},
+		);
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).not.toContain("No session found matching");
+	});
+
+	it("errors when the id does not match a session", async () => {
+		const result = await runCli((dirs) => [
+			"--session-dir",
+			dirs.sessionDir,
+			"--resume",
+			"missing-resume-id",
+			"-p",
+			"hi",
+		]);
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("No session found matching 'missing-resume-id'");
+	});
+
+	it("rejects --resume <id> combined with --session", async () => {
+		const result = await runCli(["--resume", "abc", "--session", "def", "-p", "hi"]);
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("--resume <id> cannot be combined with --session");
+	});
+});

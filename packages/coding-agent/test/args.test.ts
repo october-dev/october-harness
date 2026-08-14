@@ -76,11 +76,26 @@ describe("parseArgs", () => {
 		test("parses --resume flag", () => {
 			const result = parseArgs(["--resume"]);
 			expect(result.resume).toBe(true);
+			expect(result.resumeId).toBeUndefined();
 		});
 
 		test("parses -r shorthand", () => {
 			const result = parseArgs(["-r"]);
 			expect(result.resume).toBe(true);
+			expect(result.resumeId).toBeUndefined();
+		});
+
+		test("parses --resume with an id", () => {
+			const result = parseArgs(["--resume", "abc"]);
+			expect(result.resume).toBe(true);
+			expect(result.resumeId).toBe("abc");
+		});
+
+		test("leaves --resume as picker when the next arg is a flag", () => {
+			const result = parseArgs(["--resume", "-p"]);
+			expect(result.resume).toBe(true);
+			expect(result.resumeId).toBeUndefined();
+			expect(result.print).toBe(true);
 		});
 	});
 

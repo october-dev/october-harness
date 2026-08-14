@@ -314,6 +314,21 @@ function validateForkFlags(parsed: Args): void {
 	}
 }
 
+function validateResumeIdFlags(parsed: Args): void {
+	if (parsed.resumeId === undefined) return;
+
+	const conflictingFlags = [
+		parsed.session ? "--session" : undefined,
+		parsed.sessionId ? "--session-id" : undefined,
+		parsed.continue ? "--continue" : undefined,
+	].filter((flag): flag is string => flag !== undefined);
+
+	if (conflictingFlags.length > 0) {
+		console.error(chalk.red(`Error: --resume <id> cannot be combined with ${conflictingFlags.join(", ")}`));
+		process.exit(1);
+	}
+}
+
 function validateSessionIdFlags(parsed: Args): void {
 	if (parsed.sessionId === undefined) return;
 
@@ -392,6 +407,30 @@ async function createSessionManager(
 
 	if (parsed.session) {
 		const resolved = await resolveSessionPath(parsed.session, cwd, sessionDir);
+
+		switch (resolved.type) {
+			case "path":
+			case "local":
+				return openSessionOrExit(resolved.path, sessionDir);
+
+			case "global": {
+				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
+				const shouldFork = await promptConfirm("Fork this session into current directory?");
+				if (!shouldFork) {
+					console.log(chalk.dim("Aborted."));
+					process.exit(0);
+				}
+				return forkSessionOrExit(resolved.path, cwd, sessionDir);
+			}
+
+			case "not_found":
+				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
+				process.exit(1);
+		}
+	}
+
+	if (parsed.resumeId) {
+		const resolved = await resolveSessionPath(parsed.resumeId, cwd, sessionDir);
 
 		switch (resolved.type) {
 			case "path":
@@ -650,6 +689,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
+	validateResumeIdFlags(parsed);
 
 	// Run migrations (pass cwd for project-local migrations)
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd);
