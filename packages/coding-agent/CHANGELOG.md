@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a built-in October inference provider (`--provider october`) that discovers model ids from `/v1/models` without rewriting them.
+
 ### Fixed
 
 - Fixed Z.AI Coding Plan defaults referencing the removed GLM-5.1 model ([#8096](https://github.com/earendil-works/pi/issues/8096)).
