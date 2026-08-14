@@ -10,6 +10,7 @@ import type {
 	LogItem,
 	LogOptions,
 	NewRecord,
+	OperationStartedRecord,
 	ProvisionedEntry,
 	RecordBase,
 	RecordQuery,
@@ -146,7 +147,7 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.storage.getName();
 	}
 
-	async setName(name: string): Promise<void> {
+	async setName(name: string | undefined): Promise<void> {
 		await this.storage.setName(name);
 	}
 
@@ -213,12 +214,18 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.queryRecords(query);
 	}
 
+	async findOpenOperations(lane: string, options?: { limit?: number }): Promise<OperationStartedRecord[]> {
+		assertValidLimit(options?.limit);
+		return this.storage.findOpenOperations(lane, options);
+	}
+
 	async getLog(options?: LogOptions): Promise<LogItem[]> {
 		return this.queryLog(options);
 	}
 
+	/** Returns the lane's current leaf, or null when empty. Throws when the lane does not exist. */
 	private async getLeafIdForLane(lane: string): Promise<string | null> {
-		const pointer = (await this.storage.getLanes()).find((candidate) => candidate.lane === lane);
+		const pointer = (await this.getLanes()).find((candidate) => candidate.lane === lane);
 		if (!pointer) throw new SessionError("invalid_lane", `Lane not found: ${lane}`);
 		return pointer.leafId;
 	}
@@ -229,14 +236,18 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 		return this.storage.findEntries(resultLimit === query.limit ? query : { ...query, limit: resultLimit });
 	}
 
+	/**
+	 * Queries from `query.start` toward the root, defaulting to the lane's current leaf.
+	 * `resultLimit` lets single-entry queries cap results without changing the caller's query.
+	 */
 	private async queryBranchEntries(
-		lane: string,
+		defaultLane: string,
 		query: EntryQuery & BranchBounds = {},
 		resultLimit = query.limit,
 	): Promise<Entry[]> {
 		assertValidLimit(query.limit);
 		assertValidCursor(query.cursor?.afterSeq);
-		const start = query.start ?? (await this.getLeafIdForLane(lane));
+		const start = query.start ?? (await this.getLeafIdForLane(defaultLane));
 		if (start === null) return [];
 		const storageQuery = resultLimit === query.limit ? query : { ...query, limit: resultLimit };
 		return this.storage.findEntriesOnBranch({ ...storageQuery, start });
@@ -245,6 +256,9 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> implem
 	private async queryRecords(query: RecordQuery = {}): Promise<LaneRecord[]> {
 		assertValidLimit(query.limit);
 		assertValidCursor(query.afterSeq);
+		if (query.operationKind !== undefined && query.type !== "operation_started") {
+			throw new SessionError("invalid_query", 'operationKind requires type "operation_started"');
+		}
 		return this.storage.findRecords(query);
 	}
 

@@ -34,6 +34,11 @@ const findSchema = Type.Object({
 	limit: Type.Optional(Type.Number({ description: "Maximum number of results (default: 1000)" })),
 });
 
+export const findToolSystemPromptContribution = {
+	snippet: "Find files by glob pattern (respects .gitignore)",
+	guidelines: [],
+} as const;
+
 export type FindToolInput = Static<typeof findSchema>;
 
 const DEFAULT_LIMIT = 1000;
@@ -124,7 +129,7 @@ export function createFindToolDefinition(
 		name: "find",
 		label: "find",
 		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
-		promptSnippet: "Find files by glob pattern (respects .gitignore)",
+		promptSnippet: findToolSystemPromptContribution.snippet,
 		parameters: findSchema,
 		async execute(
 			_toolCallId,
@@ -217,7 +222,7 @@ export function createFindToolDefinition(
 						}
 
 						// Default implementation uses fd.
-						const fdPath = await ensureTool("fd", true);
+						const fdPath = await ensureTool("fd");
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
 							return;
@@ -255,6 +260,9 @@ export function createFindToolDefinition(
 							if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
 								effectivePattern = `**/${pattern}`;
 							}
+							// fd matches full paths using native separators on Windows.
+							if (process.platform === "win32")
+								effectivePattern = effectivePattern.replaceAll("/", String.raw`[/\\]`);
 						}
 						args.push("--", effectivePattern, searchPath);
 
