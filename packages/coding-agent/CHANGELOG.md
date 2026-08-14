@@ -5,6 +5,7 @@
 ### Added
 
 - Added a built-in October inference provider (`--provider october`) that discovers model ids from `/v1/models` without rewriting them.
+- Added zero-config October inference auth for users signed in to the October app: the harness imports the app-provided Supabase session (`OCTOBER_SUPABASE_*`) into the credential store and refreshes the access token autonomously against Supabase, so October models work with no key paste or `/login`. Inert when the session env is absent; the static `OCTOBER_INFERENCE_TOKEN` remains a fallback.
 - Added an env-driven October bus MCP client that registers tools as `mcp__october-bus__<name>` when `OCTOBER_BUS_*` is set.
 - Added October bus lifecycle hooks for session start/end, pre-prompt injection, and stop.
 - Added `--permission-mode ask|accept-edits|bypass` via the October extension (default bypass).

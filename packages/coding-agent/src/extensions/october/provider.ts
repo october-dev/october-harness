@@ -1,7 +1,8 @@
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "../../core/extensions/types.ts";
+import { buildOctoberOAuth, OCTOBER_PROVIDER_ID } from "./auth.ts";
 
-export const OCTOBER_PROVIDER_ID = "october";
+export { OCTOBER_PROVIDER_ID };
 /** Production OpenAI-compatible root. Overridable via OCTOBER_INFERENCE_BASE_URL for tests. */
 export const DEFAULT_OCTOBER_BASE_URL = "https://www.october.dev/v1";
 
@@ -56,9 +57,14 @@ export const OCTOBER_SEED_MODELS: ProviderModelConfig[] = [
 ];
 
 function tokenFromRefreshContext(context: RefreshModelsContext): string | undefined {
-	if (context.credential?.type === "api_key") {
-		const key = context.credential.key?.trim();
+	const credential = context.credential;
+	if (credential?.type === "api_key") {
+		const key = credential.key?.trim();
 		if (key) return key;
+	}
+	if (credential?.type === "oauth") {
+		const access = typeof credential.access === "string" ? credential.access.trim() : "";
+		if (access) return access;
 	}
 	return resolveOctoberToken();
 }
@@ -151,7 +157,11 @@ export function createOctoberProviderConfig(): ProviderConfig {
 	return {
 		name: "October",
 		baseUrl: octoberBaseUrl(),
+		// Primary auth is the signed-in user's Supabase session (oauth, below). The static env token
+		// stays as a fallback for tests and non-app use; when neither is present the provider is
+		// unauthenticated and pi filters it out of the picker.
 		apiKey: "$OCTOBER_INFERENCE_TOKEN",
+		oauth: buildOctoberOAuth(),
 		api: "openai-completions",
 		models: OCTOBER_SEED_MODELS,
 		refreshModels: refreshOctoberModels,

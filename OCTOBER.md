@@ -506,6 +506,7 @@ discard October's commits.
 | Fork created | done |
 | Code audit + execution plan | **done** — this document, 2026-08-14 |
 | Phase 1: October inference provider | **done** — provider + offline tests; live-token E2E skipped (no `OCTOBER_INFERENCE_TOKEN`) |
+| §10: Supabase-session auth (general users) | **done (harness side)** — env-seeded oauth credential + Supabase refresh; inert without `OCTOBER_SUPABASE_*`. Backend/desktop wiring is the checklist in §10 |
 | Phase 2: Bus MCP client (env-driven) | **done** — inert when `OCTOBER_BUS_*` unset; JSON + SSE stub coverage |
 | Phase 3: Lifecycle hooks (session / pre-prompt / stop) | **done** — `/hook/session`, `/hook/pre-prompt`, `/hook/stop`; `willRetry` approximated from last assistant error |
 | Phase 4: Permission-mode flags | **done** — ask/accept-edits/bypass; headless modes that would prompt block |
@@ -546,3 +547,107 @@ Verified against `octo --help` on 0.84.2-october.1 (upstream base 0.84.2, `b1efc
 **Contradiction vs plan:** extension `agent_end` does not include `willRetry` (that field is added only on AgentSession listener events after extension emit). `/hook/stop.willRetry` is approximated with `isRetryableAssistantError` on the last assistant message.
 
 **Manual skip:** no `OCTOBER_INFERENCE_TOKEN` in this environment; live October inference + tool-calling E2E was not run.
+
+---
+
+## 10. Making it usable for general users: October inference auth + rollout
+
+The point: a general user installs the October app, signs in once (as they already must to use the
+app), and octo's October models just work — no key paste, no `/login`, no config file. This section
+is the contract that makes that true and the checklist of what October (backend + desktop) must wire.
+
+### 10.1 Auth model — the signed-in user's Supabase session, refreshed in-harness
+
+octo runs **inside the October app**, where the user is already authenticated (Supabase). So the
+harness never runs its own login flow: October-desktop injects the user's Supabase session into the
+agent process the same way it already injects `OCTOBER_BUS_*`, and octo forwards the access token to
+the inference gateway and refreshes it autonomously for long sessions.
+
+Implemented on pi's OAuth provider seam (`packages/coding-agent/src/extensions/october/auth.ts`):
+
+- **Env October-desktop injects** (all required together; absent → the whole path is inert, so octo
+  outside the app is exactly upstream pi):
+
+  ```
+  OCTOBER_SUPABASE_URL           # e.g. https://<project>.supabase.co
+  OCTOBER_SUPABASE_ANON_KEY      # the project's anon/publishable key (public; used only to refresh)
+  OCTOBER_SUPABASE_ACCESS_TOKEN  # the signed-in user's current access token (JWT) — the gateway bearer
+  OCTOBER_SUPABASE_REFRESH_TOKEN # used to rotate the access token when it nears expiry
+  OCTOBER_SUPABASE_EXPIRES_AT    # optional epoch seconds; if absent, octo reads the JWT `exp` claim
+  ```
+
+- **Seeding** (`seedOctoberCredential`, run once at extension load): imports the injected session into
+  pi's credential store (`~/.octo/agent/auth.json`, mode 0600) as an `oauth` credential
+  `{ type:"oauth", access, refresh, expires, supabaseUrl, supabaseAnonKey }`, race-safe under the
+  store lock, idempotent, and it never overwrites a stored session that is already fresher. No-op and
+  never throws when the env is absent.
+- **Per-request auth**: `getApiKey(cred)` returns `cred.access`; pi sends it as `Authorization:
+  Bearer <jwt>` to `https://www.october.dev/v1`. When the token is within pi's ~5-minute expiry
+  window, pi calls `refreshToken` **once, under the per-provider store lock**, and persists the
+  rotated session — so a multi-hour terminal session never dies on a 1-hour JWT.
+- **Refresh** (`refreshToken`): `POST ${supabaseUrl}/auth/v1/token?grant_type=refresh_token` with
+  header `apikey: <anon>` and body `{ refresh_token }`, mapping the response back to the credential.
+  The Supabase URL + anon key are stored on the credential (and fall back to env), so refresh works
+  even for a `/login october`-imported session.
+- **Fallback**: the static `OCTOBER_INFERENCE_TOKEN` bearer still works (tests / non-app use). With
+  neither a Supabase session nor that token, the provider is unauthenticated and pi filters it out of
+  the picker — no dead options.
+
+> **⚠ One assumption to confirm on the backend.** This is built for **the gateway validating the
+> Supabase JWT directly** (bearer = the user's Supabase access token). If instead October wants to
+> mint a *separate* inference token from the JWT, that is a localized change: `refreshToken` calls the
+> October token endpoint instead of Supabase's, and `getApiKey` returns the minted token. Everything
+> else (seeding, the store-lock refresh loop, inertness) is unchanged.
+
+### 10.2 What October must do for it all to work — checklist
+
+**Backend / gateway (October-owned):**
+- [ ] Confirm the gateway at `https://www.october.dev/v1` accepts the user's Supabase **access-token
+      JWT** as `Authorization: Bearer …` (or tell me it wants an exchange — see the ⚠ above).
+- [ ] Confirm the OpenAI-compatible surface: `GET /models` (bearer-auth) for the live catalog, and
+      `POST /chat/completions` streaming with tool-calling for the `hetzner/*` models.
+- [ ] Confirm the real model ids (the seed list `hetzner/kimi-k2`, `hetzner/glm-4.7`,
+      `hetzner/qwen3-coder` is a placeholder) and per-user rate/capacity limits.
+- [ ] Decide what a signed-in user is entitled to (all `hetzner/*`? metered?). No harness change
+      either way — it's whatever the gateway authorizes for that JWT.
+
+**October-desktop (the spawner):**
+- [ ] Inject the five `OCTOBER_SUPABASE_*` env vars (§10.1) into every agent process, exactly as it
+      already injects `OCTOBER_BUS_*`. Keep the access token reasonably fresh at spawn; octo handles
+      in-session refresh from there.
+- [ ] Pass `--model october/hetzner/<id>` (or your chosen default) on the spawn command for chat
+      nodes so a fresh user gets an October model with zero picking. (octo already registers the
+      provider; this just preselects it. It's a spawn arg, not a written file — the design test holds.)
+- [ ] Provide the Supabase **anon** key only (never the service-role key) — it is public by design.
+
+**Distribution (pick per §10.3):**
+- [ ] Build and ship the binary/package; bundle it with the October app.
+
+### 10.3 Distribution options (recommendation: bundle the prebuilt binary)
+
+The install story depends on audience. Since the primary consumer is the October app itself:
+
+- **Recommended — prebuilt binary bundled by the app.** `scripts/build-binaries.sh` already produces
+  self-contained Bun executables for all six OS/arch targets (no Node needed). The app ships the
+  matching binary and spawns it. Two small polish items: the built binary/archive is still named
+  `pi`/`pi-<platform>.tar.gz` (rename to `octo` in `build-binaries.sh`), and the release workflow
+  references upstream infra (R2 `pi-artifacts`, `pi.dev`) that a fork run would need pointed at
+  October's own or trimmed to just the artifact build.
+- **npm global install** (`npm i -g @october/...`): broadest for developers, but requires renaming all
+  nine `@earendil-works/pi-*` packages to an October-owned scope, creating the npm org, and updating
+  the shrinkwrap/install-lock generators (`internalPackagePrefix`). Bigger lift; only worth it if you
+  want a public `npm i -g` story. OCTOBER.md §6.1 currently freezes the npm identity — revisit here if
+  you choose this.
+- **Both**: the release workflow already does binaries + npm in one tagged run; the rename work above
+  is the prerequisite.
+
+### 10.4 Status of §10
+
+| Piece | State |
+|---|---|
+| Harness: Supabase-session provider auth + refresh + seeding | **done** — `october/auth.ts`, 7 offline tests, inert without `OCTOBER_SUPABASE_*` |
+| Gateway JWT-bearer contract | **assumed** (§10.1 ⚠) — needs one backend confirmation |
+| Real model ids + limits | **placeholder** — seed list unconfirmed against live `/models` |
+| October-desktop env injection + `--model` at spawn | **not started** (October-desktop repo) |
+| Binary/package rebrand + release infra repointing | **not started** — see §10.3 |
+| Live end-to-end with a real signed-in session | **not run** — no Supabase project/session in this environment |
