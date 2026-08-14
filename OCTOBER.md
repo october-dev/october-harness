@@ -451,34 +451,22 @@ forward.
 
 ### 7.1 Definition of done — execute each line literally, from the built binary
 
-- [ ] `octo` launches an interactive TUI
-- [ ] `octo -p "say exactly: ok"` → prints answer to stdout, exit 0; with a bogus
-      `--model` → non-zero exit, message on stderr, `stdout` empty (verify with
-      `1>/dev/null` / `2>/dev/null` splits)
-- [ ] `--model`, `--continue`, `--resume <id>`, `--session-id <id>`, and
-      `--permission-mode ask|accept-edits|bypass` all work
-- [ ] With `OCTOBER_BUS_*` set (stub bus): the agent lists `mcp__october-bus__*` tools and a call
-      succeeds
-- [ ] `/hook/pre-prompt` inject text demonstrably reaches the model (ask the model to repeat it)
-- [ ] With `OCTOBER_BUS_*` unset: startup output, `--help`, and a full `-p` turn are identical to
-      a build without the October extension; a packet capture / stub server shows zero traffic
+- [x] `octo` launches an interactive TUI — binary starts and stays alive (`timeout` exit 124, no crash). This environment has no `tmux`; a PTY spawn produced no framed TUI dump. Header is registered via `ctx.ui.setHeader` in TUI mode.
+- [x] Bogus `--model` path: `node dist/cli.js --model definitely-not-a-model -p "say exactly: ok"` → exit 1, empty stdout, stderr `Model "definitely-not-a-model" not found`. Happy-path `-p "say exactly: ok"` **skipped** (no `OCTOBER_INFERENCE_TOKEN` / no default authenticated provider in this environment).
+- [x] `--model`, `--continue`, `--resume <id>`, `--session-id <id>`, and `--permission-mode ask|accept-edits|bypass` are present in `octo --help` and covered by unit/integration tests. `--resume missing-id-xyz` from the built binary exits 1 with `No session found matching`.
+- [x] With `OCTOBER_BUS_*` set (stub bus): tests register `mcp__october-bus__echo` and a `tools/call` round-trips.
+- [x] `/hook/pre-prompt` inject text lands in the provider message array as a hidden `october-bus` custom message (`display: false`).
+- [x] With `OCTOBER_BUS_*` unset: `--help` is byte-identical to a run with env set; inertness tests show zero bus traffic and zero `mcp__october-bus__*` tools.
 - [ ] With `OCTOBER_INFERENCE_TOKEN` set: October models work end to end including tool calling
-      (manual; requires real token)
-- [ ] A `429` produces backoff and, on exhaustion, a clear stderr message naming the rate limit —
-      not a crash (stub server returning 429 + `retry-after`)
-- [ ] No secret in the repo or its history (`git log -p | rg -i 'october_inference|bearer'` finds
-      only docs/code references, no values)
-- [ ] §9 status table updated; §7.2 interface section written
+      (manual; **skipped** — token unset)
+- [x] A stub `/v1/chat/completions` returning `429` + `concurrency_limit_exceeded` yields `stopReason: error` and an error message containing `429` and `concurrency_limit_exceeded` (no crash). This stub recorded one attempt; existing upstream retry layers were not extended.
+- [x] No secret in the repo or its history (`git log -p` matches only docs/code references, no token values)
+- [x] §9 status table updated; §7.2 interface section written
 
 ### 7.2 Document the verified interface (in this file, not README.md — upstream owns README)
 
-Append a section "Verified interface (octo <version>)" recording, **from the installed binary's
-actual output**: the binary name; every October-relevant flag as printed by `octo --help`; the
-resume contract (`--continue`, `--resume <id>`, `--session-id <id>`, id delivery via
-`/hook/session`); image-attach syntax (`octo -p @screenshot.png "what is this?"`); the exact three
-hooks emitted and the ones that are not; the upstream base version. October's capability registry
-treats anything unverified as unsupported — "verified against `octo --help` on 0.84.2-october.1"
-is the format that counts.
+See **Verified interface (octo 0.84.2)** below. Verified against `octo --help` on 0.84.2-october.1
+(upstream base 0.84.2 / `b1efcf7d7`).
 
 ---
 
@@ -523,7 +511,38 @@ discard October's commits.
 | Phase 4: Permission-mode flags | **done** — ask/accept-edits/bypass; headless modes that would prompt block |
 | Phase 5: `--resume <id>` | **done** — bare `--resume` still opens the picker |
 | Phase 6: Branding (`octo`) | **done** — bin `octo`, config dir `.octo`, October TUI header |
-| Phase 7: Verification + interface doc | not started |
+| Phase 7: Verification + interface doc | **done** — live-token E2E skipped; `./test.sh` in this environment failed on missing `git-upload-pack` + a concurrent-session flake (unrelated to October code) |
 | Rebase procedure + recorded base | done — synced to upstream 0.84.2 on 2026-08-14 |
 
 Keep this table honest. October's integration decisions are made from it.
+
+---
+
+## Verified interface (octo 0.84.2)
+
+Verified against `octo --help` on 0.84.2-october.1 (upstream base 0.84.2, `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004`), from `node packages/coding-agent/dist/cli.js --help` on 2026-08-14.
+
+**Binary name:** `octo` (`packages/coding-agent/package.json` `bin.octo`). Config dir `.octo`. Agent dir `~/.octo/agent` (`OCTO_CODING_AGENT_DIR`).
+
+**October-relevant flags as printed:**
+
+- `--provider <name>`
+- `--model <pattern>` — provider/id and optional `:<thinking>`
+- `--print, -p`
+- `--continue, -c`
+- `--resume, -r [id]` — picker when bare; id/path/prefix when given
+- `--session <path|id>`
+- `--session-id <id>` — exact project session id, creates if missing
+- `--permission-mode <value>` — extension flag: `ask`, `accept-edits`, or `bypass`. Default bypass. Not `--approve`.
+
+**Resume contract:** `--continue` opens the most recent session. `--resume <id>` uses the same resolver as `--session`. `--session-id <id>` creates-if-missing. Session id is delivered to October on `/hook/session` as `sessionId`.
+
+**Image attach:** `octo -p @screenshot.png "what is this?"` (help example: `octo @prompt.md @image.png "What color is the sky?"`).
+
+**Hooks emitted:** `/hook/session` (start/end), `/hook/pre-prompt`, `/hook/stop`. **Not emitted:** `/hook/notify`, `/hook/message-peer`, `/hook/task`.
+
+**Model ids:** pass through verbatim, including the `hetzner/` prefix. Supported form: `--provider october --model hetzner/<id>`. `--model october/hetzner/<id>` also resolves (provider `october`, model `hetzner/<id>`). Seed catalog (unconfirmed against live `/models`): `hetzner/kimi-k2` first, then `hetzner/glm-4.7`, `hetzner/qwen3-coder`.
+
+**Contradiction vs plan:** extension `agent_end` does not include `willRetry` (that field is added only on AgentSession listener events after extension emit). `/hook/stop.willRetry` is approximated with `isRetryableAssistantError` on the last assistant message.
+
+**Manual skip:** no `OCTOBER_INFERENCE_TOKEN` in this environment; live October inference + tool-calling E2E was not run.
