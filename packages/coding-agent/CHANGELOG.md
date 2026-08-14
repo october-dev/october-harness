@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Hardened the October bus MCP client against malformed responses: a `null`/non-object JSON-RPC result now returns a typed error instead of throwing, so a bad `tools/list` reply can no longer discard the October provider/hooks or crash the process on the background retry path. Added a `tools/list` pagination cap and a size clamp on injected pre-prompt text, and restricted the `OCTOBER_INFERENCE_BASE_URL` test override to loopback hosts so a stored credential cannot be redirected off-box.
 - Fixed Z.AI Coding Plan defaults referencing the removed GLM-5.1 model ([#8096](https://github.com/earendil-works/pi/issues/8096)).
 
 ## [0.84.2] - 2026-08-14

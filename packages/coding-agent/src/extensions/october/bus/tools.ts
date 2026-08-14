@@ -67,7 +67,13 @@ function registerTools(pi: ExtensionAPI, client: OctoberMcpClient, tools: McpToo
 
 export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusEnv): Promise<void> {
 	const client = new OctoberMcpClient(env);
-	const listed = await client.listTools();
+	let listed: Awaited<ReturnType<OctoberMcpClient["listTools"]>>;
+	try {
+		listed = await client.listTools();
+	} catch (error) {
+		// Never let bus-tool discovery discard the provider/permissions/hooks already registered.
+		listed = { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
 	if (listed.ok) {
 		registerTools(pi, client, listed.value);
 		return;
@@ -76,9 +82,14 @@ export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusE
 	logOctoberDebug(`october-bus mcp unavailable: ${listed.error}`);
 	const timer = setTimeout(() => {
 		void (async () => {
-			const retry = await client.listTools();
-			if (!retry.ok) return;
-			registerTools(pi, client, retry.value);
+			try {
+				const retry = await client.listTools();
+				if (!retry.ok) return;
+				registerTools(pi, client, retry.value);
+			} catch (error) {
+				// The session (or an unreachable October) must never crash the process.
+				logOctoberDebug(`october-bus mcp retry failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
 		})();
 	}, RETRY_MS);
 	timer.unref();

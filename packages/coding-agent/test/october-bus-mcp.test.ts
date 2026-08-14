@@ -340,4 +340,42 @@ describe("october bus MCP client", () => {
 		harnesses.push(harness);
 		expect(harness.session.getAllTools().filter((tool) => tool.name.startsWith(MCP_TOOL_PREFIX))).toEqual([]);
 	});
+
+	it("returns a typed error (never throws) when tools/list has a null result", async () => {
+		const { port } = await listen(async (request, response) => {
+			const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (body.method === "initialize") {
+				writeJson(response, { jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } });
+				return;
+			}
+			if (body.method === "notifications/initialized") {
+				response.writeHead(202).end();
+				return;
+			}
+			writeJson(response, { jsonrpc: "2.0", id: body.id, result: null });
+		});
+		setBusEnv(port);
+		const client = new OctoberMcpClient(parseOctoberBusEnv()!);
+		const listed = await client.listTools();
+		expect(listed.ok).toBe(false);
+	});
+
+	it("keeps the October provider registered when bus tool discovery fails", async () => {
+		const { port } = await listen(async (request, response) => {
+			const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (body.method === "notifications/initialized") {
+				response.writeHead(202).end();
+				return;
+			}
+			writeJson(response, { jsonrpc: "2.0", id: body.id, result: null });
+		});
+		setBusEnv(port);
+		const harness = await createHarness({
+			extensionFactories: [{ name: "october", factory: octoberExtension, hidden: true }],
+		});
+		harnesses.push(harness);
+		// Malformed bus responses must not discard the earlier registrations or the session.
+		expect(harness.session.getAllTools().filter((tool) => tool.name.startsWith(MCP_TOOL_PREFIX))).toEqual([]);
+		expect(harness.session.getAllTools().length).toBeGreaterThan(0);
+	});
 });

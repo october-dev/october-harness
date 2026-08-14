@@ -9,9 +9,26 @@ const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const DEFAULT_CONTEXT_WINDOW = 131072;
 const REASONING_MAX_TOKENS = 32768;
 
+function isLoopbackUrl(raw: string): boolean {
+	try {
+		const host = new URL(raw).hostname.toLowerCase();
+		return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Production root, or a test override. The override is honored only for loopback
+ * hosts: a stored October credential must never be sent to an attacker-controlled
+ * external host via an injected OCTOBER_INFERENCE_BASE_URL.
+ */
 export function octoberBaseUrl(): string {
 	const override = process.env.OCTOBER_INFERENCE_BASE_URL?.trim();
-	return override && override.length > 0 ? override.replace(/\/$/, "") : DEFAULT_OCTOBER_BASE_URL;
+	if (override && override.length > 0 && isLoopbackUrl(override)) {
+		return override.replace(/\/$/, "");
+	}
+	return DEFAULT_OCTOBER_BASE_URL;
 }
 
 export function resolveOctoberToken(): string | undefined {

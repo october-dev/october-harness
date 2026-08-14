@@ -7,6 +7,7 @@ import { octoberBusUrl } from "./env.ts";
 const FIRE_TIMEOUT_MS = 3_000;
 const PRE_PROMPT_TIMEOUT_MS = 5_000;
 const SUMMARY_LIMIT = 2000;
+const INJECT_LIMIT = 100_000;
 
 interface HookSessionPayload {
 	event: "start" | "end";
@@ -105,7 +106,7 @@ export function registerOctoberHooks(pi: ExtensionAPI, env: OctoberBusEnv): void
 		return {
 			message: {
 				customType: "october-bus",
-				content: [{ type: "text", text: inject }],
+				content: [{ type: "text", text: inject.slice(0, INJECT_LIMIT) }],
 				display: false,
 			},
 		};

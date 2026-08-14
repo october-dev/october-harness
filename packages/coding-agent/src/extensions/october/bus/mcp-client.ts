@@ -7,6 +7,7 @@ export const MCP_TOOL_PREFIX = "mcp__october-bus__";
 
 const INIT_TIMEOUT_MS = 5_000;
 const CALL_TIMEOUT_MS = 120_000;
+const MAX_TOOL_PAGES = 100;
 
 export interface McpToolDefinition {
 	name: string;
@@ -94,7 +95,11 @@ export class OctoberMcpClient {
 
 		const tools: McpToolDefinition[] = [];
 		let cursor: string | undefined;
+		let pages = 0;
 		do {
+			if (++pages > MAX_TOOL_PAGES) {
+				return { ok: false, error: `MCP tools/list exceeded ${MAX_TOOL_PAGES} pages` };
+			}
 			const params = cursor ? { cursor } : {};
 			const result = await this.rpc<{ tools?: unknown; nextCursor?: unknown }>(
 				"tools/list",
@@ -191,6 +196,9 @@ export class OctoberMcpClient {
 		}
 		if (message.error) {
 			return { ok: false, error: message.error.message ?? `MCP ${method} error ${message.error.code ?? ""}`.trim() };
+		}
+		if (message.result === null || typeof message.result !== "object") {
+			return { ok: false, error: `MCP ${method}: malformed result` };
 		}
 		return { ok: true, value: message.result as T };
 	}
