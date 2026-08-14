@@ -201,7 +201,31 @@ The fork is only worth its cost if upstream keeps flowing in.
 - Never edit `README.md`, `LICENSE`, `CONTRIBUTING.md`, or `SECURITY.md` — upstream owns those.
   Keep MIT attribution intact.
 
-**Upstream base: _(record SHA + version here on first rebase)_**
+### Upstream base
+
+| Merged | Upstream SHA | `@earendil-works/pi-coding-agent` |
+|---|---|---|
+| 2026-08-14 | `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004` | 0.84.2 |
+
+Caught up 263 upstream commits in one merge. **Merge, not rebase** — `main` is published, and
+rebasing would force-push over it. The same reason applies next time.
+
+To repeat it:
+
+```sh
+gh api --method POST repos/october-dev/october-harness/merges \
+  -f base=main -f head="$(gh api repos/earendil-works/pi/commits/main --jq .sha)"
+```
+
+Then check you're level:
+
+```sh
+gh api repos/october-dev/october-harness/compare/main...earendil-works:pi:main \
+  --jq '"upstream_ahead=\(.ahead_by) fork_ahead=\(.behind_by)"'
+```
+
+`upstream_ahead=0` means caught up. Note `gh repo sync` is NOT usable here: once the fork carries
+any October commit the branches read as diverged, and its `--force` would discard that work.
 
 ---
 
@@ -243,6 +267,6 @@ description of what was intended.
 | Headless one-shot mode | not started (verify what upstream already offers first) |
 | Resume + session-id exposure | not started (verify upstream) |
 | Branding | not started |
-| Rebase procedure + recorded base | not started |
+| Rebase procedure + recorded base | **done** — see §7; synced to upstream 0.84.2 on 2026-08-14 |
 
 Keep this table honest. October's integration decisions are made from it.
