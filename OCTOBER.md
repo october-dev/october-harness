@@ -520,7 +520,7 @@ discard October's commits.
 | Phase 1: October inference provider | **done** — provider + offline tests; live-token E2E skipped (no `OCTOBER_INFERENCE_TOKEN`) |
 | Phase 2: Bus MCP client (env-driven) | **done** — inert when `OCTOBER_BUS_*` unset; JSON + SSE stub coverage |
 | Phase 3: Lifecycle hooks (session / pre-prompt / stop) | **done** — `/hook/session`, `/hook/pre-prompt`, `/hook/stop`; `willRetry` approximated from last assistant error |
-| Phase 4: Permission-mode flags | not started |
+| Phase 4: Permission-mode flags | **done** — ask/accept-edits/bypass; headless modes that would prompt block |
 | Phase 5: `--resume <id>` | not started |
 | Phase 6: Branding (`octo`) | not started |
 | Phase 7: Verification + interface doc | not started |
