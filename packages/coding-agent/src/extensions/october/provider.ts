@@ -7,8 +7,33 @@ export { OCTOBER_PROVIDER_ID };
 export const DEFAULT_OCTOBER_BASE_URL = "https://www.october.dev/v1";
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-const DEFAULT_CONTEXT_WINDOW = 131072;
-const REASONING_MAX_TOKENS = 32768;
+// Hetzner publishes no verifiable context figure; 128000 is the conservative value from the gateway
+// handover. Under-claiming only compacts sooner; over-claiming gets oversized requests rejected.
+const DEFAULT_CONTEXT_WINDOW = 128000;
+// Safe output ceiling per the handover. These models spend budget on a reasoning trace first, so a
+// small cap yields empty content — pi's own internal requests must keep a floor well above this.
+const DEFAULT_MAX_TOKENS = 32000;
+
+interface OctoberModelMeta {
+	name: string;
+	input: ("text" | "image")[];
+	reasoning: boolean;
+}
+
+/**
+ * Per-model metadata the `/models` catalogue does not carry, from the gateway handover. Ids not in
+ * this table fall back to DEFAULT_META and are still exposed — a new Hetzner model must not require a
+ * harness release to become usable.
+ */
+const DEFAULT_META: OctoberModelMeta = { name: "", input: ["text"], reasoning: false };
+const MODEL_META: Record<string, OctoberModelMeta> = {
+	"hetzner/Kimi-K2.7-Code": { name: "Kimi K2.7 Code (recommended)", input: ["text", "image"], reasoning: false },
+	"hetzner/Qwen/Qwen3.6-35B-A3B-FP8": { name: "Qwen3.6 35B A3B", input: ["text"], reasoning: true },
+};
+
+/** The first entry is what bare `--provider october` selects. */
+export const OCTOBER_DEFAULT_MODEL_ID = "hetzner/Kimi-K2.7-Code";
+const SEED_ORDER: readonly string[] = [OCTOBER_DEFAULT_MODEL_ID, "hetzner/Qwen/Qwen3.6-35B-A3B-FP8"];
 
 function isLoopbackUrl(raw: string): boolean {
 	try {
@@ -37,24 +62,22 @@ export function resolveOctoberToken(): string | undefined {
 	return token && token.length > 0 ? token : undefined;
 }
 
-function seedModel(id: string, name: string): ProviderModelConfig {
+/** Build a model entry for an id, applying known metadata and conservative defaults for the rest. */
+function modelFor(id: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW): ProviderModelConfig {
+	const meta = MODEL_META[id] ?? DEFAULT_META;
 	return {
 		id,
-		name,
-		reasoning: true,
-		input: ["text"],
+		name: meta.name.length > 0 ? meta.name : id,
+		reasoning: meta.reasoning,
+		input: meta.input,
 		cost: ZERO_COST,
-		contextWindow: DEFAULT_CONTEXT_WINDOW,
-		maxTokens: REASONING_MAX_TOKENS,
+		contextWindow,
+		maxTokens: DEFAULT_MAX_TOKENS,
 	};
 }
 
 /** Static baseline so `--provider october` works before the first /models refresh. Kimi is first. */
-export const OCTOBER_SEED_MODELS: ProviderModelConfig[] = [
-	seedModel("hetzner/kimi-k2", "Kimi K2 (recommended: fast, reliable tool calling)"),
-	seedModel("hetzner/glm-4.7", "GLM 4.7 (unreliable: timeouts observed)"),
-	seedModel("hetzner/qwen3-coder", "Qwen3 Coder (slow, intermittent 502s)"),
-];
+export const OCTOBER_SEED_MODELS: ProviderModelConfig[] = SEED_ORDER.map((id) => modelFor(id));
 
 function tokenFromRefreshContext(context: RefreshModelsContext): string | undefined {
 	const credential = context.credential;
@@ -79,26 +102,10 @@ function contextWindowFromEntry(entry: Record<string, unknown>): number {
 	return DEFAULT_CONTEXT_WINDOW;
 }
 
-function seedNameById(): Map<string, string> {
-	return new Map(OCTOBER_SEED_MODELS.map((model) => [model.id, model.name]));
-}
-
-function modelFromLiveId(id: string, contextWindow: number, names: Map<string, string>): ProviderModelConfig {
-	return {
-		id,
-		name: names.get(id) ?? id,
-		reasoning: true,
-		input: ["text"],
-		cost: ZERO_COST,
-		contextWindow,
-		maxTokens: REASONING_MAX_TOKENS,
-	};
-}
-
 /**
  * Discover models from `${baseUrl}/models`. Ids are taken verbatim — no
- * lowercasing, prefix stripping, or slash rewriting. Skip the network when no
- * token is resolvable.
+ * lowercasing, prefix stripping, or slash rewriting (ids carry their own slashes,
+ * e.g. `hetzner/Qwen/Qwen3.6-35B-A3B-FP8`). Skip the network when no token is resolvable.
  */
 export async function refreshOctoberModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
 	const token = tokenFromRefreshContext(context);
@@ -124,22 +131,21 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 			return OCTOBER_SEED_MODELS;
 		}
 
-		const names = seedNameById();
 		const live: ProviderModelConfig[] = [];
 		for (const entry of data) {
 			if (!entry || typeof entry !== "object") continue;
 			const id = (entry as { id?: unknown }).id;
 			if (typeof id !== "string" || id.length === 0) continue;
-			live.push(modelFromLiveId(id, contextWindowFromEntry(entry as Record<string, unknown>), names));
+			live.push(modelFor(id, contextWindowFromEntry(entry as Record<string, unknown>)));
 		}
 
 		const byId = new Map(live.map((model) => [model.id, model]));
 		const ordered: ProviderModelConfig[] = [];
-		for (const seed of OCTOBER_SEED_MODELS) {
-			const match = byId.get(seed.id);
+		for (const seedId of SEED_ORDER) {
+			const match = byId.get(seedId);
 			if (match) {
 				ordered.push(match);
-				byId.delete(seed.id);
+				byId.delete(seedId);
 			}
 		}
 		for (const model of live) {

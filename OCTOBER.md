@@ -542,7 +542,7 @@ Verified against `octo --help` on 0.84.2-october.1 (upstream base 0.84.2, `b1efc
 
 **Hooks emitted:** `/hook/session` (start/end), `/hook/pre-prompt`, `/hook/stop`. **Not emitted:** `/hook/notify`, `/hook/message-peer`, `/hook/task`.
 
-**Model ids:** pass through verbatim, including the `hetzner/` prefix. Supported form: `--provider october --model hetzner/<id>`. `--model october/hetzner/<id>` also resolves (provider `october`, model `hetzner/<id>`). Seed catalog (unconfirmed against live `/models`): `hetzner/kimi-k2` first, then `hetzner/glm-4.7`, `hetzner/qwen3-coder`.
+**Model ids:** pass through verbatim, including the `hetzner/` prefix and any further slashes (e.g. `hetzner/Qwen/Qwen3.6-35B-A3B-FP8` — only the first segment is the provider namespace). Supported forms: `--provider october --model hetzner/<id>` and `--model october/hetzner/<id>` (both resolve to provider `october`; multi-slash ids verified in tests). Seed catalog (real ids from the gateway handover): `hetzner/Kimi-K2.7-Code` first (images), then `hetzner/Qwen/Qwen3.6-35B-A3B-FP8` (reasoning); the full catalogue is fetched live from `/v1/models`.
 
 **Contradiction vs plan:** extension `agent_end` does not include `willRetry` (that field is added only on AgentSession listener events after extension emit). `/hook/stop.willRetry` is approximated with `isRetryableAssistantError` on the last assistant message.
 
@@ -593,11 +593,11 @@ Implemented on pi's OAuth provider seam (`packages/coding-agent/src/extensions/o
   neither a Supabase session nor that token, the provider is unauthenticated and pi filters it out of
   the picker — no dead options.
 
-> **⚠ One assumption to confirm on the backend.** This is built for **the gateway validating the
-> Supabase JWT directly** (bearer = the user's Supabase access token). If instead October wants to
-> mint a *separate* inference token from the JWT, that is a localized change: `refreshToken` calls the
-> October token endpoint instead of Supabase's, and `getApiKey` returns the minted token. Everything
-> else (seeding, the store-lock refresh loop, inertness) is unchanged.
+> **✅ Confirmed by the gateway handover (`OCTOBER_HARNESS_HANDOVER.md`).** The gateway validates the
+> **Supabase session JWT directly** as `Authorization: Bearer …` — no server change needed for the
+> harness. It also accepts a long-lived `oct_inf_…` inference token on the same header for clients
+> outside October, which is exactly what the `OCTOBER_INFERENCE_TOKEN` fallback carries. Both resolve
+> to the same October user id and share one usage/limit bucket.
 
 ### 10.2 What October must do for it all to work — checklist
 
@@ -646,8 +646,41 @@ The install story depends on audience. Since the primary consumer is the October
 | Piece | State |
 |---|---|
 | Harness: Supabase-session provider auth + refresh + seeding | **done** — `october/auth.ts`, 7 offline tests, inert without `OCTOBER_SUPABASE_*` |
-| Gateway JWT-bearer contract | **assumed** (§10.1 ⚠) — needs one backend confirmation |
-| Real model ids + limits | **placeholder** — seed list unconfirmed against live `/models` |
+| Gateway JWT-bearer contract | **confirmed** by the handover (§10.1 ✅) |
+| Real model ids + metadata | **done** — seed `hetzner/Kimi-K2.7-Code` (images) + `hetzner/Qwen/Qwen3.6-35B-A3B-FP8` (reasoning); ctx 128000, maxTokens 32000, cost 0; catalogue fetched live; unknown ids exposed with defaults |
 | October-desktop env injection + `--model` at spawn | **not started** (October-desktop repo) |
 | Binary/package rebrand + release infra repointing | **not started** — see §10.3 |
 | Live end-to-end with a real signed-in session | **not run** — no Supabase project/session in this environment |
+
+### 10.5 Reconciliation with the gateway handover, and what it still asks the harness to do
+
+The handover confirms the auth model and the fetch-don't-hardcode catalogue (both done), and adds
+requirements that are **not yet in the harness**. Some need a decision; some need pi-core work:
+
+- **Token delivery — decision (handover §3, §11.2).** The current harness reads the session from
+  `OCTOBER_SUPABASE_*` at spawn and refreshes it *itself* against Supabase. The handover's
+  **recommended** shape is different: October-desktop exposes a **loopback token endpoint** (it owns
+  the session in Electron `safeStorage` and already refreshes it), and the harness fetches the current
+  token per request / on `401 invalid_api_key`. That is cleaner (no refresh token or anon key in the
+  agent env; desktop owns refresh) and is the natural fit for the existing October bus. Recommend
+  switching the token source to a bus route once October-desktop defines it; keep an `oct_inf_` static
+  token as the headless/CI fallback (handover §3(c)).
+- **401 must branch on `error.code`, not status (handover §2.1, §8).** `invalid_api_key` → refresh +
+  retry once; `upstream_authentication_error` → surface as a service fault, do **not** refresh/retry;
+  `503 service_unavailable` → back off, do **not** sign out. pi refreshes proactively on the expiry
+  window but has no refresh-on-401 hook today — this needs a small pi-core seam or a `streamSimple`
+  wrapper.
+- **Client-side concurrency semaphore of ~4 (handover §7).** Parallel subagents will exhaust the
+  4-concurrent limit instantly. Queue rather than fire; honour `Retry-After` on `429`. pi-core
+  dispatch concern.
+- **Reasoning-token floor ~256 on harness-internal requests (handover §6).** Title/summary/tool-repair
+  requests with a tiny budget return empty content on these reasoning models. pi's internal min-output
+  needs a floor for this provider.
+- **Abort on cancel (handover §5).** The HTTP request must actually `AbortController.abort()` on
+  cancel to free a concurrency slot. pi aborts requests on cancel today — verify it holds for this
+  provider under live conditions.
+- **Do-not-build, already honoured:** no auto-retry of generations (but note pi-core's generic retry
+  layer may retry a mid-stream 5xx — verify/limit for this provider), no silent provider fallback, no
+  hardcoded catalogue, ids passed verbatim, credential only ever in `Authorization`.
+- **Model curation (handover §11.4):** GLM times out and Qwen is slow; the seed leads with Kimi and
+  the catalogue is fetched live, so weak models surface but Kimi is the default.

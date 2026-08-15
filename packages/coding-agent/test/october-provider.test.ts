@@ -71,14 +71,20 @@ describe("october inference provider", () => {
 		expect(runtime.pendingProviderRegistrations.map((entry) => entry.name)).toEqual([OCTOBER_PROVIDER_ID]);
 	});
 
-	it("seeds a baseline with Kimi first", () => {
-		expect(OCTOBER_SEED_MODELS[0]?.id).toBe("hetzner/kimi-k2");
-		expect(createOctoberProviderConfig().models?.[0]?.id).toBe("hetzner/kimi-k2");
+	it("seeds a baseline with Kimi first and the handover metadata", () => {
+		expect(OCTOBER_SEED_MODELS[0]?.id).toBe("hetzner/Kimi-K2.7-Code");
+		expect(createOctoberProviderConfig().models?.[0]?.id).toBe("hetzner/Kimi-K2.7-Code");
 		expect(OCTOBER_SEED_MODELS.map((model) => model.id)).toEqual([
-			"hetzner/kimi-k2",
-			"hetzner/glm-4.7",
-			"hetzner/qwen3-coder",
+			"hetzner/Kimi-K2.7-Code",
+			"hetzner/Qwen/Qwen3.6-35B-A3B-FP8",
 		]);
+		const kimi = OCTOBER_SEED_MODELS[0];
+		expect(kimi?.input).toEqual(["text", "image"]);
+		expect(kimi?.contextWindow).toBe(128000);
+		expect(kimi?.maxTokens).toBe(32000);
+		const qwen = OCTOBER_SEED_MODELS[1];
+		expect(qwen?.reasoning).toBe(true);
+		expect(qwen?.input).toEqual(["text"]);
 	});
 
 	it("makes no network call during refresh when OCTOBER_INFERENCE_TOKEN is unset", async () => {
@@ -102,7 +108,7 @@ describe("october inference provider", () => {
 			if (request.url === "/v1/models" || request.url?.startsWith("/v1/models?")) {
 				json(response, {
 					data: [
-						{ id: "hetzner/kimi-k2", context_window: 262144 },
+						{ id: "hetzner/Kimi-K2.7-Code", context_window: 262144 },
 						{ id: "hetzner/Some_Custom-Model", context_length: 64000 },
 					],
 				});
@@ -115,11 +121,15 @@ describe("october inference provider", () => {
 
 		const models = await refreshOctoberModels(refreshContext());
 		expect(seenAuth).toEqual(["Bearer test-token"]);
-		expect(models.map((model) => model.id)).toEqual(["hetzner/kimi-k2", "hetzner/Some_Custom-Model"]);
+		expect(models.map((model) => model.id)).toEqual(["hetzner/Kimi-K2.7-Code", "hetzner/Some_Custom-Model"]);
 		expect(models[0]?.name).toContain("recommended");
 		expect(models[0]?.contextWindow).toBe(262144);
+		// An id not in the metadata table is still exposed with conservative defaults.
 		expect(models[1]?.id).toBe("hetzner/Some_Custom-Model");
 		expect(models[1]?.name).toBe("hetzner/Some_Custom-Model");
+		expect(models[1]?.input).toEqual(["text"]);
+		expect(models[1]?.reasoning).toBe(false);
+		expect(models[1]?.maxTokens).toBe(32000);
 	});
 
 	it("does not normalize model ids when resolving --provider/--model", async () => {
@@ -133,20 +143,29 @@ describe("october inference provider", () => {
 
 		const withProvider = resolveCliModel({
 			cliProvider: "october",
-			cliModel: "hetzner/kimi-k2",
+			cliModel: "hetzner/Kimi-K2.7-Code",
 			modelRuntime: runtime,
 		});
 		expect(withProvider.error).toBeUndefined();
 		expect(withProvider.model?.provider).toBe("october");
-		expect(withProvider.model?.id).toBe("hetzner/kimi-k2");
+		expect(withProvider.model?.id).toBe("hetzner/Kimi-K2.7-Code");
 
 		const canonical = resolveCliModel({
-			cliModel: "october/hetzner/kimi-k2",
+			cliModel: "october/hetzner/Kimi-K2.7-Code",
 			modelRuntime: runtime,
 		});
 		expect(canonical.error).toBeUndefined();
 		expect(canonical.model?.provider).toBe("october");
-		expect(canonical.model?.id).toBe("hetzner/kimi-k2");
+		expect(canonical.model?.id).toBe("hetzner/Kimi-K2.7-Code");
+
+		// Multi-slash upstream ids must survive: only the first segment is the provider namespace.
+		const multiSlash = resolveCliModel({
+			cliModel: "october/hetzner/Qwen/Qwen3.6-35B-A3B-FP8",
+			modelRuntime: runtime,
+		});
+		expect(multiSlash.error).toBeUndefined();
+		expect(multiSlash.model?.provider).toBe("october");
+		expect(multiSlash.model?.id).toBe("hetzner/Qwen/Qwen3.6-35B-A3B-FP8");
 	});
 
 	it("streams a stubbed chat-completions SSE response through streamSimple", async () => {
