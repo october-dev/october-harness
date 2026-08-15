@@ -13,11 +13,13 @@ const BUS_ENV_KEYS = [
 	"OCTOBER_BUS_PORT",
 	"OCTOBER_BUS_CANVAS",
 	"OCTOBER_BUS_NODE",
+	"OCTOBER_BUS_LAUNCH",
 	"OCTOBER_BUS_MCP_CAPABILITY",
 	"OCTOBER_BUS_TOKEN",
 ] as const;
 
 interface HookRecord {
+	method: string;
 	url: string;
 	token: string | undefined;
 	body: Record<string, unknown>;
@@ -32,7 +34,7 @@ async function readBody(request: IncomingMessage): Promise<string> {
 }
 
 async function startHookServer(options?: {
-	prePrompt?: unknown;
+	prePrompt?: string;
 	prePromptStatus?: number;
 	prePromptDelayMs?: number;
 }): Promise<{ port: number; hooks: HookRecord[]; hits: { count: number } }> {
@@ -42,35 +44,35 @@ async function startHookServer(options?: {
 		hits.count += 1;
 		void (async () => {
 			const url = request.url ?? "";
-			if (request.method !== "POST" || !url.startsWith("/hook/")) {
+			const method = request.method ?? "GET";
+			if (!url.startsWith("/hook/")) {
 				response.writeHead(404).end();
 				return;
 			}
-			if (options?.prePromptDelayMs && url === "/hook/pre-prompt") {
+			if (options?.prePromptDelayMs && url.startsWith("/hook/pre-prompt")) {
 				await new Promise((resolve) => setTimeout(resolve, options.prePromptDelayMs));
 			}
 			let body: Record<string, unknown> = {};
-			try {
-				body = JSON.parse(await readBody(request)) as Record<string, unknown>;
-			} catch {
-				body = {};
+			if (method === "POST") {
+				try {
+					body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+				} catch {
+					body = {};
+				}
 			}
 			hooks.push({
+				method,
 				url,
 				token: headerValue(request.headers["x-october-bus-token"]),
 				body,
 			});
-			if (url === "/hook/pre-prompt") {
+			if (url.startsWith("/hook/pre-prompt")) {
 				const status = options?.prePromptStatus ?? 200;
-				response.writeHead(status, { "Content-Type": "application/json" });
-				response.end(
-					typeof options?.prePrompt === "string"
-						? options.prePrompt
-						: JSON.stringify(options?.prePrompt ?? { inject: null }),
-				);
+				response.writeHead(status, { "Content-Type": "text/plain" });
+				response.end(options?.prePrompt ?? "");
 				return;
 			}
-			response.writeHead(204).end();
+			response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ ok: true }));
 		})();
 	});
 	servers.push(server);
@@ -89,6 +91,7 @@ function setBusEnv(port: number): void {
 	process.env.OCTOBER_BUS_PORT = String(port);
 	process.env.OCTOBER_BUS_CANVAS = "canvas-1";
 	process.env.OCTOBER_BUS_NODE = "node-1";
+	process.env.OCTOBER_BUS_LAUNCH = "launch-1";
 	process.env.OCTOBER_BUS_TOKEN = "token-1";
 }
 
@@ -124,7 +127,7 @@ afterEach(async () => {
 });
 
 describe("october lifecycle hooks", () => {
-	it("fires session start/end with the bus token and a session id", async () => {
+	it("fires session live/offline with canvas, node, launch, and the bus token", async () => {
 		const stub = await startHookServer();
 		setBusEnv(stub.port);
 		const harness = await createHarness({
@@ -132,23 +135,34 @@ describe("october lifecycle hooks", () => {
 		});
 		harnesses.push(harness);
 		await harness.session.bindExtensions({});
-		await waitFor(() => stub.hooks.some((hook) => hook.url === "/hook/session" && hook.body.event === "start"));
+		await waitFor(() => stub.hooks.some((hook) => hook.url === "/hook/session" && hook.body.status === "live"));
 		await harness.session.reload();
-		await waitFor(() => stub.hooks.some((hook) => hook.url === "/hook/session" && hook.body.event === "end"));
+		await waitFor(() => stub.hooks.some((hook) => hook.url === "/hook/session" && hook.body.status === "offline"));
 
-		const start = stub.hooks.find((hook) => hook.body.event === "start");
-		const end = stub.hooks.find((hook) => hook.body.event === "end");
+		const start = stub.hooks.find((hook) => hook.body.status === "live");
+		const end = stub.hooks.find((hook) => hook.body.status === "offline");
 		expect(start?.token).toBe("token-1");
 		expect(end?.token).toBe("token-1");
-		expect(typeof start?.body.sessionId).toBe("string");
-		expect(String(start?.body.sessionId).length).toBeGreaterThan(0);
-		expect(start?.body.cwd).toBe(harness.tempDir);
-		expect(start?.body.reason).toBe("startup");
-		expect(end?.body.reason).toBe("reload");
+		expect(start?.body).toMatchObject({
+			canvas: "canvas-1",
+			node: "node-1",
+			launch: "launch-1",
+			agent: "october",
+			cwd: harness.tempDir,
+		});
+		expect(typeof start?.body.session).toBe("string");
+		expect(String(start?.body.session).length).toBeGreaterThan(0);
+		expect(end?.body).toMatchObject({
+			canvas: "canvas-1",
+			node: "node-1",
+			launch: "launch-1",
+			agent: "october",
+			status: "offline",
+		});
 	});
 
-	it("injects pre-prompt text as a hidden custom message and stops after a turn", async () => {
-		const stub = await startHookServer({ prePrompt: { inject: "ORIENTATION-BLOCK" } });
+	it("pulls pre-prompt as GET (turn-start) and posts stop with excerpt (turn-end)", async () => {
+		const stub = await startHookServer({ prePrompt: "ORIENTATION-BLOCK" });
 		setBusEnv(stub.port);
 		const harness = await createHarness({
 			extensionFactories: [{ name: "october", factory: octoberExtension, hidden: true }],
@@ -179,15 +193,31 @@ describe("october lifecycle hooks", () => {
 		}
 		expect(providerSawInject).toBe(true);
 
+		const pre = stub.hooks.find((hook) => hook.url.startsWith("/hook/pre-prompt"));
+		expect(pre?.method).toBe("GET");
+		expect(pre?.url).toContain("canvas=canvas-1");
+		expect(pre?.url).toContain("node=node-1");
+		expect(pre?.url).toContain("launch=launch-1");
+		expect(pre?.url).toContain("agent=october");
+		expect(pre?.token).toBe("token-1");
+
 		await waitFor(() => stub.hooks.some((hook) => hook.url === "/hook/stop"));
 		const stop = stub.hooks.find((hook) => hook.url === "/hook/stop");
-		expect(stop?.body.summary).toBe("assistant-summary-text");
-		expect(stop?.body.willRetry).toBe(false);
-		expect(typeof stop?.body.sessionId).toBe("string");
+		expect(stop?.body).toMatchObject({
+			canvas: "canvas-1",
+			node: "node-1",
+			launch: "launch-1",
+			agent: "october",
+		});
+		expect(stop?.body.excerpt).toMatchObject({
+			cwd: harness.tempDir,
+			userPrompt: "hello",
+			assistantText: "assistant-summary-text",
+		});
 	});
 
-	it("continues the turn when pre-prompt returns 500, times out, or garbage JSON", async () => {
-		for (const options of [{ prePromptStatus: 500 }, { prePrompt: "not-json" }, { prePromptDelayMs: 6000 }]) {
+	it("continues the turn when pre-prompt returns 500, times out, or empty text", { timeout: 20_000 }, async () => {
+		for (const options of [{ prePromptStatus: 500 }, { prePrompt: "" }, { prePromptDelayMs: 6000 }]) {
 			const stub = await startHookServer(options);
 			setBusEnv(stub.port);
 			const harness = await createHarness({

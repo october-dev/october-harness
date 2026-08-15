@@ -193,6 +193,7 @@ describe("october bus env gate", () => {
 			port: 4377,
 			canvas: "c",
 			node: "n",
+			launch: undefined,
 			capability: undefined,
 			token: undefined,
 		});

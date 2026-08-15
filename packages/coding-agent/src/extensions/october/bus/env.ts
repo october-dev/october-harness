@@ -2,6 +2,7 @@ export interface OctoberBusEnv {
 	port: number;
 	canvas: string;
 	node: string;
+	launch?: string;
 	capability?: string;
 	token?: string;
 }
@@ -28,11 +29,18 @@ export function parseOctoberBusEnv(env: NodeJS.ProcessEnv = process.env): Octobe
 		port,
 		canvas,
 		node,
+		launch: nonEmpty(env.OCTOBER_BUS_LAUNCH),
 		capability: nonEmpty(env.OCTOBER_BUS_MCP_CAPABILITY),
 		token: nonEmpty(env.OCTOBER_BUS_TOKEN),
 	};
 }
 
-export function octoberBusUrl(env: OctoberBusEnv, route: string): string {
-	return `http://127.0.0.1:${env.port}${route}`;
+export function octoberBusUrl(env: OctoberBusEnv, route: string, query?: Record<string, string | undefined>): string {
+	const url = new URL(`http://127.0.0.1:${env.port}${route}`);
+	if (query) {
+		for (const [key, value] of Object.entries(query)) {
+			if (value) url.searchParams.set(key, value);
+		}
+	}
+	return url.toString();
 }
