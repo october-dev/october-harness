@@ -303,19 +303,31 @@ review cost for the subset needed. Implement a minimal Streamable-HTTP MCP clien
 
 ### 3.1 Transport (`october/bus/hooks.ts`)
 
-`POST http://127.0.0.1:${OCTOBER_BUS_PORT}<route>` with `X-October-Bus-Token:
-${OCTOBER_BUS_TOKEN}` and JSON body. Fire-and-forget with a 3s timeout **except** `/hook/pre-prompt`
-(response is consumed; 5s timeout). Swallow every failure. Same env gate as Phase 2.
+Identity is the `OCTOBER_BUS_*` env (`PORT`, `CANVAS`, `NODE`, optional `LAUNCH`/`TOKEN`/`MCP_CAPABILITY`).
+Every request sends `X-October-Bus-Token: ${OCTOBER_BUS_TOKEN}` when a token is present. Swallow
+every failure.
+
+- `POST http://127.0.0.1:${OCTOBER_BUS_PORT}/hook/session` and `/hook/stop` — JSON body, 3s
+  fire-and-forget.
+- `GET http://127.0.0.1:${OCTOBER_BUS_PORT}/hook/pre-prompt?canvas&node&launch&agent=october` —
+  response is consumed as `text/plain` (5s timeout). This is a **pull**, not a POST.
+
+This matches october-desktop's real bus (`src/main/bus/server.ts` + `hook-auth.ts`): pre-prompt is
+GET-only (`HOOK_ROUTES`), records `turn-start`, and returns orientation + unread peers as plain
+text. Stop records `turn-end` from `{ canvas, node, excerpt }`.
 
 ### 3.2 Hooks emitted — the definitive list
 
-The contract says an unimplemented hook must not be guessed at. This harness emits exactly three:
+The contract says an unimplemented hook must not be guessed at. This harness emits exactly three.
+Every POST body includes `{ canvas, node, agent: "october" }` and `launch` when `OCTOBER_BUS_LAUNCH`
+is set (desktop uses launch as the PTY epoch so a restart cannot inherit the prior process's
+lifecycle).
 
-| Route | Emitted from | Payload |
+| Route | Emitted from | Contract |
 |---|---|---|
-| `/hook/session` | `pi.on("session_start")` / `pi.on("session_shutdown")` | `{ "event": "start"\|"end", "sessionId", "sessionFile", "cwd", "reason" }` — reason is pi's (`startup\|reload\|new\|resume\|fork` / `quit\|reload\|new\|resume\|fork`). **Carrying `sessionId` here is contract row 4's "way for October to learn the id."** |
-| `/hook/pre-prompt` | `pi.on("before_agent_start")` | Request `{ "sessionId", "prompt" }`. Response `{ "inject": "<text>" \| null }` — when non-empty, return `{ message: { customType: "october-bus", content: [{ type: "text", text }], display: false } }` from the handler so the text enters the turn as a custom message. This is how October's orientation block and peer messages reach the model. |
-| `/hook/stop` | `pi.on("agent_end")` | `{ "sessionId", "summary": "<last assistant text, truncated 2000 chars>", "willRetry" }` — drives "is this agent idle?". |
+| `/hook/session` | `pi.on("session_start")` / `pi.on("session_shutdown")` | POST `{ canvas, node, launch?, agent: "october", status: "live"\|"offline", session?, file?, cwd? }`. `session` (not `sessionId`) is the learnable id desktop's `handleHookSession` reads. Start = `status: "live"`; shutdown = `status: "offline"` (no session fields). |
+| `/hook/pre-prompt` | `pi.on("before_agent_start")` | **GET** with query `canvas`, `node`, `launch`, `agent=october`. Response is `text/plain`. Non-empty body → return `{ message: { customType: "october-bus", content: [{ type: "text", text }], display: false } }` so orientation + peer inject enter the turn hidden. Empty / 4xx / timeout → no injection, turn continues. Desktop records `turn-start` on this pull (`event` defaults to `pre-prompt`). |
+| `/hook/stop` | `pi.on("agent_end")` | POST `{ canvas, node, launch?, agent: "october", excerpt: { cwd, userPrompt, assistantText } }`. Always posted (even if `assistantText` is empty) so desktop can record `turn-end` and flip idle. User prompt truncated 6k, assistant 12k. |
 
 **Not emitted** (October must not wait on them): `/hook/notify` — pi has no "waiting for user
 input" event distinct from turn end (nearest signal is `/hook/stop`); if Phase 4's ask-mode
@@ -323,20 +335,19 @@ confirm later wants to emit it, add it then and update this table. `/hook/messag
 `/hook/task` — peer messaging and the task board flow through the bus MCP *tools* (Phase 2); the
 bus observes those calls server-side, so harness-side emission would duplicate them.
 
-These payload shapes are the contract october-desktop codes against. If october-desktop already
-expects different field names, fixing the mismatch is october-desktop's job to communicate — this
-table is the source of truth and must be updated with whatever is actually shipped.
+These payload shapes are the contract october-desktop codes against. If they drift, update this
+table in the same commit as the hooks.
 
 ### 3.3 Tests
 
 Extend the stub bus with the hook routes:
 
-- session start/end fire with correct token header, sessionId present.
-- `before_agent_start` → pre-prompt POST → stubbed `inject` text lands in the agent's message
+- session live/offline fire with token header, `canvas`/`node`/`launch`/`agent`, and `session` present on live.
+- `before_agent_start` → pre-prompt **GET** → stubbed plain-text body lands in the agent's message
   array (assert via the harness transcript), and `display: false` keeps it out of rendering.
-- Stop fires after a completed faux-provider turn.
-- Pre-prompt endpoint returning 500 / timing out / returning garbage JSON → turn proceeds
-  normally with no injection and no user-visible error.
+- Stop fires after a completed faux-provider turn with `excerpt.assistantText`.
+- Pre-prompt returning 500 / timing out / empty text → turn proceeds normally with no injection
+  and no user-visible error.
 - Inertness rerun: env unset → zero hook traffic.
 
 ---
@@ -455,7 +466,7 @@ forward.
 - [x] Bogus `--model` path: `node dist/cli.js --model definitely-not-a-model -p "say exactly: ok"` → exit 1, empty stdout, stderr `Model "definitely-not-a-model" not found`. Happy-path `-p "say exactly: ok"` **skipped** (no `OCTOBER_INFERENCE_TOKEN` / no default authenticated provider in this environment).
 - [x] `--model`, `--continue`, `--resume <id>`, `--session-id <id>`, and `--permission-mode ask|accept-edits|bypass` are present in `october --help` and covered by unit/integration tests. `--resume missing-id-xyz` from the built binary exits 1 with `No session found matching`.
 - [x] With `OCTOBER_BUS_*` set (stub bus): tests register `mcp__october-bus__echo` and a `tools/call` round-trips.
-- [x] `/hook/pre-prompt` inject text lands in the provider message array as a hidden `october-bus` custom message (`display: false`).
+- [x] `GET /hook/pre-prompt` pull text lands in the provider message array as a hidden `october-bus` custom message (`display: false`).
 - [x] With `OCTOBER_BUS_*` unset: `--help` is byte-identical to a run with env set; inertness tests show zero bus traffic and zero `mcp__october-bus__*` tools.
 - [ ] With `OCTOBER_INFERENCE_TOKEN` set: October models work end to end including tool calling
       (manual; **skipped** — token unset)
@@ -508,7 +519,7 @@ discard October's commits.
 | Phase 1: October inference provider | **done** — provider + offline tests; live-token E2E skipped (no `OCTOBER_INFERENCE_TOKEN`) |
 | §10: Supabase-session auth (general users) | **done (harness side)** — env-seeded oauth credential + Supabase refresh; inert without `OCTOBER_SUPABASE_*`. Backend/desktop wiring is the checklist in §10 |
 | Phase 2: Bus MCP client (env-driven) | **done** — inert when `OCTOBER_BUS_*` unset; JSON + SSE stub coverage |
-| Phase 3: Lifecycle hooks (session / pre-prompt / stop) | **done** — `/hook/session`, `/hook/pre-prompt`, `/hook/stop`; `willRetry` approximated from last assistant error |
+| Phase 3: Lifecycle hooks (session / pre-prompt / stop) | **done** — desktop contract: `GET /hook/pre-prompt`, `/hook/session` `{status:live\|offline}`, `/hook/stop` `{excerpt}` |
 | Phase 4: Permission-mode flags | **done** — ask/accept-edits/bypass; headless modes that would prompt block |
 | Phase 5: `--resume <id>` | **done** — bare `--resume` still opens the picker |
 | Phase 6: Branding (`october`) | **done** — bin `october`, package `@october-dev/october`, config dir `.october` |
@@ -536,15 +547,15 @@ Verified against `october --help` on 0.84.2 (upstream base 0.84.2, `b1efcf7d7c5d
 - `--session-id <id>` — exact project session id, creates if missing
 - `--permission-mode <value>` — extension flag: `ask`, `accept-edits`, or `bypass`. Default bypass. Not `--approve`.
 
-**Resume contract:** `--continue` opens the most recent session. `--resume <id>` uses the same resolver as `--session`. `--session-id <id>` creates-if-missing. Session id is delivered to October on `/hook/session` as `sessionId`.
+**Resume contract:** `--continue` opens the most recent session. `--resume <id>` uses the same resolver as `--session`. `--session-id <id>` creates-if-missing. Session id is delivered to October on `/hook/session` as `session` (desktop `handleHookSession` field).
 
 **Image attach:** `october -p @screenshot.png "what is this?"` (help example: `october @prompt.md @image.png "What color is the sky?"`).
 
-**Hooks emitted:** `/hook/session` (start/end), `/hook/pre-prompt`, `/hook/stop`. **Not emitted:** `/hook/notify`, `/hook/message-peer`, `/hook/task`.
+**Hooks emitted:** `POST /hook/session` (`status: live` / `offline`), `GET /hook/pre-prompt` (query pull → `text/plain`), `POST /hook/stop` (`excerpt`). **Not emitted:** `/hook/notify`, `/hook/message-peer`, `/hook/task`.
 
 **Model ids:** pass through verbatim, including the `hetzner/` prefix and any further slashes (e.g. `hetzner/Qwen/Qwen3.6-35B-A3B-FP8` — only the first segment is the provider namespace). Supported forms: `--provider october --model hetzner/<id>` and `--model october/hetzner/<id>` (both resolve to provider `october`; multi-slash ids verified in tests). Seed catalog (real ids from the gateway handover): `hetzner/Kimi-K2.7-Code` first (images), then `hetzner/Qwen/Qwen3.6-35B-A3B-FP8` (reasoning); the full catalogue is fetched live from `/v1/models`.
 
-**Contradiction vs plan:** extension `agent_end` does not include `willRetry` (that field is added only on AgentSession listener events after extension emit). `/hook/stop.willRetry` is approximated with `isRetryableAssistantError` on the last assistant message.
+**Idle signal:** `/hook/stop` is always posted on `agent_end` (even with an empty excerpt) so october-desktop can record `turn-end`. Desktop does not read a `willRetry` field.
 
 **Manual skip:** no `OCTOBER_INFERENCE_TOKEN` in this environment; live October inference + tool-calling E2E was not run.
 
