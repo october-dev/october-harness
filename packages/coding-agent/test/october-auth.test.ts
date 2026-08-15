@@ -22,7 +22,7 @@ const SUPABASE_ENV_KEYS = [
 	"OCTOBER_SUPABASE_ACCESS_TOKEN",
 	"OCTOBER_SUPABASE_REFRESH_TOKEN",
 	"OCTOBER_SUPABASE_EXPIRES_AT",
-	"OCTO_CODING_AGENT_DIR",
+	"OCTOBER_CODING_AGENT_DIR",
 ] as const;
 
 function clearSupabaseEnv(): void {
@@ -39,8 +39,8 @@ function setSupabaseEnv(overrides: Partial<Record<(typeof SUPABASE_ENV_KEYS)[num
 	if (overrides.OCTOBER_SUPABASE_EXPIRES_AT !== undefined) {
 		process.env.OCTOBER_SUPABASE_EXPIRES_AT = overrides.OCTOBER_SUPABASE_EXPIRES_AT;
 	}
-	if (overrides.OCTO_CODING_AGENT_DIR !== undefined) {
-		process.env.OCTO_CODING_AGENT_DIR = overrides.OCTO_CODING_AGENT_DIR;
+	if (overrides.OCTOBER_CODING_AGENT_DIR !== undefined) {
+		process.env.OCTOBER_CODING_AGENT_DIR = overrides.OCTOBER_CODING_AGENT_DIR;
 	}
 }
 
@@ -173,7 +173,7 @@ describe("october credential seeding", () => {
 		const authPath = join(dir, "auth.json");
 		const nowSeconds = Math.floor(Date.now() / 1000);
 
-		setSupabaseEnv({ OCTO_CODING_AGENT_DIR: dir, OCTOBER_SUPABASE_EXPIRES_AT: String(nowSeconds + 1800) });
+		setSupabaseEnv({ OCTOBER_CODING_AGENT_DIR: dir, OCTOBER_SUPABASE_EXPIRES_AT: String(nowSeconds + 1800) });
 		await seedOctoberCredential();
 		const first = readStoredCredential(OCTOBER_PROVIDER_ID, authPath);
 		expect(first?.type).toBe("oauth");
@@ -188,7 +188,7 @@ describe("october credential seeding", () => {
 
 		// A fresher app session replaces the stored one.
 		setSupabaseEnv({
-			OCTO_CODING_AGENT_DIR: dir,
+			OCTOBER_CODING_AGENT_DIR: dir,
 			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-fresh",
 			OCTOBER_SUPABASE_EXPIRES_AT: String(nowSeconds + 7200),
 		});
@@ -200,7 +200,7 @@ describe("october credential seeding", () => {
 	it("is a no-op when no October session is present", async () => {
 		const dir = makeTmpDir();
 		clearSupabaseEnv();
-		process.env.OCTO_CODING_AGENT_DIR = dir;
+		process.env.OCTOBER_CODING_AGENT_DIR = dir;
 		await seedOctoberCredential();
 		expect(readStoredCredential(OCTOBER_PROVIDER_ID, join(dir, "auth.json"))).toBeUndefined();
 	});

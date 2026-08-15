@@ -142,7 +142,7 @@ export function buildOctoberOAuth(): OctoberOAuth {
 		async login() {
 			const session = readSupabaseSessionEnv();
 			if (!session) {
-				throw new Error("Sign in to the October app; octo uses your existing October session automatically.");
+				throw new Error("Sign in to the October app; october uses your existing October session automatically.");
 			}
 			return credentialFromEnv(session);
 		},

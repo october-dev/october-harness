@@ -1165,7 +1165,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			quietStartup: false,
 			cwd,
 			contextFiles: [
-				{ path: path.join(home, ".octo", "agent", "AGENTS.md") },
+				{ path: path.join(home, ".october", "agent", "AGENTS.md") },
 				{ path: path.join(cwd, "AGENTS.md") },
 			],
 		});
@@ -1176,7 +1176,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 		const output = renderAll(fakeThis.loadedResourcesContainer).replace(/\\/g, "/");
 		expect(output).toContain("[Context]");
-		expect(output).toContain("~/.octo/agent/AGENTS.md, AGENTS.md");
+		expect(output).toContain("~/.october/agent/AGENTS.md, AGENTS.md");
 		expect(output).not.toContain(`${cwd.replace(/\\/g, "/")}/AGENTS.md`);
 	});
 
@@ -1207,7 +1207,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 			toolOutputExpanded: true,
 			cwd,
 			contextFiles: [
-				{ path: path.join(home, ".octo", "agent", "AGENTS.md") },
+				{ path: path.join(home, ".october", "agent", "AGENTS.md") },
 				{ path: path.join(cwd, "AGENTS.md") },
 			],
 		});
@@ -1218,9 +1218,9 @@ describe("InteractiveMode.showLoadedResources", () => {
 
 		const output = renderAll(fakeThis.loadedResourcesContainer).replace(/\\/g, "/");
 		expect(output).toContain("[Context]");
-		expect(output).toContain("~/.octo/agent/AGENTS.md");
+		expect(output).toContain("~/.october/agent/AGENTS.md");
 		expect(output).toContain("~/Development/pi-mono/AGENTS.md");
-		expect(output).not.toContain("~/.octo/agent/AGENTS.md, AGENTS.md");
+		expect(output).not.toContain("~/.october/agent/AGENTS.md, AGENTS.md");
 	});
 
 	test("does not show verbose listing on quiet startup during reload", () => {

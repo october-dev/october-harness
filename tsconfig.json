@@ -22,6 +22,8 @@
 			"@earendil-works/pi-coding-agent": ["./packages/coding-agent/src/index.ts"],
 			"@earendil-works/pi-coding-agent/hooks": ["./packages/coding-agent/src/core/hooks/index.ts"],
 			"@earendil-works/pi-coding-agent/*": ["./packages/coding-agent/src/*"],
+			"@october-dev/october": ["./packages/coding-agent/src/index.ts"],
+			"@october-dev/october/*": ["./packages/coding-agent/src/*"],
 			"@earendil-works/pi-protocol": ["./packages/protocol/src/index.ts"],
 			"@earendil-works/pi-protocol/*": ["./packages/protocol/src/*"],
 			"@earendil-works/pi-client": ["./packages/client/src/index.ts"],

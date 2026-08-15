@@ -399,17 +399,17 @@ mode.
 
 ## 6. Phase 6 — Branding + binary name
 
-**Decision (frozen once shipped, October probes processes by this name): the binary is `octo`.**
-Short, typable, and distinct from any `october` desktop-app process name. Config dir `.octo`,
-agent dir `~/.octo/agent`, env prefix `OCTO_` (derived automatically).
+**Decision (updated 2026-08-15): the binary is `october`.** Package `@october-dev/october`
+(de-clash from upstream `pi` and from taken bare npm names). Config dir `.october`,
+agent dir `~/.october/agent`, env prefix `OCTOBER_` (derived automatically).
 
 ### 6.1 The one-line rebrand
 
 `packages/coding-agent/package.json`:
 
 ```json
-"bin": { "octo": "dist/cli.js" },
-"piConfig": { "name": "octo", "configDir": ".octo" }
+"bin": { "october": "dist/cli.js" },
+"piConfig": { "name": "october", "configDir": ".october" }
 ```
 
 `APP_NAME`, `APP_TITLE`, `CONFIG_DIR_NAME`, `ENV_*` names, the startup logo line, terminal title,
@@ -422,7 +422,7 @@ Keep the npm package name unchanged for now; publishing is out of scope.
 
 Confined, presentation-only edits — the rebase-friendly kind:
 
-- `src/core/system-prompt.ts:121` — identity line → "…operating inside octo, October's coding
+- `src/core/system-prompt.ts:121` — identity line → "…operating inside october, October's coding
   agent (a fork of pi)." Leave the surrounding pi-docs references intact (the docs they point to
   are real and shipped).
 - `src/modes/interactive/interactive-mode.ts:961` — onboarding line: replace the double "Pi"
@@ -440,8 +440,8 @@ JSONs beside the built-ins later; not required for done.
 
 ### 6.4 Acceptance
 
-`octo --help` shows octo-branded help; TUI shows the October header; sessions land under
-`~/.octo/agent/sessions`; `rg -n '"pi"' packages/coding-agent/package.json` shows no bin named pi.
+`october --help` shows october-branded help; TUI shows the October header; sessions land under
+`~/.october/agent/sessions`; `rg -n '"pi"' packages/coding-agent/package.json` shows no bin named pi.
 Run the full `./test.sh` — the config-dir rename is the likeliest thing to break tests; fix
 forward.
 
@@ -451,9 +451,9 @@ forward.
 
 ### 7.1 Definition of done — execute each line literally, from the built binary
 
-- [x] `octo` launches an interactive TUI — binary starts and stays alive (`timeout` exit 124, no crash). This environment has no `tmux`; a PTY spawn produced no framed TUI dump. Header is registered via `ctx.ui.setHeader` in TUI mode.
+- [x] `october` launches an interactive TUI — binary starts and stays alive (`timeout` exit 124, no crash). This environment has no `tmux`; a PTY spawn produced no framed TUI dump. Header is registered via `ctx.ui.setHeader` in TUI mode.
 - [x] Bogus `--model` path: `node dist/cli.js --model definitely-not-a-model -p "say exactly: ok"` → exit 1, empty stdout, stderr `Model "definitely-not-a-model" not found`. Happy-path `-p "say exactly: ok"` **skipped** (no `OCTOBER_INFERENCE_TOKEN` / no default authenticated provider in this environment).
-- [x] `--model`, `--continue`, `--resume <id>`, `--session-id <id>`, and `--permission-mode ask|accept-edits|bypass` are present in `octo --help` and covered by unit/integration tests. `--resume missing-id-xyz` from the built binary exits 1 with `No session found matching`.
+- [x] `--model`, `--continue`, `--resume <id>`, `--session-id <id>`, and `--permission-mode ask|accept-edits|bypass` are present in `october --help` and covered by unit/integration tests. `--resume missing-id-xyz` from the built binary exits 1 with `No session found matching`.
 - [x] With `OCTOBER_BUS_*` set (stub bus): tests register `mcp__october-bus__echo` and a `tools/call` round-trips.
 - [x] `/hook/pre-prompt` inject text lands in the provider message array as a hidden `october-bus` custom message (`display: false`).
 - [x] With `OCTOBER_BUS_*` unset: `--help` is byte-identical to a run with env set; inertness tests show zero bus traffic and zero `mcp__october-bus__*` tools.
@@ -465,7 +465,7 @@ forward.
 
 ### 7.2 Document the verified interface (in this file, not README.md — upstream owns README)
 
-See **Verified interface (octo 0.84.2)** below. Verified against `octo --help` on 0.84.2-october.1
+See **Verified interface (october 0.84.2)** below. Verified against `october --help` on 0.84.2
 (upstream base 0.84.2 / `b1efcf7d7`).
 
 ---
@@ -511,7 +511,7 @@ discard October's commits.
 | Phase 3: Lifecycle hooks (session / pre-prompt / stop) | **done** — `/hook/session`, `/hook/pre-prompt`, `/hook/stop`; `willRetry` approximated from last assistant error |
 | Phase 4: Permission-mode flags | **done** — ask/accept-edits/bypass; headless modes that would prompt block |
 | Phase 5: `--resume <id>` | **done** — bare `--resume` still opens the picker |
-| Phase 6: Branding (`octo`) | **done** — bin `octo`, config dir `.octo`, October TUI header |
+| Phase 6: Branding (`october`) | **done** — bin `october`, package `@october-dev/october`, config dir `.october` |
 | Phase 7: Verification + interface doc | **done** — live-token E2E skipped; `./test.sh` in this environment failed on missing `git-upload-pack` + a concurrent-session flake (unrelated to October code) |
 | Rebase procedure + recorded base | done — synced to upstream 0.84.2 on 2026-08-14 |
 
@@ -519,11 +519,11 @@ Keep this table honest. October's integration decisions are made from it.
 
 ---
 
-## Verified interface (octo 0.84.2)
+## Verified interface (october 0.84.2)
 
-Verified against `octo --help` on 0.84.2-october.1 (upstream base 0.84.2, `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004`), from `node packages/coding-agent/dist/cli.js --help` on 2026-08-14.
+Verified against `october --help` on 0.84.2 (upstream base 0.84.2, `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004`). Package `@october-dev/october`.
 
-**Binary name:** `octo` (`packages/coding-agent/package.json` `bin.octo`). Config dir `.octo`. Agent dir `~/.octo/agent` (`OCTO_CODING_AGENT_DIR`).
+**Binary name:** `october` (`packages/coding-agent/package.json` `bin.october`). Config dir `.october`. Agent dir `~/.october/agent` (`OCTOBER_CODING_AGENT_DIR`).
 
 **October-relevant flags as printed:**
 
@@ -538,7 +538,7 @@ Verified against `octo --help` on 0.84.2-october.1 (upstream base 0.84.2, `b1efc
 
 **Resume contract:** `--continue` opens the most recent session. `--resume <id>` uses the same resolver as `--session`. `--session-id <id>` creates-if-missing. Session id is delivered to October on `/hook/session` as `sessionId`.
 
-**Image attach:** `octo -p @screenshot.png "what is this?"` (help example: `octo @prompt.md @image.png "What color is the sky?"`).
+**Image attach:** `october -p @screenshot.png "what is this?"` (help example: `october @prompt.md @image.png "What color is the sky?"`).
 
 **Hooks emitted:** `/hook/session` (start/end), `/hook/pre-prompt`, `/hook/stop`. **Not emitted:** `/hook/notify`, `/hook/message-peer`, `/hook/task`.
 

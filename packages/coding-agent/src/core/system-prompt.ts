@@ -118,7 +118,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 
 	const guidelines = guidelinesList.map((g) => `- ${g}`).join("\n");
 
-	let prompt = `You are an expert coding assistant operating inside octo, October's coding agent (a fork of pi). You help users by reading files, executing commands, editing code, and writing new files.
+	let prompt = `You are an expert coding assistant operating inside october, October's coding agent (a fork of pi). You help users by reading files, executing commands, editing code, and writing new files.
 
 Available tools:
 ${toolsList}

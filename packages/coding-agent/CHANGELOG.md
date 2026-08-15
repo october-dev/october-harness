@@ -11,7 +11,7 @@
 - Added October bus lifecycle hooks for session start/end, pre-prompt injection, and stop.
 - Added `--permission-mode ask|accept-edits|bypass` via the October extension (default bypass).
 - Added `--resume <id>` so `--resume` can open a session by id as well as the TUI picker.
-- Rebranded the coding-agent binary to `octo` (config dir `.octo`).
+- Rebranded the coding-agent binary to `october` (package `@october-dev/october`, config dir `.october`).
 
 ### Fixed
 

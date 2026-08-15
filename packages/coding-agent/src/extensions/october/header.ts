@@ -6,13 +6,14 @@ export function registerOctoberHeader(pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") return;
 		ctx.ui.setHeader((_tui, theme) => ({
 			render(): string[] {
-				const name = theme.fg("accent", theme.bold("octo"));
+				const name = theme.fg("accent", theme.bold("october"));
 				const version = theme.fg("muted", `v${VERSION}`);
 				return [
-					theme.fg("accent", "  ___   ___ _____ ___  "),
-					theme.fg("accent", " / _ \\ / __|_   _/ _ \\ "),
-					theme.fg("accent", "| (_) | (__  | || (_) |"),
-					theme.fg("accent", " \\___/ \\___| |_| \\___/ "),
+					theme.fg("accent", "  ___   ____ _____ ___  ____  _____ ____  "),
+					theme.fg("accent", " / _ \\ / ___|_   _/ _ \\| __ )| ____|  _ \\ "),
+					theme.fg("accent", "| | | | |     | || | | |  _ \\|  _| | |_) |"),
+					theme.fg("accent", "| |_| | |___  | || |_| | |_) | |___|  _ < "),
+					theme.fg("accent", " \\___/ \\____| |_| \\___/|____/|_____|_| \\_\\"),
 					"",
 					` ${name}  October coding agent  ${version}`,
 					"",

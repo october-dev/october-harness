@@ -165,7 +165,7 @@ export class OctoberMcpClient {
 			{
 				protocolVersion: MCP_PROTOCOL_VERSION,
 				capabilities: {},
-				clientInfo: { name: "octo", version: VERSION },
+				clientInfo: { name: "october", version: VERSION },
 			},
 			INIT_TIMEOUT_MS,
 			signal,

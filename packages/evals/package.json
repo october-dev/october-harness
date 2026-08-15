@@ -10,7 +10,7 @@
 	},
 	"devDependencies": {
 		"@earendil-works/pi-ai": "^0.84.2",
-		"@earendil-works/pi-coding-agent": "^0.84.2",
+		"@october-dev/october": "^0.84.2",
 		"@types/node": "24.12.4",
 		"shx": "0.4.0",
 		"typescript": "5.9.3",
