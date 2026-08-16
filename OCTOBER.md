@@ -507,6 +507,12 @@ discard October's commits.
 | Merged | Upstream SHA | `@earendil-works/pi-coding-agent` |
 |---|---|---|
 | 2026-08-14 | `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004` | 0.84.2 |
+| 2026-08-17 | `d3ab2af969d64997338253c9151190aa1bc33580` | 0.84.2 |
+
+2026-08-17: caught up 4 upstream commits (xAI → Responses / Grok 4.6 #8124, Copilot login
+retry/sequencing, kimi cached-token tracking #8119) via the merge above — conflict-free; the model
+catalogue (`src/providers/data/`, gitignored) was regenerated so `tsgo` passes. No October-owned
+files touched; all October suites green.
 
 ---
 
