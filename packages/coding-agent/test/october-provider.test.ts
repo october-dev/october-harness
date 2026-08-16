@@ -72,11 +72,11 @@ describe("october inference provider", () => {
 	});
 
 	it("seeds a baseline with Kimi first and the handover metadata", () => {
-		expect(OCTOBER_SEED_MODELS[0]?.id).toBe("hetzner/Kimi-K2.7-Code");
-		expect(createOctoberProviderConfig().models?.[0]?.id).toBe("hetzner/Kimi-K2.7-Code");
+		expect(OCTOBER_SEED_MODELS[0]?.id).toBe("october/Kimi-K2.7-Code");
+		expect(createOctoberProviderConfig().models?.[0]?.id).toBe("october/Kimi-K2.7-Code");
 		expect(OCTOBER_SEED_MODELS.map((model) => model.id)).toEqual([
-			"hetzner/Kimi-K2.7-Code",
-			"hetzner/Qwen/Qwen3.6-35B-A3B-FP8",
+			"october/Kimi-K2.7-Code",
+			"october/Qwen/Qwen3.6-35B-A3B-FP8",
 		]);
 		const kimi = OCTOBER_SEED_MODELS[0];
 		expect(kimi?.input).toEqual(["text", "image"]);
@@ -101,15 +101,15 @@ describe("october inference provider", () => {
 		expect(models.map((model) => model.id)).toEqual(OCTOBER_SEED_MODELS.map((model) => model.id));
 	});
 
-	it("upserts live /models ids verbatim including the hetzner/ prefix", async () => {
+	it("upserts live /models ids verbatim including the october/ prefix", async () => {
 		const seenAuth: string[] = [];
 		const { url } = await listen((request, response) => {
 			seenAuth.push(String(request.headers.authorization ?? ""));
 			if (request.url === "/v1/models" || request.url?.startsWith("/v1/models?")) {
 				json(response, {
 					data: [
-						{ id: "hetzner/Kimi-K2.7-Code", context_window: 262144 },
-						{ id: "hetzner/Some_Custom-Model", context_length: 64000 },
+						{ id: "october/Kimi-K2.7-Code", context_window: 262144 },
+						{ id: "october/Some_Custom-Model", context_length: 64000 },
 					],
 				});
 				return;
@@ -121,12 +121,12 @@ describe("october inference provider", () => {
 
 		const models = await refreshOctoberModels(refreshContext());
 		expect(seenAuth).toEqual(["Bearer test-token"]);
-		expect(models.map((model) => model.id)).toEqual(["hetzner/Kimi-K2.7-Code", "hetzner/Some_Custom-Model"]);
+		expect(models.map((model) => model.id)).toEqual(["october/Kimi-K2.7-Code", "october/Some_Custom-Model"]);
 		expect(models[0]?.name).toContain("recommended");
 		expect(models[0]?.contextWindow).toBe(262144);
 		// An id not in the metadata table is still exposed with conservative defaults.
-		expect(models[1]?.id).toBe("hetzner/Some_Custom-Model");
-		expect(models[1]?.name).toBe("hetzner/Some_Custom-Model");
+		expect(models[1]?.id).toBe("october/Some_Custom-Model");
+		expect(models[1]?.name).toBe("october/Some_Custom-Model");
 		expect(models[1]?.input).toEqual(["text"]);
 		expect(models[1]?.reasoning).toBe(false);
 		expect(models[1]?.maxTokens).toBe(32000);
@@ -143,29 +143,40 @@ describe("october inference provider", () => {
 
 		const withProvider = resolveCliModel({
 			cliProvider: "october",
-			cliModel: "hetzner/Kimi-K2.7-Code",
+			cliModel: "october/Kimi-K2.7-Code",
 			modelRuntime: runtime,
 		});
 		expect(withProvider.error).toBeUndefined();
 		expect(withProvider.model?.provider).toBe("october");
-		expect(withProvider.model?.id).toBe("hetzner/Kimi-K2.7-Code");
+		expect(withProvider.model?.id).toBe("october/Kimi-K2.7-Code");
 
 		const canonical = resolveCliModel({
-			cliModel: "october/hetzner/Kimi-K2.7-Code",
+			cliModel: "october/october/Kimi-K2.7-Code",
 			modelRuntime: runtime,
 		});
 		expect(canonical.error).toBeUndefined();
 		expect(canonical.model?.provider).toBe("october");
-		expect(canonical.model?.id).toBe("hetzner/Kimi-K2.7-Code");
+		expect(canonical.model?.id).toBe("october/Kimi-K2.7-Code");
 
 		// Multi-slash upstream ids must survive: only the first segment is the provider namespace.
 		const multiSlash = resolveCliModel({
-			cliModel: "october/hetzner/Qwen/Qwen3.6-35B-A3B-FP8",
+			cliModel: "october/october/Qwen/Qwen3.6-35B-A3B-FP8",
 			modelRuntime: runtime,
 		});
 		expect(multiSlash.error).toBeUndefined();
 		expect(multiSlash.model?.provider).toBe("october");
-		expect(multiSlash.model?.id).toBe("hetzner/Qwen/Qwen3.6-35B-A3B-FP8");
+		expect(multiSlash.model?.id).toBe("october/Qwen/Qwen3.6-35B-A3B-FP8");
+
+		// Without --provider the leading `october/` is first treated as a provider prefix, then
+		// rematched against the raw catalog id — so a current seed still resolves. Desktop still
+		// pins `--provider october` so a stale/custom fallback cannot emit bare `Kimi-K2.7-Code`.
+		const inferred = resolveCliModel({
+			cliModel: "october/Kimi-K2.7-Code",
+			modelRuntime: runtime,
+		});
+		expect(inferred.model?.provider).toBe("october");
+		expect(inferred.model?.id).toBe("october/Kimi-K2.7-Code");
+		expect(inferred.model?.id).not.toBe("Kimi-K2.7-Code");
 	});
 
 	it("streams a stubbed chat-completions SSE response through streamSimple", async () => {
@@ -184,7 +195,7 @@ describe("october inference provider", () => {
 					id: "chatcmpl-october",
 					object: "chat.completion.chunk",
 					created: 0,
-					model: "hetzner/kimi-k2",
+					model: "october/Kimi-K2.7-Code",
 					choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }],
 				})}\n\n`,
 			);
@@ -193,7 +204,7 @@ describe("october inference provider", () => {
 					id: "chatcmpl-october",
 					object: "chat.completion.chunk",
 					created: 0,
-					model: "hetzner/kimi-k2",
+					model: "october/Kimi-K2.7-Code",
 					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
 					usage: { prompt_tokens: 1, completion_tokens: 1 },
 				})}\n\n`,

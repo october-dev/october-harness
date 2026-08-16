@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed October seed / default model ids from the retired `hetzner/` gateway namespace to `october/` (`october/Kimi-K2.7-Code`, `october/Qwen/Qwen3.6-35B-A3B-FP8`). Pass `--provider october` with these ids so the resolver does not treat the `october/` namespace as a provider prefix.
+
 ### Added
 
 - Added a built-in October inference provider (`--provider october`) that discovers model ids from `/v1/models` without rewriting them.

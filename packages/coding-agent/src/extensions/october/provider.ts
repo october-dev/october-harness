@@ -22,18 +22,18 @@ interface OctoberModelMeta {
 
 /**
  * Per-model metadata the `/models` catalogue does not carry, from the gateway handover. Ids not in
- * this table fall back to DEFAULT_META and are still exposed — a new Hetzner model must not require a
+ * this table fall back to DEFAULT_META and are still exposed — a new October model must not require a
  * harness release to become usable.
  */
 const DEFAULT_META: OctoberModelMeta = { name: "", input: ["text"], reasoning: false };
 const MODEL_META: Record<string, OctoberModelMeta> = {
-	"hetzner/Kimi-K2.7-Code": { name: "Kimi K2.7 Code (recommended)", input: ["text", "image"], reasoning: false },
-	"hetzner/Qwen/Qwen3.6-35B-A3B-FP8": { name: "Qwen3.6 35B A3B", input: ["text"], reasoning: true },
+	"october/Kimi-K2.7-Code": { name: "Kimi K2.7 Code (recommended)", input: ["text", "image"], reasoning: false },
+	"october/Qwen/Qwen3.6-35B-A3B-FP8": { name: "Qwen3.6 35B A3B", input: ["text"], reasoning: true },
 };
 
 /** The first entry is what bare `--provider october` selects. */
-export const OCTOBER_DEFAULT_MODEL_ID = "hetzner/Kimi-K2.7-Code";
-const SEED_ORDER: readonly string[] = [OCTOBER_DEFAULT_MODEL_ID, "hetzner/Qwen/Qwen3.6-35B-A3B-FP8"];
+export const OCTOBER_DEFAULT_MODEL_ID = "october/Kimi-K2.7-Code";
+const SEED_ORDER: readonly string[] = [OCTOBER_DEFAULT_MODEL_ID, "october/Qwen/Qwen3.6-35B-A3B-FP8"];
 
 function isLoopbackUrl(raw: string): boolean {
 	try {
@@ -105,7 +105,7 @@ function contextWindowFromEntry(entry: Record<string, unknown>): number {
 /**
  * Discover models from `${baseUrl}/models`. Ids are taken verbatim — no
  * lowercasing, prefix stripping, or slash rewriting (ids carry their own slashes,
- * e.g. `hetzner/Qwen/Qwen3.6-35B-A3B-FP8`). Skip the network when no token is resolvable.
+ * e.g. `october/Qwen/Qwen3.6-35B-A3B-FP8`). Skip the network when no token is resolvable.
  */
 export async function refreshOctoberModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
 	const token = tokenFromRefreshContext(context);
