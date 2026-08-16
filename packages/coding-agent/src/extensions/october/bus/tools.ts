@@ -75,7 +75,12 @@ export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusE
 		listed = { ok: false, error: error instanceof Error ? error.message : String(error) };
 	}
 	if (listed.ok) {
-		registerTools(pi, client, listed.value);
+		try {
+			registerTools(pi, client, listed.value);
+		} catch (error) {
+			// Mirror the retry path: a throw from registerTool must not discard the provider/hooks.
+			logOctoberDebug(`october-bus mcp register failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 		return;
 	}
 

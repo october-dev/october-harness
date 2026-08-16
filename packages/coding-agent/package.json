@@ -1,6 +1,6 @@
 {
 	"name": "@october-dev/october",
-	"version": "0.84.2-october.1",
+	"version": "0.84.2-october.2",
 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"piConfig": {

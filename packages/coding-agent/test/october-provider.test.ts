@@ -101,6 +101,24 @@ describe("october inference provider", () => {
 		expect(models.map((model) => model.id)).toEqual(OCTOBER_SEED_MODELS.map((model) => model.id));
 	});
 
+	it("falls back to the seed catalogue when live /models returns an empty data list", async () => {
+		let hits = 0;
+		const { url } = await listen((request, response) => {
+			hits += 1;
+			if (request.url === "/v1/models" || request.url?.startsWith("/v1/models?")) {
+				json(response, { data: [] });
+				return;
+			}
+			response.writeHead(404).end();
+		});
+		process.env.OCTOBER_INFERENCE_BASE_URL = `${url}/v1`;
+		process.env.OCTOBER_INFERENCE_TOKEN = "test-token";
+
+		const models = await refreshOctoberModels(refreshContext());
+		expect(hits).toBe(1);
+		expect(models.map((model) => model.id)).toEqual(OCTOBER_SEED_MODELS.map((model) => model.id));
+	});
+
 	it("upserts live /models ids verbatim including the october/ prefix", async () => {
 		const seenAuth: string[] = [];
 		const { url } = await listen((request, response) => {

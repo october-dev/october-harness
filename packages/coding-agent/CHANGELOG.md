@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- Kept the October seed catalogue when live `/v1/models` returns an empty `data` list, so a blank gateway response can no longer wipe `--provider october` down to no models.
+- Wrapped October bus MCP `registerTools()` on the discovery success path so a throw cannot escape and discard the already-registered provider, permissions, or hooks (same fail-closed handling as the retry path).
 - Hardened the October bus MCP client against malformed responses: a `null`/non-object JSON-RPC result now returns a typed error instead of throwing, so a bad `tools/list` reply can no longer discard the October provider/hooks or crash the process on the background retry path. Added a `tools/list` pagination cap and a size clamp on injected pre-prompt text, and restricted the `OCTOBER_INFERENCE_BASE_URL` test override to loopback hosts so a stored credential cannot be redirected off-box.
 - Fixed Z.AI Coding Plan defaults referencing the removed GLM-5.1 model ([#8096](https://github.com/earendil-works/pi/issues/8096)).
 

@@ -153,7 +153,9 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 				ordered.push(model);
 			}
 		}
-		return ordered;
+		// An empty live catalogue ({"data":[]}, or only entries without ids) must not wipe the seed
+		// list — otherwise `--provider october` has no models until the next successful refresh.
+		return ordered.length ? ordered : OCTOBER_SEED_MODELS;
 	} catch {
 		return OCTOBER_SEED_MODELS;
 	}

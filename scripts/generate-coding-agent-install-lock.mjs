@@ -259,7 +259,7 @@ function createRootLockEntry(installerPackageJson) {
 	return sortedPackageEntry(entry);
 }
 
-function validateGeneratedFiles(installerPackageJson, installLock, internalNames) {
+function validateGeneratedFiles(installerPackageJson, installLock, internalNames, internalWorkspaces) {
 	const errors = [];
 	const rootEntry = installLock.packages[""];
 	const includedPackageNames = new Set();
@@ -294,8 +294,13 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 		if (entry.dev || entry.devOptional || entry.extraneous) {
 			errors.push(`${lockPath || "root"} contains dev/extraneous metadata`);
 		}
-		if (packageName?.startsWith(internalPackagePrefix) && entry.version !== installerPackageJson.version) {
-			errors.push(`${lockPath} internal package version ${entry.version} does not match ${installerPackageJson.version}`);
+		if (packageName?.startsWith(internalPackagePrefix)) {
+			// Forked coding-agent versions as 0.84.2-october.N; the other @earendil-works/pi-*
+			// workspaces stay on the upstream 0.84.2 line. Compare each to its own package.json.
+			const expected = internalWorkspaces.get(packageName)?.packageJson.version ?? installerPackageJson.version;
+			if (entry.version !== expected) {
+				errors.push(`${lockPath} internal package version ${entry.version} does not match ${expected}`);
+			}
 		}
 		if (entry.hasInstallScript) {
 			if (!packageName || !entry.version) {
@@ -399,7 +404,7 @@ function generateInstallLock() {
 		packages: sortedObject(installLockPackages),
 	};
 
-	validateGeneratedFiles(installerPackageJson, installLock, internalNames);
+	validateGeneratedFiles(installerPackageJson, installLock, internalNames, internalWorkspaces);
 	return { installerPackageJson, installLock };
 }
 

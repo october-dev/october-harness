@@ -1,12 +1,12 @@
 {
 	"name": "@october-dev/october",
-	"version": "0.84.2",
+	"version": "0.84.2-october.2",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "@october-dev/october",
-			"version": "0.84.2",
+			"version": "0.84.2-october.2",
 			"license": "MIT",
 			"dependencies": {
 				"@earendil-works/pi-agent-core": "^0.84.2",
