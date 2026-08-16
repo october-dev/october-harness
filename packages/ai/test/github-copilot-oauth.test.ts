@@ -239,7 +239,7 @@ describe("GitHub Copilot OAuth device flow", () => {
 		await loginPromise;
 	});
 
-	it("limits concurrent model policy updates during login", async () => {
+	it("enables model policies sequentially during login", async () => {
 		vi.useFakeTimers();
 
 		let activePolicyRequests = 0;
@@ -297,8 +297,67 @@ describe("GitHub Copilot OAuth device flow", () => {
 		await vi.advanceTimersByTimeAsync(1000);
 		await loginPromise;
 
-		expect(policyRequestCount).toBeGreaterThan(4);
-		expect(maxActivePolicyRequests).toBe(4);
+		expect(policyRequestCount).toBeGreaterThan(1);
+		expect(maxActivePolicyRequests).toBe(1);
+	});
+
+	it("retries GET /models once after a 429, honoring Retry-After", async () => {
+		vi.useFakeTimers();
+
+		let modelsRequestCount = 0;
+		const fetchMock = vi.fn(async (input: unknown): Promise<Response> => {
+			const url = getUrl(input);
+
+			if (url.endsWith("/login/device/code")) {
+				return jsonResponse({
+					device_code: "device-code",
+					user_code: "ABCD-EFGH",
+					verification_uri: "https://github.com/login/device",
+					interval: 1,
+					expires_in: 900,
+				});
+			}
+
+			if (url.endsWith("/login/oauth/access_token")) {
+				return jsonResponse({ access_token: "ghu_refresh_token" });
+			}
+
+			if (url.includes("/copilot_internal/v2/token")) {
+				return jsonResponse({
+					token: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com;",
+					expires_at: 9999999999,
+				});
+			}
+
+			if (url.endsWith("/models")) {
+				modelsRequestCount += 1;
+				if (modelsRequestCount === 1) {
+					return new Response("too many requests", { status: 429, headers: { "retry-after": "1" } });
+				}
+				return jsonResponse({ data: [{ id: "gpt-5.4", model_picker_enabled: true }] });
+			}
+
+			if (url.includes("/models/") && url.endsWith("/policy")) {
+				return new Response("", { status: 200 });
+			}
+
+			throw new Error(`Unexpected fetch URL: ${url}`);
+		});
+
+		vi.stubGlobal("fetch", fetchMock);
+
+		const loginPromise = loginGitHubCopilotForTest({
+			onDeviceCode: () => {},
+			onPrompt: async () => "",
+		});
+
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(1000); // device poll
+		await vi.advanceTimersByTimeAsync(1000); // Retry-After wait
+		const credentials = await loginPromise;
+
+		expect(modelsRequestCount).toBe(2);
+		expect(credentials.availableModelIds).toEqual(["gpt-5.4"]);
 	});
 
 	it("rejects a non-http(s) verification_uri before it reaches onDeviceCode", async () => {
