@@ -124,6 +124,8 @@ let desktopCredential: OAuthCredentials | undefined;
 let desktopUserId: string | undefined;
 let desktopRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let desktopRefreshInFlight: Promise<void> | undefined;
+/** Process-global: once Desktop has rotated the session via the bus, the spawn-time refresh token is dead. */
+let busRefreshEverSucceeded = false;
 
 export function getDesktopOctoberCredential(): OAuthCredentials | undefined {
 	return desktopCredential;
@@ -147,6 +149,7 @@ export function resetDesktopOctoberState(): void {
 	desktopRefreshInFlight = undefined;
 	desktopCredential = undefined;
 	desktopUserId = undefined;
+	busRefreshEverSucceeded = false;
 }
 
 function applyDesktopCredential(next: OAuthCredentials, userId?: string): OAuthCredentials {
@@ -196,6 +199,7 @@ async function refreshViaBus(credentials: OAuthCredentials, signal: AbortSignal)
 	if (isOctoberDesktopMode()) {
 		applyDesktopCredential(next, desktopUserId);
 	}
+	busRefreshEverSucceeded = true;
 	return next;
 }
 
@@ -246,13 +250,23 @@ async function refreshOctoberSession(credentials: OAuthCredentials, signal: Abor
 		try {
 			return await refreshViaBus(credentials, signal);
 		} catch (error) {
+			if (busRefreshEverSucceeded) {
+				// Desktop has rotated the session; our spawn-time refresh token is dead.
+				// A Supabase fallback here trips reuse-detection → sign-out everywhere.
+				// Keep the current token; the next turn/timer retries the bus.
+				throw error;
+			}
 			// Part C may not be live yet: Desktop already injects the bus, but
 			// /auth/october-token can 404 or refuse. Fall back to Supabase.
 			logOctoberDebug(
-				`october bus token refresh failed, falling back to Supabase: ${error instanceof Error ? error.message : String(error)}`,
+				`october bus token refresh failed, falling back to Supabase (bus never succeeded yet): ${error instanceof Error ? error.message : String(error)}`,
 			);
 			return refreshViaSupabase(credentials, signal);
 		}
+	}
+	if (busRefreshEverSucceeded) {
+		// Bus env vanished after a successful rotation — same dead-token hazard as a 503.
+		throw new Error("October bus token refresh is not available.");
 	}
 	return refreshViaSupabase(credentials, signal);
 }

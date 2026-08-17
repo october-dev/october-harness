@@ -360,6 +360,177 @@ describe("october credential seeding", () => {
 		expect(refreshed.refresh).toBe("refresh-sb");
 	});
 
+	it("does not fall back to Supabase after the bus has succeeded once", async () => {
+		const supabaseHits: string[] = [];
+		const supabase = await listen((request, response) => {
+			supabaseHits.push(request.url ?? "");
+			response.writeHead(500).end("supabase fallback must not run after a successful bus refresh");
+		});
+		let busStatus = 200;
+		const bus = await listen((_request, response) => {
+			if (busStatus !== 200) {
+				response.writeHead(busStatus).end();
+				return;
+			}
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(JSON.stringify({ access_token: "access-bus", expires_at: Math.floor(Date.now() / 1000) + 3600 }));
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		setSupabaseEnv({
+			OCTOBER_SUPABASE_URL: supabase.url,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-stale",
+			OCTOBER_SUPABASE_REFRESH_TOKEN: "refresh-dead",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 60),
+		});
+		await seedOctoberCredential();
+
+		const oauth = buildOctoberOAuth();
+		const first = await oauth.refreshToken(
+			{
+				access: "access-stale",
+				refresh: "refresh-dead",
+				expires: 0,
+				supabaseUrl: supabase.url,
+				supabaseAnonKey: "anon",
+			},
+			AbortSignal.timeout(5000),
+		);
+		expect(first.access).toBe("access-bus");
+		expect(getDesktopOctoberCredential()?.access).toBe("access-bus");
+		expect(supabaseHits).toEqual([]);
+
+		busStatus = 503;
+		await expect(
+			oauth.refreshToken(
+				{
+					...first,
+					refresh: "refresh-dead",
+					supabaseUrl: supabase.url,
+					supabaseAnonKey: "anon",
+				},
+				AbortSignal.timeout(5000),
+			),
+		).rejects.toThrow(/HTTP 503/);
+		expect(supabaseHits).toEqual([]);
+		expect(getDesktopOctoberCredential()?.access).toBe("access-bus");
+		expect(process.env.OCTOBER_INFERENCE_TOKEN).toBe("access-bus");
+	});
+
+	it("still does not fall back to Supabase after a mid-process user switch", async () => {
+		const supabaseHits: string[] = [];
+		const supabase = await listen((request, response) => {
+			supabaseHits.push(request.url ?? "");
+			response.writeHead(500).end("supabase fallback must not run after a successful bus refresh");
+		});
+		let busStatus = 200;
+		const bus = await listen((_request, response) => {
+			if (busStatus !== 200) {
+				response.writeHead(busStatus).end();
+				return;
+			}
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(
+				JSON.stringify({ access_token: "access-bus-a", expires_at: Math.floor(Date.now() / 1000) + 3600 }),
+			);
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		setSupabaseEnv({
+			OCTOBER_SUPABASE_URL: supabase.url,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-A",
+			OCTOBER_SUPABASE_REFRESH_TOKEN: "refresh-A",
+			OCTOBER_SUPABASE_USER_ID: "user-a",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 60),
+		});
+		await seedOctoberCredential();
+
+		const oauth = buildOctoberOAuth();
+		const first = await oauth.refreshToken(
+			{
+				access: "access-A",
+				refresh: "refresh-A",
+				expires: 0,
+				supabaseUrl: supabase.url,
+				supabaseAnonKey: "anon",
+			},
+			AbortSignal.timeout(5000),
+		);
+		expect(first.access).toBe("access-bus-a");
+
+		setSupabaseEnv({
+			OCTOBER_SUPABASE_URL: supabase.url,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-B",
+			OCTOBER_SUPABASE_REFRESH_TOKEN: "refresh-B",
+			OCTOBER_SUPABASE_USER_ID: "user-b",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 60),
+		});
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		await seedOctoberCredential();
+		expect(getDesktopOctoberCredential()?.access).toBe("access-B");
+
+		busStatus = 503;
+		await expect(
+			oauth.refreshToken(
+				{
+					access: "access-B",
+					refresh: "refresh-B",
+					expires: 0,
+					supabaseUrl: supabase.url,
+					supabaseAnonKey: "anon",
+				},
+				AbortSignal.timeout(5000),
+			),
+		).rejects.toThrow(/HTTP 503/);
+		expect(supabaseHits).toEqual([]);
+		expect(getDesktopOctoberCredential()?.access).toBe("access-B");
+	});
+
+	it("does not fall back to Supabase if the bus env disappears after a success", async () => {
+		const supabaseHits: string[] = [];
+		const supabase = await listen((request, response) => {
+			supabaseHits.push(request.url ?? "");
+			response.writeHead(500).end("supabase fallback must not run after a successful bus refresh");
+		});
+		const bus = await listen((_request, response) => {
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(JSON.stringify({ access_token: "access-bus", expires_at: Math.floor(Date.now() / 1000) + 3600 }));
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		const oauth = buildOctoberOAuth();
+		const first = await oauth.refreshToken(
+			{
+				access: "old",
+				refresh: "refresh-dead",
+				expires: 0,
+				supabaseUrl: supabase.url,
+				supabaseAnonKey: "anon",
+			},
+			AbortSignal.timeout(5000),
+		);
+		expect(first.access).toBe("access-bus");
+
+		delete process.env.OCTOBER_BUS_PORT;
+		delete process.env.OCTOBER_BUS_TOKEN;
+		await expect(
+			oauth.refreshToken(
+				{
+					...first,
+					refresh: "refresh-dead",
+					supabaseUrl: supabase.url,
+					supabaseAnonKey: "anon",
+				},
+				AbortSignal.timeout(5000),
+			),
+		).rejects.toThrow(/bus token refresh is not available/);
+		expect(supabaseHits).toEqual([]);
+	});
+
 	it("re-reads $OCTOBER_INFERENCE_TOKEN from the environment on each resolve", async () => {
 		process.env.OCTOBER_BUS_PORT = "9";
 		setSupabaseEnv({ OCTOBER_SUPABASE_ACCESS_TOKEN: "access-A" });
