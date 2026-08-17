@@ -90,7 +90,7 @@ describe("remote catalog provider", () => {
 		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["dynamic"]);
 		expect(fetchSpy).toHaveBeenCalledTimes(2);
 		expect(fetchSpy.mock.calls[0]?.[1]?.headers).toMatchObject({
-			"User-Agent": expect.stringContaining(`pi/${VERSION}`),
+			"User-Agent": expect.stringContaining(`october/${VERSION}`),
 		});
 	});
 
@@ -229,7 +229,31 @@ describe("remote catalog provider", () => {
 		expect((await store.read(provider.id))?.models.map((entry) => entry.id)).toEqual(["newer"]);
 	});
 
-	it("treats unimplemented pi.dev catalog routes as an unavailable overlay", async () => {
+	it("does not phone home when no catalog base URL is configured", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		const provider = withRemoteCatalog(
+			createProvider({
+				id: "test-provider",
+				auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+				models: [model("static")],
+				api: {
+					stream: () => {
+						throw new Error("not used");
+					},
+					streamSimple: () => {
+						throw new Error("not used");
+					},
+				},
+			}),
+		);
+		const store = new InMemoryModelsStore();
+
+		await expect(refreshProvider(provider, store)).resolves.toBeUndefined();
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static"]);
+	});
+
+	it("treats unimplemented catalog routes as an unavailable overlay", async () => {
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not implemented", { status: 501 }));
 		const provider = testProvider();
 		const store = new InMemoryModelsStore();

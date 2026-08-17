@@ -3,8 +3,17 @@ import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 
-const DEFAULT_CATALOG_BASE_URL = "https://pi.dev";
 export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
+/** Remote built-in-provider overlay. Unset means no phone-home; October models come from the gateway /v1/models. */
+export function resolveRemoteCatalogBaseUrl(
+	explicit?: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	const raw = explicit ?? env.OCTOBER_CATALOG_BASE_URL ?? env.PI_CATALOG_BASE_URL;
+	const trimmed = raw?.trim();
+	return trimmed || undefined;
+}
 
 function mergeModels(baseline: readonly Model<Api>[], dynamic: readonly Model<Api>[]): Model<Api>[] {
 	const merged = [...baseline];
@@ -41,12 +50,8 @@ function remoteModels(
 	return entry.models;
 }
 
-/** Add a persisted pi.dev catalog overlay to a static built-in provider. */
-export function withRemoteCatalog(
-	provider: Provider,
-	catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL,
-	localGeneratedAt?: number,
-): Provider {
+/** Add a persisted catalog overlay to a static built-in provider. No network when catalogBaseUrl is unset. */
+export function withRemoteCatalog(provider: Provider, catalogBaseUrl?: string, localGeneratedAt?: number): Provider {
 	let dynamicModels: readonly Model<Api>[] = [];
 
 	return {
@@ -64,7 +69,7 @@ export function withRemoteCatalog(
 			) {
 				return;
 			}
-			if (!context.allowNetwork || context.signal.aborted) return;
+			if (!catalogBaseUrl || !context.allowNetwork || context.signal.aborted) return;
 			if (
 				!context.force &&
 				stored?.checkedAt !== undefined &&

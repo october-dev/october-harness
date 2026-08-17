@@ -95,7 +95,12 @@ import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
-import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+import {
+	buildInstallTelemetryRequest,
+	INSTALL_TELEMETRY_CONSENT_LINE,
+	isInstallTelemetryEnabled,
+	shouldOfferInstallTelemetryConsent,
+} from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
@@ -105,7 +110,6 @@ import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipb
 import { parseGitUrl } from "../../utils/git.ts";
 import { openBrowser } from "../../utils/open-browser.ts";
 import { getCwdRelativePath } from "../../utils/paths.ts";
-import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
 import {
@@ -442,6 +446,7 @@ export class InteractiveMode {
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
 	private changelogMarkdown: string | undefined = undefined;
+	private pendingTelemetryConsent = false;
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
 
@@ -1093,6 +1098,10 @@ export class InteractiveMode {
 			this.showWarning(modelFallbackMessage);
 		}
 
+		if (this.pendingTelemetryConsent) {
+			this.showStatus(INSTALL_TELEMETRY_CONSENT_LINE);
+		}
+
 		void this.maybeWarnAboutAnthropicSubscriptionAuth();
 
 		// Process initial messages
@@ -1208,9 +1217,18 @@ export class InteractiveMode {
 		const entries = parseChangelog(changelogPath);
 
 		if (!lastVersion) {
-			// Fresh install - record the version, send telemetry, don't show changelog
+			// Fresh install - record the version, don't show changelog
 			this.settingsManager.setLastChangelogVersion(VERSION);
-			this.reportInstallTelemetry(VERSION);
+			if (isInstallTelemetryEnabled(this.settingsManager)) {
+				this.reportInstallTelemetry(VERSION);
+			} else if (
+				shouldOfferInstallTelemetryConsent({
+					lastChangelogVersion: lastVersion,
+					telemetryEnabled: false,
+				})
+			) {
+				this.pendingTelemetryConsent = true;
+			}
 			return undefined;
 		}
 
@@ -1233,10 +1251,9 @@ export class InteractiveMode {
 			return;
 		}
 
-		void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
-			headers: {
-				"User-Agent": getPiUserAgent(version),
-			},
+		const request = buildInstallTelemetryRequest(version);
+		void fetch(request.url, {
+			headers: request.headers,
 			signal: AbortSignal.timeout(5000),
 		})
 			.then(() => undefined)

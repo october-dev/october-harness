@@ -48,7 +48,7 @@ describe("version checks", () => {
 		await expect(checkForNewPiVersion("1.2.2")).resolves.toEqual({ version: "1.2.3" });
 	});
 
-	it("uses the october.dev version check api with a pi user agent", async () => {
+	it("uses the october.dev version check api with an October user agent", async () => {
 		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -58,7 +58,7 @@ describe("version checks", () => {
 			LATEST_VERSION_URL,
 			expect.objectContaining({
 				headers: expect.objectContaining({
-					"User-Agent": expect.stringMatching(/^pi\/1\.2\.3 /),
+					"User-Agent": expect.stringMatching(/^october\/1\.2\.3 /),
 					accept: "application/json",
 				}),
 			}),
