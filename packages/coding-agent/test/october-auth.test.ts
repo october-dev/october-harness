@@ -8,8 +8,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readStoredCredential } from "../src/core/auth-storage.ts";
 import {
 	buildOctoberOAuth,
+	getDesktopOctoberCredential,
 	OCTOBER_PROVIDER_ID,
 	octoberSessionAvailable,
+	resetDesktopOctoberState,
 	seedOctoberCredential,
 } from "../src/extensions/october/auth.ts";
 
@@ -24,6 +26,10 @@ const SUPABASE_ENV_KEYS = [
 	"OCTOBER_SUPABASE_EXPIRES_AT",
 	"OCTOBER_CODING_AGENT_DIR",
 	"OCTOBER_AUTH_BASE_URL",
+	"OCTOBER_BUS_PORT",
+	"OCTOBER_BUS_TOKEN",
+	"OCTOBER_SUPABASE_USER_ID",
+	"OCTOBER_INFERENCE_TOKEN",
 ] as const;
 
 function clearSupabaseEnv(): void {
@@ -78,6 +84,7 @@ function makeTmpDir(): string {
 }
 
 afterEach(async () => {
+	resetDesktopOctoberState();
 	clearSupabaseEnv();
 	await Promise.all(
 		servers.splice(0).map(
@@ -205,5 +212,77 @@ describe("october credential seeding", () => {
 		process.env.OCTOBER_CODING_AGENT_DIR = dir;
 		await seedOctoberCredential();
 		expect(readStoredCredential(OCTOBER_PROVIDER_ID, join(dir, "auth.json"))).toBeUndefined();
+	});
+
+	it("holds the Desktop session in memory and never writes auth.json", async () => {
+		const dir = makeTmpDir();
+		setSupabaseEnv({
+			OCTOBER_CODING_AGENT_DIR: dir,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-A",
+			OCTOBER_SUPABASE_USER_ID: "user-a",
+		});
+		process.env.OCTOBER_BUS_PORT = "9";
+		await seedOctoberCredential();
+		expect(readStoredCredential(OCTOBER_PROVIDER_ID, join(dir, "auth.json"))).toBeUndefined();
+		expect(getDesktopOctoberCredential()?.access).toBe("access-A");
+		expect(buildOctoberOAuth().getApiKey({ access: "stale", refresh: "", expires: 0 })).toBe("access-A");
+	});
+
+	it("replaces the in-memory token when Desktop injects user B after user A", async () => {
+		const dir = makeTmpDir();
+		setSupabaseEnv({
+			OCTOBER_CODING_AGENT_DIR: dir,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-A",
+			OCTOBER_SUPABASE_USER_ID: "user-a",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 7200),
+		});
+		process.env.OCTOBER_BUS_PORT = "9";
+		await seedOctoberCredential();
+		setSupabaseEnv({
+			OCTOBER_CODING_AGENT_DIR: dir,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-B",
+			OCTOBER_SUPABASE_USER_ID: "user-b",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 60),
+		});
+		process.env.OCTOBER_BUS_PORT = "9";
+		await seedOctoberCredential();
+		expect(getDesktopOctoberCredential()?.access).toBe("access-B");
+		expect(buildOctoberOAuth().getApiKey({ access: "access-A", refresh: "", expires: 0 })).toBe("access-B");
+		expect(readStoredCredential(OCTOBER_PROVIDER_ID, join(dir, "auth.json"))).toBeUndefined();
+	});
+
+	it("clears inference when Desktop removes the session env", async () => {
+		setSupabaseEnv({ OCTOBER_SUPABASE_ACCESS_TOKEN: "access-A", OCTOBER_SUPABASE_USER_ID: "user-a" });
+		process.env.OCTOBER_BUS_PORT = "9";
+		await seedOctoberCredential();
+		clearSupabaseEnv();
+		process.env.OCTOBER_BUS_PORT = "9";
+		await seedOctoberCredential();
+		expect(getDesktopOctoberCredential()).toBeUndefined();
+		expect(buildOctoberOAuth().getApiKey({ access: "access-A", refresh: "", expires: 0 })).toBe("");
+	});
+
+	it("refreshes via the Desktop bus when present and skips Supabase", async () => {
+		const supabaseHits: string[] = [];
+		const supabase = await listen((request, response) => {
+			supabaseHits.push(request.url ?? "");
+			response.writeHead(500).end();
+		});
+		const bus = await listen((request, response) => {
+			expect(request.url).toBe("/auth/october-token");
+			expect(request.headers.authorization).toBe("Bearer bus-secret");
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(JSON.stringify({ access_token: "access-bus", expires_at: Math.floor(Date.now() / 1000) + 3600 }));
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		const oauth = buildOctoberOAuth();
+		const refreshed = await oauth.refreshToken(
+			{ access: "old", refresh: "refresh-1", expires: 0, supabaseUrl: supabase.url, supabaseAnonKey: "anon" },
+			AbortSignal.timeout(5000),
+		);
+		expect(refreshed.access).toBe("access-bus");
+		expect(supabaseHits).toEqual([]);
 	});
 });

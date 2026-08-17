@@ -47,19 +47,37 @@ function readSupabaseSessionEnv(env: NodeJS.ProcessEnv = process.env): SupabaseS
 	};
 }
 
-/** Best-effort `exp` claim (seconds) from a JWT, without verifying the signature. */
-function jwtExpiryMs(token: string): number | undefined {
+function decodeJwtPayload(token: string): { exp?: unknown; sub?: unknown } | undefined {
 	const segments = token.split(".");
 	if (segments.length < 2) return undefined;
 	try {
-		const payload = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8")) as { exp?: unknown };
-		if (typeof payload.exp === "number" && Number.isFinite(payload.exp)) {
-			return payload.exp * 1000;
-		}
+		return JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8")) as { exp?: unknown; sub?: unknown };
 	} catch {
-		// Not a decodable JWT; fall through.
+		return undefined;
+	}
+}
+
+/** Best-effort `exp` claim (seconds) from a JWT, without verifying the signature. */
+function jwtExpiryMs(token: string): number | undefined {
+	const payload = decodeJwtPayload(token);
+	if (typeof payload?.exp === "number" && Number.isFinite(payload.exp)) {
+		return payload.exp * 1000;
 	}
 	return undefined;
+}
+
+function jwtSub(token: string): string | undefined {
+	const payload = decodeJwtPayload(token);
+	return typeof payload?.sub === "string" && payload.sub.length > 0 ? payload.sub : undefined;
+}
+
+function readInjectedUserId(env: NodeJS.ProcessEnv = process.env, accessToken?: string): string | undefined {
+	return nonEmpty(env.OCTOBER_SUPABASE_USER_ID) ?? (accessToken ? jwtSub(accessToken) : undefined);
+}
+
+/** Desktop mode: the October app spawned this process (bus is present). */
+export function isOctoberDesktopMode(env: NodeJS.ProcessEnv = process.env): boolean {
+	return nonEmpty(env.OCTOBER_BUS_PORT) !== undefined;
 }
 
 /** Resolve an absolute expiry (epoch ms, with safety head-room) from the fields a session can carry. */
@@ -98,7 +116,73 @@ interface SupabaseTokenResponse {
 	expires_at?: number;
 }
 
+let desktopCredential: OAuthCredentials | undefined;
+let desktopUserId: string | undefined;
+
+export function getDesktopOctoberCredential(): OAuthCredentials | undefined {
+	return desktopCredential;
+}
+
+/** Test helper: drop the in-memory Desktop session. */
+export function resetDesktopOctoberState(): void {
+	desktopCredential = undefined;
+	desktopUserId = undefined;
+}
+
+function applyDesktopCredential(next: OAuthCredentials, userId?: string): OAuthCredentials {
+	desktopCredential = next;
+	if (userId) desktopUserId = userId;
+	process.env.OCTOBER_INFERENCE_TOKEN = next.access;
+	return next;
+}
+
+function clearDesktopCredential(): void {
+	desktopCredential = undefined;
+	desktopUserId = undefined;
+	delete process.env.OCTOBER_INFERENCE_TOKEN;
+}
+
+async function refreshViaBus(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
+	const port = nonEmpty(process.env.OCTOBER_BUS_PORT);
+	const busToken = nonEmpty(process.env.OCTOBER_BUS_TOKEN);
+	if (!port || !busToken) {
+		throw new Error("October bus token refresh is not available.");
+	}
+	const response = await fetch(`http://127.0.0.1:${port}/auth/october-token`, {
+		headers: { Accept: "application/json", Authorization: `Bearer ${busToken}` },
+		signal,
+	});
+	if (!response.ok) {
+		throw new Error(`October bus token refresh failed: HTTP ${response.status}`);
+	}
+	const body = (await response.json()) as { access_token?: unknown; expires_at?: unknown };
+	if (typeof body.access_token !== "string" || !body.access_token) {
+		throw new Error("October bus token refresh returned no access_token.");
+	}
+	const expiresAt =
+		typeof body.expires_at === "number"
+			? body.expires_at
+			: typeof body.expires_at === "string"
+				? Number(body.expires_at)
+				: undefined;
+	const next: OAuthCredentials = {
+		...credentials,
+		access: body.access_token,
+		expires: resolveExpiryMs({
+			expiresAtSeconds: expiresAt !== undefined && Number.isFinite(expiresAt) ? expiresAt : undefined,
+			accessToken: body.access_token,
+		}),
+	};
+	if (isOctoberDesktopMode()) {
+		applyDesktopCredential(next, desktopUserId);
+	}
+	return next;
+}
+
 async function refreshOctoberSession(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
+	if (nonEmpty(process.env.OCTOBER_BUS_PORT) && nonEmpty(process.env.OCTOBER_BUS_TOKEN)) {
+		return refreshViaBus(credentials, signal);
+	}
 	const url = String(credentials.supabaseUrl ?? readSupabaseSessionEnv()?.url ?? "").replace(/\/$/, "");
 	const anonKey = String(credentials.supabaseAnonKey ?? readSupabaseSessionEnv()?.anonKey ?? "");
 	const refresh = String(credentials.refresh ?? "");
@@ -154,7 +238,17 @@ export function buildOctoberOAuth(): OctoberOAuth {
 			};
 		},
 		refreshToken: refreshOctoberSession,
-		getApiKey: (credentials) => String(credentials.access ?? ""),
+		getApiKey: (credentials) => {
+			if (isOctoberDesktopMode()) {
+				const session = readSupabaseSessionEnv();
+				if (!session) {
+					clearDesktopCredential();
+					return "";
+				}
+				if (desktopCredential?.access) return desktopCredential.access;
+			}
+			return String(credentials.access ?? "");
+		},
 	};
 }
 
@@ -182,22 +276,42 @@ export async function logoutOctober(authPath = getAuthPath(), signal?: AbortSign
 
 export async function seedOctoberCredential(): Promise<void> {
 	const session = readSupabaseSessionEnv();
+	if (isOctoberDesktopMode()) {
+		if (!session) {
+			clearDesktopCredential();
+			return;
+		}
+		const next = credentialFromEnv(session);
+		const userId = readInjectedUserId(process.env, session.accessToken);
+		if (desktopUserId && userId && desktopUserId !== userId) {
+			applyDesktopCredential(next, userId);
+			return;
+		}
+		applyDesktopCredential(next, userId);
+		return;
+	}
+
 	if (!session) return;
+	const envCredential = credentialFromEnv(session);
+	const userId = readInjectedUserId(process.env, session.accessToken);
+	const store = AuthStorage.create(getAuthPath());
 	try {
-		const envCredential = credentialFromEnv(session);
-		const store = AuthStorage.create(getAuthPath());
 		await store.modify(OCTOBER_PROVIDER_ID, async (current) => {
-			if (
-				current?.type === "oauth" &&
-				typeof current.expires === "number" &&
-				current.expires >= envCredential.expires
-			) {
-				// A stored session is at least as fresh as the injected one; leave it for the refresh loop.
-				return current;
+			if (current?.type === "oauth") {
+				const storedUserId = typeof current.supabaseUserId === "string" ? current.supabaseUserId : undefined;
+				if (userId && storedUserId && userId !== storedUserId) {
+					return { type: "oauth", ...envCredential, supabaseUserId: userId };
+				}
+				if (typeof current.expires === "number" && current.expires >= envCredential.expires) {
+					return current;
+				}
 			}
-			return { type: "oauth", ...envCredential };
+			return { type: "oauth", ...envCredential, ...(userId ? { supabaseUserId: userId } : {}) };
 		});
 	} catch (error) {
-		logOctoberDebug(`october auth seed failed: ${error instanceof Error ? error.message : String(error)}`);
+		const message = error instanceof Error ? error.message : String(error);
+		logOctoberDebug(`october auth seed failed: ${message}`);
+		console.error(`October credential store write failed: ${message}`);
+		throw error;
 	}
 }
