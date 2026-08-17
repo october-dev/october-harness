@@ -320,7 +320,13 @@ export function registerOctoberDesktopAuth(pi: ExtensionAPI): void {
 		});
 	});
 	pi.on("before_agent_start", async () => {
-		await ensureDesktopOctoberAccess();
+		try {
+			await ensureDesktopOctoberAccess();
+		} catch (error) {
+			logOctoberDebug(
+				`desktop october refresh on before_agent_start failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	});
 	pi.on("session_shutdown", () => {
 		stopDesktopOctoberRefresh();

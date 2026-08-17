@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.84.2-october.3] - 2026-08-17
+
 ### Changed
 
 - Published source maps without `sourcesContent` and dropped `examples/` plus `containerization.md` from the npm tarball (docs stay, the system prompt still points at them).
