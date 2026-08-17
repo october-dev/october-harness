@@ -139,4 +139,36 @@ describe("runPrintMode", () => {
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
+
+	it("returns 0 in json mode on a successful turn", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "ok", stopReason: "stop" }));
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "json",
+			initialMessage: "say ok",
+		});
+
+		expect(exitCode).toBe(0);
+		expect(errorSpy).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ status: 401, errorMessage: "HTTP 401 unauthorized" },
+		{ status: 429, errorMessage: "HTTP 429 concurrency_limit_exceeded" },
+		{ status: 500, errorMessage: "HTTP 500 internal server error" },
+	])("returns 1 in json mode when the final assistant message is a $status error", async ({ errorMessage }) => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ stopReason: "error", errorMessage }));
+		const { session } = runtimeHost;
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "json",
+			initialMessage: "turn",
+		});
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).not.toHaveBeenCalled();
+		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
 });

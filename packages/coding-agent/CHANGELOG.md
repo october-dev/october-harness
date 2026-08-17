@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Exited non-zero from `-p --mode json` when the final assistant message has `stopReason: "error"` (gateway 401/429/500). JSON event shapes are unchanged.
 - Pointed the self-update version check at `https://www.october.dev/api/cli/latest-version` and refused any update plan whose `packageName` is not `@october-dev/october`, so `october update` cannot uninstall October to install upstream pi. Rebranded the update-available banner, `october update` help/`--self`, and changelog link to October.
 - Kept the October seed catalogue when live `/v1/models` returns an empty `data` list, so a blank gateway response can no longer wipe `--provider october` down to no models.
 - Wrapped October bus MCP `registerTools()` on the discovery success path so a throw cannot escape and discard the already-registered provider, permissions, or hooks (same fail-closed handling as the retry path).
