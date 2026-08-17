@@ -1,49 +1,40 @@
-# Pi Documentation
+# October documentation
 
-Pi is a minimal terminal coding harness. It is designed to stay small at the core while being extended through TypeScript extensions, skills, prompt templates, themes, and pi packages.
+October is a coding agent CLI (a fork of pi). It ships as `@october-dev/october`.
 
 ## Quick start
 
-Install Pi with npm:
-
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+npm install -g --ignore-scripts @october-dev/october
+october login
 ```
 
-`--ignore-scripts` disables dependency lifecycle scripts during install. Pi does not require install scripts for normal npm installs.
+`--ignore-scripts` disables dependency lifecycle scripts during install.
 
-On Linux or macOS, you can also use the installer:
-
-```bash
-curl -fsSL https://pi.dev/install.sh | sh
-```
-
-To uninstall pi itself, use npm for curl and npm installs:
+To uninstall:
 
 ```bash
-npm uninstall -g @earendil-works/pi-coding-agent
+npm uninstall -g @october-dev/october
 ```
-
-For pnpm, Yarn, or Bun installs, use the matching global remove command: `pnpm remove -g @earendil-works/pi-coding-agent`, `yarn global remove @earendil-works/pi-coding-agent`, or `bun uninstall -g @earendil-works/pi-coding-agent`.
 
 Then run it in a project directory:
 
 ```bash
-pi
+october
 ```
 
-Authenticate with `/login` for subscription providers, or set an API key such as `ANTHROPIC_API_KEY` before starting pi.
+`october login` signs in with your October account. Use `/login` for another provider, or set that provider's API key.
 
-For the full first-run flow, see [Quickstart](quickstart.md).
+For the full first-run flow, see [Quickstart](quickstart.md). Product docs: [october.dev](https://www.october.dev).
 
 ## Start here
 
 - [Quickstart](quickstart.md) - install, authenticate, and run a first session.
-- [Using Pi](usage.md) - interactive mode, slash commands, context files, and CLI reference.
+- [Using October](usage.md) - interactive mode, slash commands, context files, and CLI reference.
 - [Providers](providers.md) - subscription and API-key setup for built-in providers.
 - [llama.cpp](llama-cpp.md) - run a local router and manage models with `/llama`.
 - [Security](security.md) - project trust, sandbox boundaries, and vulnerability reporting.
-- [Containerization](containerization.md) - sandbox pi with Gondolin, Docker, or OpenShell.
+- [Containerization](containerization.md) - sandbox October with Gondolin, Docker, or OpenShell.
 - [Settings](settings.md) - global and project settings.
 - [Keybindings](keybindings.md) - default shortcuts and custom keybindings.
 - [Sessions](sessions.md) - session management, branching, and tree navigation.

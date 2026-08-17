@@ -1,51 +1,55 @@
 # Quickstart
 
-This page gets you from install to a useful first pi session.
+This page gets you from install to a useful first October session.
 
 ## Install
 
-Pi is distributed as an npm package:
+October is distributed as an npm package:
 
 ```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+npm install -g --ignore-scripts @october-dev/october
 ```
 
-`--ignore-scripts` disables dependency lifecycle scripts during install. Pi does not require install scripts for normal npm installs.
+`--ignore-scripts` disables dependency lifecycle scripts during install. October does not require install scripts for normal npm installs. Node.js `>=22.19.0` is required.
 
 ### Uninstall
 
-Use the package manager that installed pi. The curl installer uses npm globally, so curl and npm installs are removed with npm:
-
 ```bash
-# curl installer or npm install -g
-npm uninstall -g @earendil-works/pi-coding-agent
+# npm install -g
+npm uninstall -g @october-dev/october
 
 # pnpm
-pnpm remove -g @earendil-works/pi-coding-agent
+pnpm remove -g @october-dev/october
 
 # Yarn
-yarn global remove @earendil-works/pi-coding-agent
+yarn global remove @october-dev/october
 
 # Bun
-bun uninstall -g @earendil-works/pi-coding-agent
+bun uninstall -g @october-dev/october
 ```
 
-Uninstalling pi leaves settings, credentials, sessions, and installed pi packages in `~/.pi/agent/`.
+Uninstalling October leaves settings, credentials, sessions, and installed packages in `~/.october/agent/`.
 
-Then start pi in the project directory you want it to work on:
+Then start October in the project directory you want it to work on:
 
 ```bash
 cd /path/to/project
-pi
+october
 ```
 
 ## Authenticate
 
-Pi can use subscription providers through `/login`, or API-key providers through environment variables or the auth file.
+### Option 1: October account (recommended)
 
-### Option 1: subscription login
+```bash
+october login
+```
 
-Start pi and run:
+This runs a device-code flow against october.dev and stores a long-lived token. Inside the October app you can skip this — Desktop injects the session.
+
+### Option 2: another provider via `/login`
+
+Start October and run:
 
 ```text
 /login
@@ -53,16 +57,16 @@ Start pi and run:
 
 Then select a provider. Built-in subscription logins include Claude Pro/Max, ChatGPT Plus/Pro (Codex), and GitHub Copilot.
 
-### Option 2: API key
+### Option 3: API key
 
-Set an API key before launching pi:
+Set an API key before launching October:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-pi
+october
 ```
 
-You can also run `/login` and select an API-key provider to store the key in `~/.pi/agent/auth.json`.
+You can also run `/login` and select an API-key provider to store the key in `~/.october/agent/auth.json`.
 
 See [Providers](providers.md) for all supported providers, environment variables, and cloud-provider setup.
 

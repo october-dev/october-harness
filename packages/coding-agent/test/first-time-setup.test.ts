@@ -33,8 +33,8 @@ describe("shouldRunFirstTimeSetup", () => {
 		}
 	});
 
-	it("returns false on a forked distribution even when experimental and unset", () => {
-		expect(shouldRunFirstTimeSetup(settingsPath)).toBe(false);
+	it("returns true for the official October distribution when experimental and unset", () => {
+		expect(shouldRunFirstTimeSetup(settingsPath)).toBe(true);
 	});
 
 	it("returns false when experimental features are disabled", () => {

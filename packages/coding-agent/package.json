@@ -1,7 +1,7 @@
 {
 	"name": "@october-dev/october",
 	"version": "0.84.2-october.2",
-	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
+	"description": "October's coding agent — inference, TUI, and october-bus (a fork of pi)",
 	"type": "module",
 	"piConfig": {
 		"name": "october",
@@ -98,9 +98,13 @@
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
+	"homepage": "https://www.october.dev",
+	"bugs": {
+		"url": "https://github.com/october-dev/october-harness/issues"
+	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/earendil-works/pi.git",
+		"url": "git+https://github.com/october-dev/october-harness.git",
 		"directory": "packages/coding-agent"
 	},
 	"engines": {

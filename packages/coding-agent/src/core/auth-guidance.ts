@@ -1,11 +1,11 @@
 import { join } from "node:path";
-import { getDocsPath } from "../config.ts";
+import { APP_NAME, getDocsPath } from "../config.ts";
 
 const UNKNOWN_PROVIDER = "unknown";
 
 export function getProviderLoginHelp(): string {
 	return [
-		"Use /login to log into a provider via OAuth or API key. See:",
+		`Run \`${APP_NAME} login\` to sign in with your October account, or /login for another provider. See:`,
 		`  ${join(getDocsPath(), "providers.md")}`,
 		`  ${join(getDocsPath(), "models.md")}`,
 	].join("\n");
