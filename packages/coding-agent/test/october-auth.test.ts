@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readStoredCredential } from "../src/core/auth-storage.ts";
 import {
 	buildOctoberOAuth,
@@ -48,6 +48,9 @@ function setSupabaseEnv(overrides: Partial<Record<(typeof SUPABASE_ENV_KEYS)[num
 	}
 	if (overrides.OCTOBER_CODING_AGENT_DIR !== undefined) {
 		process.env.OCTOBER_CODING_AGENT_DIR = overrides.OCTOBER_CODING_AGENT_DIR;
+	}
+	if (overrides.OCTOBER_SUPABASE_USER_ID !== undefined) {
+		process.env.OCTOBER_SUPABASE_USER_ID = overrides.OCTOBER_SUPABASE_USER_ID;
 	}
 }
 
@@ -262,6 +265,49 @@ describe("october credential seeding", () => {
 		expect(buildOctoberOAuth().getApiKey({ access: "access-A", refresh: "", expires: 0 })).toBe("");
 	});
 
+	it("replaces a persisted session on OCTOBER_SUPABASE_USER_ID mismatch regardless of expiry", async () => {
+		const dir = makeTmpDir();
+		const authPath = join(dir, "auth.json");
+		const nowSeconds = Math.floor(Date.now() / 1000);
+		setSupabaseEnv({
+			OCTOBER_CODING_AGENT_DIR: dir,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-A",
+			OCTOBER_SUPABASE_USER_ID: "user-a",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(nowSeconds + 7200),
+		});
+		await seedOctoberCredential();
+		setSupabaseEnv({
+			OCTOBER_CODING_AGENT_DIR: dir,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-B",
+			OCTOBER_SUPABASE_USER_ID: "user-b",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(nowSeconds + 60),
+		});
+		await seedOctoberCredential();
+		const stored = readStoredCredential(OCTOBER_PROVIDER_ID, authPath);
+		expect(stored?.type === "oauth" ? stored.access : undefined).toBe("access-B");
+		expect(stored?.type === "oauth" ? stored.supabaseUserId : undefined).toBe("user-b");
+	});
+
+	it("surfaces a failed standalone store write instead of swallowing it", async () => {
+		const dir = makeTmpDir();
+		setSupabaseEnv({ OCTOBER_CODING_AGENT_DIR: dir });
+		const { AuthStorage } = await import("../src/core/auth-storage.ts");
+		const original = AuthStorage.create;
+		AuthStorage.create = () => {
+			throw new Error("disk full");
+		};
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await expect(seedOctoberCredential()).rejects.toThrow(/disk full/);
+			expect(errorSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				"October credential store write failed: disk full",
+			);
+		} finally {
+			AuthStorage.create = original;
+			errorSpy.mockRestore();
+		}
+	});
+
 	it("refreshes via the Desktop bus when present and skips Supabase", async () => {
 		const supabaseHits: string[] = [];
 		const supabase = await listen((request, response) => {
@@ -284,5 +330,28 @@ describe("october credential seeding", () => {
 		);
 		expect(refreshed.access).toBe("access-bus");
 		expect(supabaseHits).toEqual([]);
+	});
+
+	it("falls back to Supabase when the bus token route is not live", async () => {
+		const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+		const supabase = await listen((_request, response) => {
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(
+				JSON.stringify({ access_token: "access-sb", refresh_token: "refresh-sb", expires_at: expiresAt }),
+			);
+		});
+		const bus = await listen((_request, response) => {
+			response.writeHead(404).end();
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		const oauth = buildOctoberOAuth();
+		const refreshed = await oauth.refreshToken(
+			{ access: "old", refresh: "refresh-1", expires: 0, supabaseUrl: supabase.url, supabaseAnonKey: "anon" },
+			AbortSignal.timeout(5000),
+		);
+		expect(refreshed.access).toBe("access-sb");
+		expect(refreshed.refresh).toBe("refresh-sb");
 	});
 });

@@ -24,7 +24,7 @@
 
 ### Fixed
 
-- Hardened Desktop October credentials: the injected session stays in memory (not auth.json), refresh goes through `GET /auth/october-token` on the loopback bus when present (Supabase only as a no-bus fallback), and `OCTOBER_SUPABASE_USER_ID` replaces a mismatched stored identity. Failed store writes are surfaced instead of swallowed.
+- Hardened Desktop October credentials: the injected session stays in memory (not auth.json), refresh goes through `GET /auth/october-token` on the loopback bus when present and falls back to Supabase when that route is not live, and `OCTOBER_SUPABASE_USER_ID` replaces a mismatched stored identity. Failed store writes are surfaced instead of swallowed.
 - Exited non-zero from `-p --mode json` when the final assistant message has `stopReason: "error"` (gateway 401/429/500). JSON event shapes are unchanged. JSON `stopReason: aborted` still exits 0 (Desktop cancels); text mode still treats aborted as failure.
 - Pointed the self-update version check at `https://www.october.dev/api/cli/latest-version` and refused any update plan whose `packageName` is not `@october-dev/october`, so `october update` cannot uninstall October to install upstream pi. Rebranded the update-available banner, `october update` help/`--self`, and changelog link to October.
 - Kept the October seed catalogue when live `/v1/models` returns an empty `data` list, so a blank gateway response can no longer wipe `--provider october` down to no models.

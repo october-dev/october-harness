@@ -179,10 +179,11 @@ async function refreshViaBus(credentials: OAuthCredentials, signal: AbortSignal)
 	return next;
 }
 
-async function refreshOctoberSession(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
-	if (nonEmpty(process.env.OCTOBER_BUS_PORT) && nonEmpty(process.env.OCTOBER_BUS_TOKEN)) {
-		return refreshViaBus(credentials, signal);
-	}
+function busRefreshConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+	return nonEmpty(env.OCTOBER_BUS_PORT) !== undefined && nonEmpty(env.OCTOBER_BUS_TOKEN) !== undefined;
+}
+
+async function refreshViaSupabase(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
 	const url = String(credentials.supabaseUrl ?? readSupabaseSessionEnv()?.url ?? "").replace(/\/$/, "");
 	const anonKey = String(credentials.supabaseAnonKey ?? readSupabaseSessionEnv()?.anonKey ?? "");
 	const refresh = String(credentials.refresh ?? "");
@@ -203,7 +204,7 @@ async function refreshOctoberSession(credentials: OAuthCredentials, signal: Abor
 	if (!body.access_token || !body.refresh_token) {
 		throw new Error("October session refresh returned no tokens.");
 	}
-	return {
+	const next: OAuthCredentials = {
 		access: body.access_token,
 		refresh: body.refresh_token,
 		expires: resolveExpiryMs({
@@ -214,6 +215,26 @@ async function refreshOctoberSession(credentials: OAuthCredentials, signal: Abor
 		supabaseUrl: url,
 		supabaseAnonKey: anonKey,
 	};
+	if (isOctoberDesktopMode()) {
+		applyDesktopCredential(next, desktopUserId);
+	}
+	return next;
+}
+
+async function refreshOctoberSession(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {
+	if (busRefreshConfigured()) {
+		try {
+			return await refreshViaBus(credentials, signal);
+		} catch (error) {
+			// Part C may not be live yet: Desktop already injects the bus, but
+			// /auth/october-token can 404 or refuse. Fall back to Supabase.
+			logOctoberDebug(
+				`october bus token refresh failed, falling back to Supabase: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return refreshViaSupabase(credentials, signal);
+		}
+	}
+	return refreshViaSupabase(credentials, signal);
 }
 
 /**
@@ -294,8 +315,8 @@ export async function seedOctoberCredential(): Promise<void> {
 	if (!session) return;
 	const envCredential = credentialFromEnv(session);
 	const userId = readInjectedUserId(process.env, session.accessToken);
-	const store = AuthStorage.create(getAuthPath());
 	try {
+		const store = AuthStorage.create(getAuthPath());
 		await store.modify(OCTOBER_PROVIDER_ID, async (current) => {
 			if (current?.type === "oauth") {
 				const storedUserId = typeof current.supabaseUserId === "string" ? current.supabaseUserId : undefined;
