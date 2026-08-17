@@ -1,14 +1,70 @@
 import { compare, valid } from "semver";
+import { APP_NAME, PACKAGE_NAME } from "../config.ts";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
-const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
+export const LATEST_VERSION_URL = "https://www.october.dev/api/cli/latest-version";
+export const UPDATE_CHANGELOG_URL = "https://www.october.dev/changelog";
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
 
 export interface LatestPiRelease {
 	version: string;
 	packageName?: string;
 	note?: string;
+}
+
+export interface SelfUpdatePlan {
+	packageName: string;
+	installSpec: string;
+	version: string;
+	shouldRun: boolean;
+	note?: string;
+}
+
+/** True when the feed omitted packageName or advertised this install's own package. */
+export function isSelfUpdatePackage(advertisedPackageName: string | undefined, selfPackageName: string): boolean {
+	return advertisedPackageName === undefined || advertisedPackageName === selfPackageName;
+}
+
+/**
+ * Build a self-update plan from a latest-version payload.
+ * Refuses any advertised packageName that is not this install — never uninstall October to install another package.
+ */
+export function planSelfUpdate(
+	latestRelease: LatestPiRelease,
+	options: { force: boolean; currentVersion: string; packageName: string },
+): SelfUpdatePlan {
+	if (!isSelfUpdatePackage(latestRelease.packageName, options.packageName)) {
+		throw new Error(
+			`Refusing to install ${latestRelease.packageName}: this install is ${options.packageName}. ` +
+				`${APP_NAME} update will not uninstall October to install another package.`,
+		);
+	}
+
+	const packageName = options.packageName;
+	const installSpec = `${packageName}@${latestRelease.version}`;
+	if (options.force || isNewerPackageVersion(latestRelease.version, options.currentVersion)) {
+		return {
+			packageName,
+			installSpec,
+			version: latestRelease.version,
+			shouldRun: true,
+			...(latestRelease.note ? { note: latestRelease.note } : {}),
+		};
+	}
+
+	return { packageName, installSpec, version: latestRelease.version, shouldRun: false };
+}
+
+export function describeNewVersionNotification(
+	release: LatestPiRelease,
+	appName: string,
+): { title: string; instruction: string; changelogUrl: string } {
+	return {
+		title: "Update Available",
+		instruction: `New version ${release.version} is available. Run ${appName} update`,
+		changelogUrl: UPDATE_CHANGELOG_URL,
+	};
 }
 
 /** Include useful errno details hidden behind Node's generic "fetch failed" error. */
@@ -99,7 +155,11 @@ export async function checkForNewPiVersion(currentVersion: string): Promise<Late
 
 	try {
 		const latestRelease = await getLatestPiRelease(currentVersion);
-		if (latestRelease && isNewerPackageVersion(latestRelease.version, currentVersion)) {
+		if (
+			latestRelease &&
+			isSelfUpdatePackage(latestRelease.packageName, PACKAGE_NAME) &&
+			isNewerPackageVersion(latestRelease.version, currentVersion)
+		) {
 			return latestRelease;
 		}
 		return undefined;

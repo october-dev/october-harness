@@ -108,7 +108,11 @@ import { getCwdRelativePath } from "../../utils/paths.ts";
 import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { ensureTool, type ToolStatus } from "../../utils/tools-manager.ts";
-import { checkForNewPiVersion, type LatestPiRelease } from "../../utils/version-check.ts";
+import {
+	checkForNewPiVersion,
+	describeNewVersionNotification,
+	type LatestPiRelease,
+} from "../../utils/version-check.ts";
 import { ArminComponent } from "./components/armin.ts";
 import { AssistantMessageComponent } from "./components/assistant-message.ts";
 import { BashExecutionComponent } from "./components/bash-execution.ts";
@@ -4149,19 +4153,19 @@ export class InteractiveMode {
 	}
 
 	showNewVersionNotification(release: LatestPiRelease): void {
+		const notification = describeNewVersionNotification(release, APP_NAME);
 		const action = theme.fg("accent", `${APP_NAME} update`);
 		const updateInstruction = theme.fg("muted", `New version ${release.version} is available. Run `) + action;
-		const changelogUrl = "https://pi.dev/changelog";
 		const changelogLink = getCapabilities().hyperlinks
-			? hyperlink(theme.fg("accent", changelogUrl), changelogUrl)
-			: theme.fg("accent", changelogUrl);
+			? hyperlink(theme.fg("accent", notification.changelogUrl), notification.changelogUrl)
+			: theme.fg("accent", notification.changelogUrl);
 		const changelogLine = theme.fg("muted", "Changelog: ") + changelogLink;
 		const note = release.note?.trim();
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
 		this.chatContainer.addChild(
-			new Text(`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}`, 1, 0),
+			new Text(`${theme.bold(theme.fg("warning", notification.title))}\n${updateInstruction}`, 1, 0),
 		);
 		if (note) {
 			this.chatContainer.addChild(new Spacer(1));

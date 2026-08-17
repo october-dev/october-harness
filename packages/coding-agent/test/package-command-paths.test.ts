@@ -496,6 +496,32 @@ describe("package commands", () => {
 		}
 	});
 
+	it("treats positional october as a self-update alias", async () => {
+		const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
+		process.env.PI_SKIP_VERSION_CHECK = "1";
+		const fetchMock = vi.fn(async () => Response.json({ version: VERSION, packageName: PACKAGE_NAME }));
+		vi.stubGlobal("fetch", fetchMock);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(runPackageCommandDirectly(["update", "october"])).resolves.toBeUndefined();
+
+			expect(fetchMock).toHaveBeenCalledOnce();
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+				`${APP_NAME} is already up to date (v${VERSION})`,
+			);
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(process.exitCode).toBeUndefined();
+		} finally {
+			if (previousSkipVersionCheck === undefined) {
+				delete process.env.PI_SKIP_VERSION_CHECK;
+			} else {
+				process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
+			}
+		}
+	});
+
 	it("allows explicit self-update checks when automatic version checks are disabled", async () => {
 		const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
 		process.env.PI_SKIP_VERSION_CHECK = "1";
@@ -645,9 +671,9 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 		}
 	});
 
-	it("installs the active package name from the update check during self-update", async () => {
+	it("refuses a self-update whose feed packageName is not this install", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@october-dev", "october");
 		const fakeNpmPath = join(tempDir, "fake-npm.cjs");
 		const recordPath = join(tempDir, "self-update.json");
 		mkdirSync(selfPackageDir, { recursive: true });
@@ -671,10 +697,10 @@ else {
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
+		const foreignPackageName = "@earendil-works/pi-coding-agent";
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
+			vi.fn(async () => Response.json({ packageName: foreignPackageName, version: "0.84.2" })),
 		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -683,13 +709,13 @@ else {
 		try {
 			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
 
-			expect(process.exitCode).toBeUndefined();
-			expect(errorSpy).not.toHaveBeenCalled();
-			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
-			expect(recordedCalls).toEqual([
-				expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
-				expect.arrayContaining(["install", "-g", `${activePackageName}@0.73.0`]),
-			]);
+			expect(process.exitCode).toBe(1);
+			expect(existsSync(recordPath)).toBe(false);
+			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stderr).toContain(`Refusing to install ${foreignPackageName}`);
+			expect(stderr).toContain(PACKAGE_NAME);
+			expect(stderr).toContain("will not uninstall October to install another package");
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).not.toContain(`Updated ${APP_NAME}`);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
@@ -740,11 +766,11 @@ else {
 		}
 	});
 
-	it("fails self-update when renamed npm package installation fails", async () => {
+	it("refuses a forced self-update whose feed packageName is not this install", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
-		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@mariozechner", "pi-coding-agent");
-		const fakeNpmPath = join(tempDir, "fake-npm-fail.cjs");
-		const recordPath = join(tempDir, "self-update-fail.json");
+		const selfPackageDir = join(globalPrefix, "lib", "node_modules", "@october-dev", "october");
+		const fakeNpmPath = join(tempDir, "fake-npm-force.cjs");
+		const recordPath = join(tempDir, "self-update-force.json");
 		mkdirSync(selfPackageDir, { recursive: true });
 		writeFileSync(
 			fakeNpmPath,
@@ -756,7 +782,6 @@ if(args.includes("root")) {
 const records=fs.existsSync(${JSON.stringify(recordPath)})?JSON.parse(fs.readFileSync(${JSON.stringify(recordPath)},"utf-8")):[];
 records.push(args);
 fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(records));
-if(args.includes("install")) process.exit(23);
 `,
 		);
 		writeFileSync(
@@ -768,28 +793,43 @@ if(args.includes("install")) process.exit(23);
 			value: join(selfPackageDir, "dist", "cli.js"),
 			configurable: true,
 		});
-		const activePackageName = PACKAGE_NAME === "@new-scope/pi" ? "@newer-scope/pi" : "@new-scope/pi";
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async () => Response.json({ packageName: activePackageName, version: "0.73.0" })),
+			vi.fn(async () => Response.json({ packageName: "@earendil-works/pi-coding-agent", version: VERSION })),
 		);
 
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
 		try {
-			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
+			await expect(runPackageCommandDirectly(["update", "--self", "--force"])).resolves.toBeUndefined();
 
 			expect(process.exitCode).toBe(1);
-			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(existsSync(recordPath)).toBe(false);
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
-			expect(stdout).not.toContain(`Updated ${APP_NAME}`);
-			expect(stderr).toContain("exited with code 23");
-			const recordedCalls = JSON.parse(readFileSync(recordPath, "utf-8")) as string[][];
-			expect(recordedCalls).toEqual([
-				expect.arrayContaining(["uninstall", "-g", PACKAGE_NAME]),
-				expect.arrayContaining(["install", "-g", `${activePackageName}@0.73.0`]),
-			]);
+			expect(stderr).toContain("Refusing to install @earendil-works/pi-coding-agent");
+			expect(stderr).toContain("will not uninstall October to install another package");
+			expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).not.toContain(`Updated ${APP_NAME}`);
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
+	it("rebrands update help around october instead of pi", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(runPackageCommandDirectly(["update", "--help"])).resolves.toBeUndefined();
+
+			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stdout).toContain(`Update ${APP_NAME}, installed packages, or model catalogs.`);
+			expect(stdout).toContain(`--self                  Update ${APP_NAME} only`);
+			expect(stdout).toContain(`${APP_NAME} update october`);
+			expect(stdout).not.toMatch(/Update pi\b/);
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(process.exitCode).toBeUndefined();
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
