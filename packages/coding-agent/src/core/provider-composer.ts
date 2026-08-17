@@ -32,6 +32,7 @@ import {
 
 export interface ExtensionOAuthConfig {
 	name: string;
+	loginLabel?: string;
 	/** Whether access through this auth method is backed by a provider subscription. */
 	isSubscription?: boolean;
 	/** @deprecated Retained for extension source compatibility; ignored by canonical auth flows. */
@@ -237,6 +238,7 @@ function applyExtension(
 function adaptOAuth(config: ExtensionOAuthConfig): OAuthAuth {
 	return {
 		name: config.name,
+		loginLabel: config.loginLabel,
 		isSubscription: config.isSubscription,
 		login: async (callbacks) => {
 			const credential = await config.login({

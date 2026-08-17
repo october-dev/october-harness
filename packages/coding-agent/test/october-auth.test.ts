@@ -23,6 +23,7 @@ const SUPABASE_ENV_KEYS = [
 	"OCTOBER_SUPABASE_REFRESH_TOKEN",
 	"OCTOBER_SUPABASE_EXPIRES_AT",
 	"OCTOBER_CODING_AGENT_DIR",
+	"OCTOBER_AUTH_BASE_URL",
 ] as const;
 
 function clearSupabaseEnv(): void {
@@ -122,8 +123,9 @@ describe("october oauth", () => {
 		expect(oauth.getApiKey(credential)).toBe("access-1");
 	});
 
-	it("login throws a clear message when no October session is present", async () => {
+	it("login degrades with a clear message when device-code endpoints are not live", async () => {
 		clearSupabaseEnv();
+		process.env.OCTOBER_AUTH_BASE_URL = "http://127.0.0.1:1";
 		const oauth = buildOctoberOAuth();
 		await expect(
 			oauth.login({
@@ -132,7 +134,7 @@ describe("october oauth", () => {
 				onPrompt: async () => "",
 				onSelect: async () => undefined,
 			}),
-		).rejects.toThrow(/October app/);
+		).rejects.toThrow(/October login is not available yet/);
 	});
 
 	it("refreshToken exchanges the refresh token against Supabase and maps the new session", async () => {

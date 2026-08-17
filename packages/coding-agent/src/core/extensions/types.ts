@@ -1472,6 +1472,8 @@ export interface ProviderConfig {
 	oauth?: {
 		/** Display name for the provider in login UI. */
 		name: string;
+		/** Selector label for the OAuth login option. */
+		loginLabel?: string;
 		/** Whether access through this auth method is backed by a provider subscription. */
 		isSubscription?: boolean;
 		/** @deprecated Retained for source compatibility; canonical auth flows ignore it. */

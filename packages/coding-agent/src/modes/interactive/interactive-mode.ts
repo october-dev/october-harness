@@ -104,6 +104,7 @@ import {
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
+import { logoutOctober } from "../../extensions/october/auth.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -5452,9 +5453,13 @@ export class InteractiveMode {
 					}
 
 					try {
-						await this.session.modelRuntime.logout(providerOption.id, {
-							signal: AbortSignal.timeout(15_000),
-						});
+						if (providerOption.id === "october") {
+							await logoutOctober();
+						} else {
+							await this.session.modelRuntime.logout(providerOption.id, {
+								signal: AbortSignal.timeout(15_000),
+							});
+						}
 						await this.updateAvailableProviderCount();
 						const message =
 							providerOption.authType === "oauth"

@@ -3,6 +3,7 @@ import { getAuthPath } from "../../config.ts";
 import { AuthStorage } from "../../core/auth-storage.ts";
 import type { ProviderConfig } from "../../core/extensions/types.ts";
 import { logOctoberDebug } from "./bus/log.ts";
+import { revokeOctoberInferenceToken, runOctoberDeviceCodeLogin } from "./device-code.ts";
 
 export const OCTOBER_PROVIDER_ID = "october";
 
@@ -137,14 +138,20 @@ async function refreshOctoberSession(credentials: OAuthCredentials, signal: Abor
  */
 export function buildOctoberOAuth(): OctoberOAuth {
 	return {
-		name: "October (signed in via the October app)",
+		name: "October",
+		loginLabel: "Sign in with October",
 		isSubscription: true,
-		async login() {
+		async login(callbacks) {
 			const session = readSupabaseSessionEnv();
-			if (!session) {
-				throw new Error("Sign in to the October app; october uses your existing October session automatically.");
+			if (session) {
+				return credentialFromEnv(session);
 			}
-			return credentialFromEnv(session);
+			const token = await runOctoberDeviceCodeLogin(callbacks);
+			return {
+				access: token,
+				refresh: "",
+				expires: Date.now() + 10 * 365 * 24 * 60 * 60 * 1000,
+			};
 		},
 		refreshToken: refreshOctoberSession,
 		getApiKey: (credentials) => String(credentials.access ?? ""),
@@ -156,6 +163,23 @@ export function buildOctoberOAuth(): OctoberOAuth {
  * Idempotent and race-safe (write under the store lock); a no-op when no session is present, and it
  * never throws — an auth hiccup must not break a coding session.
  */
+export async function storeOctoberInferenceToken(token: string, authPath = getAuthPath()): Promise<void> {
+	const store = AuthStorage.create(authPath);
+	await store.modify(OCTOBER_PROVIDER_ID, async () => ({ type: "api_key", key: token }));
+}
+
+export async function logoutOctober(authPath = getAuthPath(), signal?: AbortSignal): Promise<boolean> {
+	const store = AuthStorage.create(authPath);
+	const current = await store.read(OCTOBER_PROVIDER_ID);
+	if (!current) return false;
+	const token = current.type === "api_key" ? current.key : current.type === "oauth" ? current.access : undefined;
+	if (typeof token === "string" && token.startsWith("oct_inf_")) {
+		await revokeOctoberInferenceToken(token, signal);
+	}
+	await store.delete(OCTOBER_PROVIDER_ID);
+	return true;
+}
+
 export async function seedOctoberCredential(): Promise<void> {
 	const session = readSupabaseSessionEnv();
 	if (!session) return;
