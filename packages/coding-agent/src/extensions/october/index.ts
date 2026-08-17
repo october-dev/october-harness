@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
-import { seedOctoberCredential } from "./auth.ts";
+import { registerOctoberDesktopAuth, seedOctoberCredential } from "./auth.ts";
 import { parseOctoberBusEnv } from "./bus/env.ts";
 import { registerOctoberHooks } from "./bus/hooks.ts";
 import { registerOctoberBusTools } from "./bus/tools.ts";
@@ -13,6 +13,7 @@ export default async function octoberExtension(pi: ExtensionAPI): Promise<void> 
 	registerOctoberHeader(pi);
 	// Import the signed-in user's October session (if the app injected one) so inference is zero-config.
 	await seedOctoberCredential();
+	registerOctoberDesktopAuth(pi);
 	const bus = parseOctoberBusEnv();
 	if (!bus) return;
 	registerOctoberHooks(pi, bus);

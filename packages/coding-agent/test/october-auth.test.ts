@@ -6,8 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readStoredCredential } from "../src/core/auth-storage.ts";
+import { resolveConfigValue } from "../src/core/resolve-config-value.ts";
 import {
 	buildOctoberOAuth,
+	desktopOctoberTokenNeedsRefresh,
+	ensureDesktopOctoberAccess,
 	getDesktopOctoberCredential,
 	OCTOBER_PROVIDER_ID,
 	octoberSessionAvailable,
@@ -353,5 +356,58 @@ describe("october credential seeding", () => {
 		);
 		expect(refreshed.access).toBe("access-sb");
 		expect(refreshed.refresh).toBe("refresh-sb");
+	});
+
+	it("re-reads $OCTOBER_INFERENCE_TOKEN from the environment on each resolve", async () => {
+		process.env.OCTOBER_BUS_PORT = "9";
+		setSupabaseEnv({ OCTOBER_SUPABASE_ACCESS_TOKEN: "access-A" });
+		await seedOctoberCredential();
+		expect(resolveConfigValue("$OCTOBER_INFERENCE_TOKEN")).toBe("access-A");
+		process.env.OCTOBER_INFERENCE_TOKEN = "access-B";
+		expect(resolveConfigValue("$OCTOBER_INFERENCE_TOKEN")).toBe("access-B");
+	});
+
+	it("refreshes an expiring Desktop token via the bus and updates the env token", async () => {
+		const bus = await listen((request, response) => {
+			expect(request.url).toBe("/auth/october-token");
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(
+				JSON.stringify({ access_token: "access-refreshed", expires_at: Math.floor(Date.now() / 1000) + 3600 }),
+			);
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		setSupabaseEnv({
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-stale",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 60),
+		});
+		await seedOctoberCredential();
+		expect(desktopOctoberTokenNeedsRefresh()).toBe(true);
+		await ensureDesktopOctoberAccess();
+		expect(getDesktopOctoberCredential()?.access).toBe("access-refreshed");
+		expect(process.env.OCTOBER_INFERENCE_TOKEN).toBe("access-refreshed");
+		expect(resolveConfigValue("$OCTOBER_INFERENCE_TOKEN")).toBe("access-refreshed");
+		expect(desktopOctoberTokenNeedsRefresh()).toBe(false);
+	});
+
+	it("does not refresh a Desktop token that is still valid", async () => {
+		const hits: string[] = [];
+		const bus = await listen((request, response) => {
+			hits.push(request.url ?? "");
+			response.writeHead(500).end();
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		setSupabaseEnv({
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-fresh",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 3600),
+		});
+		await seedOctoberCredential();
+		expect(desktopOctoberTokenNeedsRefresh()).toBe(false);
+		await ensureDesktopOctoberAccess();
+		expect(hits).toEqual([]);
+		expect(getDesktopOctoberCredential()?.access).toBe("access-fresh");
 	});
 });

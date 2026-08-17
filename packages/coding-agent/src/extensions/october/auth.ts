@@ -1,7 +1,7 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import { getAuthPath } from "../../config.ts";
 import { AuthStorage } from "../../core/auth-storage.ts";
-import type { ProviderConfig } from "../../core/extensions/types.ts";
+import type { ExtensionAPI, ProviderConfig } from "../../core/extensions/types.ts";
 import { logOctoberDebug } from "./bus/log.ts";
 import { revokeOctoberInferenceToken, runOctoberDeviceCodeLogin } from "./device-code.ts";
 
@@ -9,6 +9,10 @@ export const OCTOBER_PROVIDER_ID = "october";
 
 /** Seconds of head-room subtracted from a token's real expiry so a request never rides the edge. */
 const EXPIRY_SAFETY_MS = 60_000;
+/** Match pi's stored-oauth refresh window. Desktop refresh is extension-owned. */
+const DESKTOP_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+const DESKTOP_REFRESH_TIMEOUT_MS = 15_000;
+const DESKTOP_REFRESH_RETRY_MS = 30_000;
 
 type OctoberOAuth = NonNullable<ProviderConfig["oauth"]>;
 
@@ -118,13 +122,29 @@ interface SupabaseTokenResponse {
 
 let desktopCredential: OAuthCredentials | undefined;
 let desktopUserId: string | undefined;
+let desktopRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let desktopRefreshInFlight: Promise<void> | undefined;
 
 export function getDesktopOctoberCredential(): OAuthCredentials | undefined {
 	return desktopCredential;
 }
 
-/** Test helper: drop the in-memory Desktop session. */
+export function desktopOctoberTokenNeedsRefresh(now = Date.now()): boolean {
+	if (!desktopCredential) return false;
+	return now + DESKTOP_REFRESH_MARGIN_MS >= desktopCredential.expires;
+}
+
+export function stopDesktopOctoberRefresh(): void {
+	if (desktopRefreshTimer) {
+		clearTimeout(desktopRefreshTimer);
+		desktopRefreshTimer = undefined;
+	}
+}
+
+/** Test helper: drop the in-memory Desktop session and cancel the refresh timer. */
 export function resetDesktopOctoberState(): void {
+	stopDesktopOctoberRefresh();
+	desktopRefreshInFlight = undefined;
 	desktopCredential = undefined;
 	desktopUserId = undefined;
 }
@@ -237,6 +257,76 @@ async function refreshOctoberSession(credentials: OAuthCredentials, signal: Abor
 	return refreshViaSupabase(credentials, signal);
 }
 
+function scheduleDesktopOctoberRefresh(): void {
+	stopDesktopOctoberRefresh();
+	if (!isOctoberDesktopMode() || !desktopCredential) return;
+	const delayMs = desktopOctoberTokenNeedsRefresh()
+		? DESKTOP_REFRESH_RETRY_MS
+		: Math.max(1_000, desktopCredential.expires - Date.now() - DESKTOP_REFRESH_MARGIN_MS);
+	desktopRefreshTimer = setTimeout(() => {
+		void ensureDesktopOctoberAccess().catch((error) => {
+			logOctoberDebug(`desktop october refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+			scheduleDesktopOctoberRefresh();
+		});
+	}, delayMs);
+	desktopRefreshTimer.unref?.();
+}
+
+/**
+ * Desktop writes no oauth credential, so pi's resolveStoredOAuth loop never runs.
+ * The extension must refresh the in-memory JWT and OCTOBER_INFERENCE_TOKEN itself.
+ * `$OCTOBER_INFERENCE_TOKEN` is interpolated from process.env on each request (not cached).
+ */
+export async function ensureDesktopOctoberAccess(signal?: AbortSignal): Promise<void> {
+	if (!isOctoberDesktopMode()) return;
+	const session = readSupabaseSessionEnv();
+	if (!session) {
+		clearDesktopCredential();
+		stopDesktopOctoberRefresh();
+		return;
+	}
+	if (!desktopCredential) {
+		applyDesktopCredential(credentialFromEnv(session), readInjectedUserId(process.env, session.accessToken));
+	}
+	if (!desktopOctoberTokenNeedsRefresh()) {
+		scheduleDesktopOctoberRefresh();
+		return;
+	}
+	if (desktopRefreshInFlight) {
+		await desktopRefreshInFlight;
+		return;
+	}
+	desktopRefreshInFlight = (async () => {
+		const current = desktopCredential ?? credentialFromEnv(session);
+		const next = await refreshOctoberSession(current, signal ?? AbortSignal.timeout(DESKTOP_REFRESH_TIMEOUT_MS));
+		applyDesktopCredential(next, desktopUserId);
+		scheduleDesktopOctoberRefresh();
+	})();
+	try {
+		await desktopRefreshInFlight;
+	} finally {
+		desktopRefreshInFlight = undefined;
+	}
+}
+
+/** Drive Desktop refresh from session/turn lifecycle because pi cannot. */
+export function registerOctoberDesktopAuth(pi: ExtensionAPI): void {
+	if (!isOctoberDesktopMode()) return;
+	pi.on("session_start", () => {
+		void ensureDesktopOctoberAccess().catch((error) => {
+			logOctoberDebug(
+				`desktop october refresh on session_start failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		});
+	});
+	pi.on("before_agent_start", async () => {
+		await ensureDesktopOctoberAccess();
+	});
+	pi.on("session_shutdown", () => {
+		stopDesktopOctoberRefresh();
+	});
+}
+
 /**
  * The provider's OAuth config. `getApiKey` hands the current Supabase access token to the inference
  * gateway as the bearer; pi refreshes it under a store lock via `refreshToken` before it expires.
@@ -304,11 +394,8 @@ export async function seedOctoberCredential(): Promise<void> {
 		}
 		const next = credentialFromEnv(session);
 		const userId = readInjectedUserId(process.env, session.accessToken);
-		if (desktopUserId && userId && desktopUserId !== userId) {
-			applyDesktopCredential(next, userId);
-			return;
-		}
 		applyDesktopCredential(next, userId);
+		scheduleDesktopOctoberRefresh();
 		return;
 	}
 
