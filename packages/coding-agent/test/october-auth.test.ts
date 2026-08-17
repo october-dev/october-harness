@@ -5,7 +5,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readStoredCredential } from "../src/core/auth-storage.ts";
+import { AuthStorage, readStoredCredential } from "../src/core/auth-storage.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { resolveConfigValue } from "../src/core/resolve-config-value.ts";
 import {
 	buildOctoberOAuth,
@@ -17,6 +18,7 @@ import {
 	resetDesktopOctoberState,
 	seedOctoberCredential,
 } from "../src/extensions/october/auth.ts";
+import { createOctoberProviderConfig } from "../src/extensions/october/provider.ts";
 
 const servers: Server[] = [];
 const tmpDirs: string[] = [];
@@ -409,5 +411,38 @@ describe("october credential seeding", () => {
 		await ensureDesktopOctoberAccess();
 		expect(hits).toEqual([]);
 		expect(getDesktopOctoberCredential()?.access).toBe("access-fresh");
+	});
+
+	it("refreshes a Desktop token through ModelRuntime.getAuth with no stored oauth credential", async () => {
+		const bus = await listen((request, response) => {
+			expect(request.url).toBe("/auth/october-token");
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(
+				JSON.stringify({ access_token: "access-via-runtime", expires_at: Math.floor(Date.now() / 1000) + 3600 }),
+			);
+		});
+		const address = new URL(bus.url);
+		process.env.OCTOBER_BUS_PORT = address.port;
+		process.env.OCTOBER_BUS_TOKEN = "bus-secret";
+		const dir = makeTmpDir();
+		setSupabaseEnv({
+			OCTOBER_CODING_AGENT_DIR: dir,
+			OCTOBER_SUPABASE_ACCESS_TOKEN: "access-seed",
+			OCTOBER_SUPABASE_EXPIRES_AT: String(Math.floor(Date.now() / 1000) + 60),
+		});
+		await seedOctoberCredential();
+
+		const credentials = AuthStorage.inMemory();
+		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+		runtime.registerProvider(OCTOBER_PROVIDER_ID, createOctoberProviderConfig());
+
+		expect(await credentials.read(OCTOBER_PROVIDER_ID)).toBeUndefined();
+		expect((await runtime.getAuth(OCTOBER_PROVIDER_ID))?.auth.apiKey).toBe("access-seed");
+
+		await ensureDesktopOctoberAccess();
+
+		expect(await credentials.read(OCTOBER_PROVIDER_ID)).toBeUndefined();
+		expect((await runtime.getAuth(OCTOBER_PROVIDER_ID))?.auth.apiKey).toBe("access-via-runtime");
+		expect(await credentials.read(OCTOBER_PROVIDER_ID)).toBeUndefined();
 	});
 });
