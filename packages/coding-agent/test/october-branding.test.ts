@@ -15,12 +15,19 @@ describe("October package branding", () => {
 			homepage?: string;
 			bugs?: { url?: string };
 			repository?: { url?: string; directory?: string };
+			files?: string[];
 		};
 		expect(pkg.name).toBe("@october-dev/october");
 		expect(pkg.homepage).toBe("https://www.october.dev");
 		expect(pkg.bugs?.url).toBe("https://github.com/october-dev/october-harness/issues");
 		expect(pkg.repository?.url).toBe("git+https://github.com/october-dev/october-harness.git");
 		expect(pkg.repository?.directory).toBe("packages/coding-agent");
+		expect(pkg.files).toEqual(["dist", "docs", "CHANGELOG.md", "npm-shrinkwrap.json"]);
+		expect(pkg.files).not.toContain("examples");
+		const tsconfig = JSON.parse(readFileSync(join(dirname(packageJsonPath), "tsconfig.build.json"), "utf-8")) as {
+			compilerOptions?: { inlineSources?: boolean };
+		};
+		expect(tsconfig.compilerOptions?.inlineSources).toBe(false);
 		expect(PACKAGE_NAME).toBe("@october-dev/october");
 		expect(APP_NAME).toBe("october");
 		expect(CONFIG_DIR_NAME).toBe(".october");

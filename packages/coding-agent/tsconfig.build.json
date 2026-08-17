@@ -1,6 +1,7 @@
 {
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
+		"inlineSources": false,
 		"outDir": "./dist",
 		"paths": {
 			"@earendil-works/pi-agent-core": ["../agent/dist/index.d.ts"],

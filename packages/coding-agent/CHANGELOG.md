@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Published source maps without `sourcesContent` and dropped `examples/` plus `containerization.md` from the npm tarball (docs stay, the system prompt still points at them).
 - Rebranded package metadata, README, and first-run help to October (`@october-dev/october`, october.dev homepage/bugs, official-distribution gate, `october login` guidance).
 - Stopped phoning home to Pi: install telemetry now defaults off (with a first-run consent line) and reports to october.dev when enabled; share viewer, provider attribution, and the User-Agent identify as October; the built-in remote model-catalog overlay is disabled unless `OCTOBER_CATALOG_BASE_URL` / `PI_CATALOG_BASE_URL` is set. October models continue to come from the gateway `/v1/models`.
 - Renamed October seed / default model ids from the retired `hetzner/` gateway namespace to `october/` (`october/Kimi-K2.7-Code`, `october/Qwen/Qwen3.6-35B-A3B-FP8`). Pass `--provider october` with these ids so the resolver does not treat the `october/` namespace as a provider prefix.
