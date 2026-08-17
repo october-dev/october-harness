@@ -7,6 +7,7 @@ import {
 	APP_NAME,
 	CONFIG_DIR_NAME,
 	detectInstallMethod,
+	formatPackageManagerPermissionError,
 	getAgentDir,
 	getPackageDir,
 	getSelfUpdateCommand,
@@ -859,7 +860,7 @@ export async function handlePackageCommand(
 						await runSelfUpdate(selfUpdateCommand);
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
-						console.error(chalk.red(`Error: ${message}`));
+						console.error(chalk.red(`Error: ${formatPackageManagerPermissionError(message)}`));
 						if (installMethod === "pnpm") {
 							printPnpmSelfUpdateMetadataHint();
 						}
@@ -874,7 +875,7 @@ export async function handlePackageCommand(
 		}
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : "Unknown package command error";
-		console.error(chalk.red(`Error: ${message}`));
+		console.error(chalk.red(`Error: ${formatPackageManagerPermissionError(message)}`));
 		process.exitCode = 1;
 		return true;
 	}

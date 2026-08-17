@@ -10,6 +10,7 @@
 
 ### Added
 
+- Added a Node.js >= 22.19 preflight in the CLI entry so Node 20 prints one sentence and exits instead of an undici `markAsUncloneable` stack. Unwritable/EACCES global npm prefixes now tell the user to use the installer or a user prefix.
 - Added a built-in October inference provider (`--provider october`) that discovers model ids from `/v1/models` without rewriting them.
 - Added zero-config October inference auth for users signed in to the October app: the harness imports the app-provided Supabase session (`OCTOBER_SUPABASE_*`) into the credential store and refreshes the access token autonomously against Supabase, so October models work with no key paste or `/login`. Inert when the session env is absent; the static `OCTOBER_INFERENCE_TOKEN` remains a fallback.
 - Aligned the October model catalogue with the gateway contract: real seed ids (`hetzner/Kimi-K2.7-Code` with image input, `hetzner/Qwen/Qwen3.6-35B-A3B-FP8` with reasoning), 128000 context / 32000 max-tokens / zero cost, verbatim multi-slash ids, and live-fetched models with unknown ids exposed under conservative defaults.

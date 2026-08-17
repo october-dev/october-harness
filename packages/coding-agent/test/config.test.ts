@@ -431,7 +431,7 @@ describe("detectInstallMethod", () => {
 
 		expect(getSelfUpdateCommand("@earendil-works/pi-coding-agent")).toBeUndefined();
 		expect(getSelfUpdateUnavailableInstruction("@earendil-works/pi-coding-agent")).toContain(
-			"the install path is not writable",
+			"Use the installer or a user prefix",
 		);
 	});
 });

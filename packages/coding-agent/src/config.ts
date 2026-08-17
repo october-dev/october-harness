@@ -338,11 +338,21 @@ export function getSelfUpdateUnavailableInstruction(
 	const command = getSelfUpdateCommandForMethod(method, packageName, target, npmCommand);
 	if (command) {
 		if (isManagedByGlobalPackageManager(method, packageName, npmCommand) && !isSelfUpdatePathWritable()) {
-			return `This installation is managed by a global ${method} install, but the install path is not writable. Update it yourself with: ${command.display}`;
+			return (
+				`This installation is managed by a global ${method} install, but the install path is not writable. ` +
+				"Use the installer or a user prefix (`npm config set prefix ~/.local`), not a root-owned global prefix."
+			);
 		}
 		return `This installation is not managed by a global ${method} install. Update it with the package manager, wrapper, or source checkout that provides it.`;
 	}
 	return `Update ${target.installSpec} using the package manager, wrapper, or source checkout that provides this installation.`;
+}
+
+export const EACCES_USER_PREFIX_GUIDANCE =
+	"npm could not write to a root-owned global prefix. Use the installer or a user prefix (`npm config set prefix ~/.local`).";
+
+export function formatPackageManagerPermissionError(message: string): string {
+	return /\bEACCES\b/.test(message) ? EACCES_USER_PREFIX_GUIDANCE : message;
 }
 
 export function getUpdateInstruction(packageName: string): string {
