@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	argvRequestsVersion,
 	assertSupportedNodeVersion,
 	formatUnsupportedNodeMessage,
 	isSupportedNodeVersion,
 	MIN_NODE_VERSION,
+	printCliVersion,
+	readCliPackageVersion,
 } from "../src/cli-node-version.ts";
-import { EACCES_USER_PREFIX_GUIDANCE, formatPackageManagerPermissionError } from "../src/config.ts";
+import { EACCES_USER_PREFIX_GUIDANCE, formatPackageManagerPermissionError, VERSION } from "../src/config.ts";
 
 describe("Node version preflight", () => {
 	afterEach(() => {
@@ -31,6 +34,22 @@ describe("Node version preflight", () => {
 			"october requires Node.js >= 22.19.0 (this is 20.11.0). Install a current Node from https://nodejs.org or use the October installer.",
 		);
 		expect(exit).toHaveBeenCalledWith(1);
+	});
+
+	it("treats --version and -v as the Desktop version gate, including when mixed with other argv", () => {
+		expect(argvRequestsVersion(["--version"])).toBe(true);
+		expect(argvRequestsVersion(["-v"])).toBe(true);
+		expect(argvRequestsVersion(["--provider", "october", "--version"])).toBe(true);
+		expect(argvRequestsVersion(["--help"])).toBe(false);
+		expect(argvRequestsVersion([])).toBe(false);
+	});
+
+	it("prints the package version without needing a supported Node", () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		printCliVersion();
+		expect(readCliPackageVersion()).toBe(VERSION);
+		expect(log).toHaveBeenCalledWith(VERSION);
+		expect(VERSION).toMatch(/^\d+\.\d+\.\d+/);
 	});
 });
 

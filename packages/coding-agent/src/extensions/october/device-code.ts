@@ -1,6 +1,77 @@
 import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai";
-import { pollOAuthDeviceCodeFlow } from "@earendil-works/pi-ai/oauth";
 import { APP_NAME } from "../../config.ts";
+
+const DEVICE_POLL_CANCEL = "Login cancelled";
+const DEVICE_POLL_TIMEOUT = "October login timed out. Run the command again.";
+const DEVICE_POLL_MIN_INTERVAL_MS = 1000;
+const DEVICE_POLL_DEFAULT_INTERVAL_SECONDS = 5;
+const DEVICE_POLL_SLOW_DOWN_MS = 5000;
+
+type DevicePollResult<T> =
+	| { status: "pending" }
+	| { status: "slow_down"; intervalSeconds?: number }
+	| { status: "failed"; message: string }
+	| { status: "complete"; value: T };
+
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) {
+			reject(new Error(DEVICE_POLL_CANCEL));
+			return;
+		}
+		const onAbort = () => {
+			clearTimeout(timeout);
+			reject(new Error(DEVICE_POLL_CANCEL));
+		};
+		const timeout = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+/** RFC 8628 device-code poller. Local so we do not depend on an unpublished pi-ai/oauth export. */
+async function pollDeviceCodeFlow<T>(options: {
+	intervalSeconds?: number;
+	expiresInSeconds?: number;
+	waitBeforeFirstPoll?: boolean;
+	poll: () => Promise<DevicePollResult<T>>;
+	signal: AbortSignal;
+}): Promise<T> {
+	const deadline =
+		typeof options.expiresInSeconds === "number"
+			? Date.now() + options.expiresInSeconds * 1000
+			: Number.POSITIVE_INFINITY;
+	let intervalMs = Math.max(
+		DEVICE_POLL_MIN_INTERVAL_MS,
+		Math.floor((options.intervalSeconds ?? DEVICE_POLL_DEFAULT_INTERVAL_SECONDS) * 1000),
+	);
+	if (options.waitBeforeFirstPoll) {
+		const remainingMs = deadline - Date.now();
+		if (remainingMs > 0) {
+			await abortableSleep(Math.min(intervalMs, remainingMs), options.signal);
+		}
+	}
+	while (Date.now() < deadline) {
+		if (options.signal.aborted) throw new Error(DEVICE_POLL_CANCEL);
+		const result = await options.poll();
+		if (result.status === "complete") return result.value;
+		if (result.status === "failed") throw new Error(result.message);
+		if (result.status === "slow_down") {
+			intervalMs =
+				typeof result.intervalSeconds === "number" &&
+				Number.isFinite(result.intervalSeconds) &&
+				result.intervalSeconds > 0
+					? Math.max(DEVICE_POLL_MIN_INTERVAL_MS, Math.floor(result.intervalSeconds * 1000))
+					: Math.max(DEVICE_POLL_MIN_INTERVAL_MS, intervalMs + DEVICE_POLL_SLOW_DOWN_MS);
+		}
+		const remainingMs = deadline - Date.now();
+		if (remainingMs <= 0) break;
+		await abortableSleep(Math.min(intervalMs, remainingMs), options.signal);
+	}
+	throw new Error(DEVICE_POLL_TIMEOUT);
+}
 
 export const DEFAULT_OCTOBER_AUTH_BASE_URL = "https://www.october.dev";
 export const OCTOBER_DEVICE_CODE_PATH = "/api/cli/device/code";
@@ -111,7 +182,7 @@ async function requestDeviceCode(signal: AbortSignal): Promise<DeviceCodeRespons
 }
 
 async function pollDeviceToken(device: DeviceCodeResponse, signal: AbortSignal): Promise<string> {
-	return pollOAuthDeviceCodeFlow<string>({
+	return pollDeviceCodeFlow<string>({
 		intervalSeconds: device.interval,
 		expiresInSeconds: device.expires_in,
 		waitBeforeFirstPoll: true,

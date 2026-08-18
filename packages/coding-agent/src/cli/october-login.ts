@@ -23,7 +23,10 @@ and you can use the October app or OCTOBER_INFERENCE_TOKEN instead.
 }
 
 export async function handleOctoberLoginCommand(args: string[]): Promise<boolean> {
-	if (args.includes("-h") || args.includes("--help")) {
+	if (
+		(isOctoberLoginCommand(args) || isOctoberLogoutCommand(args)) &&
+		(args.includes("-h") || args.includes("--help"))
+	) {
 		printOctoberLoginHelp();
 		return true;
 	}

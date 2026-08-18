@@ -12,6 +12,7 @@ import { ModelRuntime } from "../src/core/model-runtime.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
 import {
 	createOctoberProviderConfig,
+	describeOctoberBearer,
 	OCTOBER_PROVIDER_ID,
 	OCTOBER_SEED_MODELS,
 	refreshOctoberModels,
@@ -87,6 +88,14 @@ describe("october inference provider", () => {
 		expect(qwen?.input).toEqual(["text"]);
 	});
 
+	it("classifies bearers without exposing the secret", () => {
+		expect(describeOctoberBearer(undefined)).toBe("no token");
+		expect(describeOctoberBearer("")).toBe("no token");
+		expect(describeOctoberBearer("oct_inf_abc")).toBe("oct_inf");
+		expect(describeOctoberBearer("eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0In0.sig")).toBe("jwt");
+		expect(describeOctoberBearer("sk-not-ours")).toBe("other");
+	});
+
 	it("makes no network call during refresh when OCTOBER_INFERENCE_TOKEN is unset", async () => {
 		let hits = 0;
 		const { url } = await listen((_request, response) => {
@@ -98,6 +107,38 @@ describe("october inference provider", () => {
 
 		const models = await refreshOctoberModels(refreshContext());
 		expect(hits).toBe(0);
+		expect(models.map((model) => model.id)).toEqual(OCTOBER_SEED_MODELS.map((model) => model.id));
+	});
+
+	it("falls back to the seed catalogue when live /models returns HTTP 401", async () => {
+		let hits = 0;
+		const { url } = await listen((_request, response) => {
+			hits += 1;
+			response.writeHead(401, { "Content-Type": "application/json" });
+			response.end(
+				JSON.stringify({ error: { code: "invalid_api_key", message: "Missing or invalid October credential" } }),
+			);
+		});
+		process.env.OCTOBER_INFERENCE_BASE_URL = `${url}/v1`;
+		process.env.OCTOBER_INFERENCE_TOKEN = "stale-jwt";
+
+		const models = await refreshOctoberModels(
+			refreshContext({
+				credential: { type: "oauth", access: "stale-jwt", refresh: "r", expires: Date.now() + 60_000 },
+			}),
+		);
+		expect(hits).toBe(1);
+		expect(models.map((model) => model.id)).toEqual(OCTOBER_SEED_MODELS.map((model) => model.id));
+	});
+
+	it("falls back to the seed catalogue when live /models returns a bad shape", async () => {
+		const { url } = await listen((_request, response) => {
+			json(response, { models: [{ id: "not-the-contract" }] });
+		});
+		process.env.OCTOBER_INFERENCE_BASE_URL = `${url}/v1`;
+		process.env.OCTOBER_INFERENCE_TOKEN = "test-token";
+
+		const models = await refreshOctoberModels(refreshContext());
 		expect(models.map((model) => model.id)).toEqual(OCTOBER_SEED_MODELS.map((model) => model.id));
 	});
 

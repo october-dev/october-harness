@@ -4,7 +4,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { handleOctoberLoginCommand } from "../src/cli/october-login.ts";
 import { readStoredCredential } from "../src/core/auth-storage.ts";
 import { logoutOctober, storeOctoberInferenceToken } from "../src/extensions/october/auth.ts";
 import {
@@ -171,5 +172,30 @@ describe("october device-code login", () => {
 		expect(stored).toEqual({ type: "api_key", key: "oct_inf_stored" });
 		expect(await logoutOctober(authPath)).toBe(true);
 		expect(readStoredCredential("october", authPath)).toBeUndefined();
+	});
+});
+
+describe("october login/logout command routing", () => {
+	it("does not steal bare --help from the main CLI", async () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			expect(await handleOctoberLoginCommand(["--help"])).toBe(false);
+			expect(await handleOctoberLoginCommand(["-h"])).toBe(false);
+			expect(await handleOctoberLoginCommand(["--mode", "json", "--help"])).toBe(false);
+			expect(log).not.toHaveBeenCalled();
+		} finally {
+			log.mockRestore();
+		}
+	});
+
+	it("prints login help only for login/logout --help", async () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			expect(await handleOctoberLoginCommand(["login", "--help"])).toBe(true);
+			expect(await handleOctoberLoginCommand(["logout", "-h"])).toBe(true);
+			expect(log.mock.calls.map(([message]) => String(message)).join("\n")).toContain("october login");
+		} finally {
+			log.mockRestore();
+		}
 	});
 });

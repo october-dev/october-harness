@@ -1,6 +1,7 @@
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "../../core/extensions/types.ts";
 import { buildOctoberOAuth, OCTOBER_PROVIDER_ID } from "./auth.ts";
+import { logOctoberDebug } from "./bus/log.ts";
 
 export { OCTOBER_PROVIDER_ID };
 /** Production OpenAI-compatible root. Overridable via OCTOBER_INFERENCE_BASE_URL for tests. */
@@ -62,6 +63,19 @@ export function resolveOctoberToken(): string | undefined {
 	return token && token.length > 0 ? token : undefined;
 }
 
+/** Classify a bearer without logging the secret. Used in fallback/401 diagnostics. */
+export function describeOctoberBearer(token: string | undefined): "no token" | "oct_inf" | "jwt" | "other" {
+	if (!token) return "no token";
+	if (token.startsWith("oct_inf_")) return "oct_inf";
+	if (token.split(".").length === 3) return "jwt";
+	return "other";
+}
+
+function seedFallback(reason: string): ProviderModelConfig[] {
+	logOctoberDebug(`models fallback: ${reason}`);
+	return OCTOBER_SEED_MODELS;
+}
+
 /** Build a model entry for an id, applying known metadata and conservative defaults for the rest. */
 function modelFor(id: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW): ProviderModelConfig {
 	const meta = MODEL_META[id] ?? DEFAULT_META;
@@ -109,8 +123,15 @@ function contextWindowFromEntry(entry: Record<string, unknown>): number {
  */
 export async function refreshOctoberModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
 	const token = tokenFromRefreshContext(context);
-	if (!token || !context.allowNetwork || context.signal.aborted) {
+	if (!context.allowNetwork) {
+		// Offline/cache-only init always returns seeds; not a diagnostic event.
 		return OCTOBER_SEED_MODELS;
+	}
+	if (!token) {
+		return seedFallback("no token");
+	}
+	if (context.signal.aborted) {
+		return seedFallback("aborted");
 	}
 
 	try {
@@ -120,7 +141,7 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 			signal: context.signal,
 		});
 		if (!response.ok) {
-			return OCTOBER_SEED_MODELS;
+			return seedFallback(`HTTP ${response.status} bearer=${describeOctoberBearer(token)}`);
 		}
 		const body: unknown = await response.json();
 		const data =
@@ -128,7 +149,7 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 				? (body as { data: unknown[] }).data
 				: undefined;
 		if (!data) {
-			return OCTOBER_SEED_MODELS;
+			return seedFallback("bad shape");
 		}
 
 		const live: ProviderModelConfig[] = [];
@@ -155,9 +176,9 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 		}
 		// An empty live catalogue ({"data":[]}, or only entries without ids) must not wipe the seed
 		// list — otherwise `--provider october` has no models until the next successful refresh.
-		return ordered.length ? ordered : OCTOBER_SEED_MODELS;
-	} catch {
-		return OCTOBER_SEED_MODELS;
+		return ordered.length ? ordered : seedFallback("empty catalogue");
+	} catch (error) {
+		return seedFallback(`throw: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
@@ -178,4 +199,26 @@ export function createOctoberProviderConfig(): ProviderConfig {
 
 export function registerOctoberProvider(pi: ExtensionAPI): void {
 	pi.registerProvider(OCTOBER_PROVIDER_ID, createOctoberProviderConfig());
+	registerOctoberAuthDiagnostics(pi);
+}
+
+/** Log inference 401s instead of guessing why a turn failed. */
+export function registerOctoberAuthDiagnostics(pi: ExtensionAPI): void {
+	pi.on("after_provider_response", (event) => {
+		if (event.status === 401) {
+			logOctoberDebug("inference 401: HTTP 401");
+		}
+	});
+	pi.on("message_end", (event) => {
+		const message = event.message;
+		if (!message || message.role !== "assistant") return;
+		const err = "errorMessage" in message && typeof message.errorMessage === "string" ? message.errorMessage : "";
+		if (
+			"stopReason" in message &&
+			message.stopReason === "error" &&
+			/401|invalid_api_key|invalid October credential/i.test(err)
+		) {
+			logOctoberDebug(`inference 401: ${err}`);
+		}
+	});
 }
