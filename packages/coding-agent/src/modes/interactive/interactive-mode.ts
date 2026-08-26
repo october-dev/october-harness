@@ -105,7 +105,7 @@ import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { logoutOctober } from "../../extensions/october/auth.ts";
-import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
+import { getChangelogPath, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
 import { parseGitUrl } from "../../utils/git.ts";
@@ -867,7 +867,7 @@ export class InteractiveMode {
 
 		this.registerSignalHandlers();
 
-		// Load changelog (only show new entries, skip for resumed sessions)
+		// October never dumps CHANGELOG.md into the TUI (header/ascii art only).
 		this.changelogMarkdown = this.getChangelogForDisplay();
 
 		if (this.session.scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
@@ -1204,18 +1204,21 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Get changelog entries to display on startup.
-	 * Only shows new entries since last seen version, skips for resumed sessions.
+	 * Startup changelog is suppressed for October.
+	 *
+	 * The shipped CHANGELOG.md is the full upstream pi history. October versions
+	 * look like `0.84.2-october.N`; getNewEntries() parses that as 0.84.0
+	 * (`Number("2-october")` is NaN, coerced to 0), so every launch would dump
+	 * every 0.84.x+ entry above the ascii art. `/changelog` still works.
+	 * Fresh-install lastChangelogVersion + telemetry consent are unchanged.
 	 */
 	private getChangelogForDisplay(): string | undefined {
-		// Skip changelog for resumed/continued sessions (already have messages)
+		// Skip bookkeeping for resumed/continued sessions (already have messages)
 		if (this.session.state.messages.length > 0) {
 			return undefined;
 		}
 
 		const lastVersion = this.settingsManager.getLastChangelogVersion();
-		const changelogPath = getChangelogPath();
-		const entries = parseChangelog(changelogPath);
 
 		if (!lastVersion) {
 			// Fresh install - record the version, don't show changelog
@@ -1233,11 +1236,9 @@ export class InteractiveMode {
 			return undefined;
 		}
 
-		const newEntries = getNewEntries(entries, lastVersion);
-		if (newEntries.length > 0) {
+		if (lastVersion !== VERSION) {
 			this.settingsManager.setLastChangelogVersion(VERSION);
 			this.reportInstallTelemetry(VERSION);
-			return newEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
 		}
 
 		return undefined;

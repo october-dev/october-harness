@@ -177,7 +177,11 @@ export function compareVersions(v1: ChangelogEntry, v2: ChangelogEntry): number 
 }
 
 /**
- * Get entries newer than lastVersion
+ * Get entries newer than lastVersion.
+ *
+ * Pre-release / fork suffixes are not part of the tuple: `0.84.2-october.3`
+ * parses as 0.84.0 because `Number("2-october")` is NaN (coerced to 0).
+ * October therefore never feeds this into the interactive startup banner.
  */
 export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] {
 	// Parse lastVersion
