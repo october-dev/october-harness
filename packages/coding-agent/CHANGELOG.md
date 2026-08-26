@@ -44,7 +44,7 @@
 
 ### Fixed
 
-- Suppressed the interactive startup changelog dump. October ships the full upstream pi CHANGELOG.md, and `0.84.2-october.N` versions parse as 0.84.0 in the "new entries" filter, so every TUI launch dumped every 0.84.x+ note above the ascii art. `/changelog` is unchanged.
+- Suppressed the interactive startup changelog dump. October ships the full upstream pi CHANGELOG.md, and `0.84.2-october.N` versions parse as 0.84.0 in the "new entries" filter, so every TUI launch dumped every 0.84.x+ note above the ascii art. `/changelog` is unchanged. `getNewEntries()` now reads the leading `x.y.z` tuple, so `0.84.3-october.1` compares as 0.84.3 rather than 0.84.0.
 - Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result, which made providers that validate message order reject the replayed history. They are now appended once the turn's tool results are in ([#8537](https://github.com/earendil-works/pi/issues/8537)).
 - Fixed failed extension factories leaving event subscriptions, provider registrations, and default flag state active ([#8424](https://github.com/earendil-works/pi/pull/8424) by [@acmerfight](https://github.com/acmerfight)).
 - Fixed `models.json` typings omitting the documented OpenAI-compatible `compat.supportsFinishReason` provider and model override ([#8487](https://github.com/earendil-works/pi/pull/8487) by [@petrroll](https://github.com/petrroll)).

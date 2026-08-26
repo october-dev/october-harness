@@ -1268,9 +1268,9 @@ export class InteractiveMode {
 	 * Startup changelog is suppressed for October.
 	 *
 	 * The shipped CHANGELOG.md is the full upstream pi history. October versions
-	 * look like `0.84.2-october.N`; getNewEntries() parses that as 0.84.0
-	 * (`Number("2-october")` is NaN, coerced to 0), so every launch would dump
-	 * every 0.84.x+ entry above the ascii art. `/changelog` still works.
+	 * look like `0.84.3-october.N`. The old getNewEntries() split parsed that as
+	 * 0.84.0 (`Number("3-october")` is NaN, coerced to 0) and would dump every
+	 * 0.84.x+ entry above the ascii art. `/changelog` still works.
 	 * Fresh-install lastChangelogVersion + telemetry consent are unchanged.
 	 */
 	private getChangelogForDisplay(): string | undefined {

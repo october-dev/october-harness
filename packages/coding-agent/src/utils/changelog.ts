@@ -179,17 +179,16 @@ export function compareVersions(v1: ChangelogEntry, v2: ChangelogEntry): number 
 /**
  * Get entries newer than lastVersion.
  *
- * Pre-release / fork suffixes are not part of the tuple: `0.84.2-october.3`
- * parses as 0.84.0 because `Number("2-october")` is NaN (coerced to 0).
- * October therefore never feeds this into the interactive startup banner.
+ * Uses the leading x.y.z tuple so fork suffixes stay out of the compare:
+ * `0.84.3-october.1` is 0.84.3, not 0.84.0 (`Number("3-october")` is NaN).
+ * Interactive startup still never renders these entries for October.
  */
 export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] {
-	// Parse lastVersion
-	const parts = lastVersion.split(".").map(Number);
+	const versionMatch = lastVersion.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
 	const last: ChangelogEntry = {
-		major: parts[0] || 0,
-		minor: parts[1] || 0,
-		patch: parts[2] || 0,
+		major: versionMatch ? Number.parseInt(versionMatch[1], 10) : 0,
+		minor: versionMatch ? Number.parseInt(versionMatch[2], 10) : 0,
+		patch: versionMatch ? Number.parseInt(versionMatch[3], 10) : 0,
 		content: "",
 	};
 

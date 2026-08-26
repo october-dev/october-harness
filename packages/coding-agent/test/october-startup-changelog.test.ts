@@ -50,20 +50,21 @@ describe("October interactive startup changelog", () => {
 		else process.env.PI_TELEMETRY = originalTelemetry;
 	});
 
-	it("treats 0.84.2-october.N as 0.84.0, which would dump every 0.84.x+ entry", () => {
+	it("parses 0.84.3-october.1 as 0.84.3, not 0.84.0", () => {
 		const entries: ChangelogEntry[] = [
 			{ major: 0, minor: 83, patch: 9, content: "## [0.83.9]\nold" },
-			{ major: 0, minor: 84, patch: 1, content: "## [0.84.1]\npi notes" },
-			{ major: 0, minor: 84, patch: 2, content: "## [0.84.2]\nmore pi notes" },
+			{ major: 0, minor: 84, patch: 2, content: "## [0.84.2]\npi notes" },
+			{ major: 0, minor: 84, patch: 3, content: "## [0.84.3]\nmore pi notes" },
 		];
+		expect(getNewEntries(entries, "0.84.3-october.1").map((entry) => `${entry.minor}.${entry.patch}`)).toEqual([]);
 		expect(getNewEntries(entries, "0.84.2-october.3").map((entry) => `${entry.minor}.${entry.patch}`)).toEqual([
-			"84.1",
-			"84.2",
+			"84.3",
 		]);
 	});
 
 	it("never returns changelog markdown on a version bump", () => {
-		const context = createContext("0.84.2-october.2");
+		expect(VERSION).toBe("0.84.3-october.1");
+		const context = createContext("0.84.2-october.3");
 		expect(getChangelogForDisplay.call(context)).toBeUndefined();
 		expect(context.session.settingsManager.setLastChangelogVersion).toHaveBeenCalledWith(VERSION);
 		expect(context.pendingTelemetryConsent).toBe(false);
