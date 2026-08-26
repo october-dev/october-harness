@@ -1,5 +1,5 @@
 import { applyPatch } from "diff";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -486,9 +486,8 @@ describe("Coding Agent Tools", () => {
 		});
 
 		it("should respect timeout", async () => {
-			await expect(bashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(
-				/timed out/i,
-			);
+			const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`;
+			await expect(bashTool.execute("test-call-10", { command, timeout: 0.05 })).rejects.toThrow(/timed out/i);
 		});
 
 		it("should include full output path for truncated timeout and abort errors", async () => {
@@ -739,7 +738,11 @@ describe("Coding Agent Tools", () => {
 			expect(output).toMatch(/\[Showing lines \d+-\d+ of \d+\. Full output: /);
 			expect(output).not.toContain("Full output: undefined");
 
-			for (let i = 0; i < 20 && (!fullOutputPath || !existsSync(fullOutputPath)); i++) {
+			for (
+				let i = 0;
+				i < 50 && (!fullOutputPath || !existsSync(fullOutputPath) || statSync(fullOutputPath).size === 0);
+				i++
+			) {
 				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
 
@@ -757,7 +760,11 @@ describe("Coding Agent Tools", () => {
 			expect(result.truncated).toBe(true);
 			expect(fullOutputPath).toBeDefined();
 
-			for (let i = 0; i < 20 && (!fullOutputPath || !existsSync(fullOutputPath)); i++) {
+			for (
+				let i = 0;
+				i < 50 && (!fullOutputPath || !existsSync(fullOutputPath) || statSync(fullOutputPath).size === 0);
+				i++
+			) {
 				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
 

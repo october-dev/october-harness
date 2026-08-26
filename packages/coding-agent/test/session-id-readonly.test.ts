@@ -11,13 +11,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Args } from "../src/cli/args.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
+import { createSessionManager } from "../src/main.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
 const tempDirs: string[] = [];
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	for (const dir of tempDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -100,92 +105,104 @@ function writeSession(sessionDir: string, cwd: string, id: string): void {
 	);
 }
 
-describe("--session-id read-only commands", () => {
-	it("does not reserve a session for --help", async () => {
+function args(overrides: Partial<Args>): Args {
+	return {
+		messages: [],
+		fileArgs: [],
+		unknownFlags: new Map(),
+		diagnostics: [],
+		...overrides,
+	};
+}
+
+function persistSession(session: SessionManager, content: string): void {
+	session.appendMessage({ role: "user", content, timestamp: Date.now() });
+	session.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "persisted" }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "test",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	});
+}
+
+describe("--session-id", () => {
+	it("does not persist a custom ID for metadata commands", async () => {
 		const result = await runCli(["--session-id", "read-only-help", "--help"]);
 
 		expect(result.code).toBe(0);
 		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-help")).toBe(false);
 	});
 
-	it("allows --no-session with --session-id", async () => {
-		const result = await runCli(["--no-session", "--session-id", "ephemeral-id", "--help"]);
+	it("creates missing IDs and reopens existing IDs in process", async () => {
+		const tempRoot = createTempDir();
+		const projectDir = join(tempRoot, "project");
+		const sessionDir = join(tempRoot, "sessions");
+		mkdirSync(projectDir, { recursive: true });
+		const settingsManager = SettingsManager.inMemory();
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
-		expect(result.code).toBe(0);
-		expect(hasSessionWithId(join(result.agentDir, "sessions"), "ephemeral-id")).toBe(false);
-	});
-
-	it("does not reserve a session for --list-models", async () => {
-		const result = await runCli(["--session-id", "read-only-models", "--list-models"]);
-
-		expect(result.code).toBe(0);
-		expect(hasSessionWithId(join(result.agentDir, "sessions"), "read-only-models")).toBe(false);
-	});
-
-	it("warns when a missing --session-id creates a new session", async () => {
-		const result = await runCli((dirs) => [
-			"--session-dir",
-			dirs.sessionDir,
-			"--session-id",
-			"missing-session-id",
-			"--model",
-			"missing-model",
-			"-p",
-			"hi",
-		]);
-
-		expect(result.code).toBe(1);
-		expect(result.stderr).toContain(
-			"Warning: No project session found with id 'missing-session-id'; creating a new session with that id.",
+		const readOnly = await createSessionManager(
+			args({ sessionId: "read-only", help: true }),
+			projectDir,
+			sessionDir,
+			settingsManager,
 		);
-	});
+		expect(readOnly.getSessionId()).toBe("read-only");
+		expect(readOnly.getSessionFile()).toBeUndefined();
 
-	it("does not warn when --session-id opens an existing session", async () => {
-		const result = await runCli(
-			(dirs) => [
-				"--session-dir",
-				dirs.sessionDir,
-				"--session-id",
-				"existing-session-id",
-				"--model",
-				"missing-model",
-				"-p",
-				"hi",
-			],
-			(dirs) => {
-				mkdirSync(dirs.sessionDir, { recursive: true });
-				writeSession(dirs.sessionDir, dirs.projectDir, "existing-session-id");
-			},
+		const created = await createSessionManager(
+			args({ sessionId: "persisted-id" }),
+			projectDir,
+			sessionDir,
+			settingsManager,
 		);
+		persistSession(created, "persist me");
+		expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("creating a new session"));
 
-		expect(result.code).toBe(1);
-		expect(result.stderr).not.toContain("No project session found with id 'existing-session-id'");
-	});
-
-	it("rejects an existing fork target session id", async () => {
-		const result = await runCli(
-			(dirs) => ["--session-dir", dirs.sessionDir, "--fork", "source-id", "--session-id", "existing-id", "-p", "hi"],
-			(dirs) => {
-				mkdirSync(dirs.sessionDir, { recursive: true });
-				writeSession(dirs.sessionDir, dirs.projectDir, "source-id");
-				writeSession(dirs.sessionDir, dirs.projectDir, "existing-id");
-			},
+		consoleError.mockClear();
+		const reopened = await createSessionManager(
+			args({ sessionId: "persisted-id" }),
+			projectDir,
+			sessionDir,
+			settingsManager,
 		);
-
-		expect(result.code).toBe(1);
-		expect(result.stderr).toContain("Session already exists with id 'existing-id'");
+		expect(reopened.getSessionFile()).toBe(created.getSessionFile());
+		expect(consoleError).not.toHaveBeenCalled();
 	});
-});
 
-describe("--session-id validation", () => {
-	it("rejects ids invalid under SessionManager rules without stack traces", async () => {
-		for (const id of ["-bad", "bad id"]) {
-			const result = await runCli(["--session-id", id, "-p", "hi"]);
+	it("rejects an existing fork target in process", async () => {
+		const tempRoot = createTempDir();
+		const projectDir = join(tempRoot, "project");
+		const sessionDir = join(tempRoot, "sessions");
+		mkdirSync(projectDir, { recursive: true });
+		const source = SessionManager.create(projectDir, sessionDir, { id: "source-id" });
+		persistSession(source, "source");
+		const target = SessionManager.create(projectDir, sessionDir, { id: "existing-id" });
+		persistSession(target, "target");
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		vi.spyOn(process, "exit").mockImplementation((code) => {
+			throw new Error(`exit:${code}`);
+		});
 
-			expect(result.code).toBe(1);
-			expect(result.stderr).toContain("Session id must be non-empty");
-			expect(result.stderr).not.toContain("SessionManager.create");
-		}
+		await expect(
+			createSessionManager(
+				args({ fork: "source-id", sessionId: "existing-id" }),
+				projectDir,
+				sessionDir,
+				SettingsManager.inMemory(),
+			),
+		).rejects.toThrow("exit:1");
 	});
 });
 

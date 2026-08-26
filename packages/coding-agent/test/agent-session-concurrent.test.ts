@@ -265,7 +265,10 @@ describe("AgentSession concurrent prompt guard", () => {
 		});
 
 		const firstPrompt = session.prompt("First message");
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		const streamingDeadline = Date.now() + 1000;
+		while (!session.isStreaming && Date.now() < streamingDeadline) {
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
 		expect(session.isStreaming).toBe(true);
 
 		const pi = (

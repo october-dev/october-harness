@@ -1,10 +1,10 @@
 {
 	"name": "@october-dev/october-install",
-	"version": "0.84.2-october.3",
+	"version": "0.84.3-october.1",
 	"private": true,
 	"description": "Lockfile root used by the Pi installer and updater.",
 	"dependencies": {
-		"@october-dev/october": "0.84.2-october.3"
+		"@october-dev/october": "0.84.3-october.1"
 	},
 	"overrides": {
 		"protobufjs": "7.6.5",

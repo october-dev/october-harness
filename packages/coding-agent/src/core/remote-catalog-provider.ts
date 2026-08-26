@@ -3,6 +3,7 @@ import { VERSION } from "../config.ts";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 
+const REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS = 4_000;
 export const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 /** Remote built-in-provider overlay. Unset means no phone-home; October models come from the gateway /v1/models. */
@@ -83,14 +84,18 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl?: string, l
 			// leave the overlay empty.
 			const validator = stored?.models.length ? stored.etag : undefined;
 			const url = new URL(`/api/models/providers/${encodeURIComponent(provider.id)}`, catalogBaseUrl);
-			const response = await fetchWithRetry(url, {
-				headers: {
-					accept: "application/json",
-					"User-Agent": getPiUserAgent(VERSION),
-					...(validator ? { "if-none-match": validator } : {}),
+			const response = await fetchWithRetry(
+				url,
+				{
+					headers: {
+						accept: "application/json",
+						"User-Agent": getPiUserAgent(VERSION),
+						...(validator ? { "if-none-match": validator } : {}),
+					},
+					signal: context.signal,
 				},
-				signal: context.signal,
-			});
+				{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS },
+			);
 			if (context.signal.aborted) return;
 			const checkedAt = Date.now();
 			// Unchanged: dynamicModels already holds the stored overlay, so only the
