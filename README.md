@@ -27,6 +27,8 @@ Fast in a terminal. Extensible as a runtime. Native to October Bus.
 
 Inside October, the same harness becomes a first-class multiplayer agent: it discovers peers through [October Bus](https://github.com/october-dev/october-bus), receives durable work, delegates tasks, exchanges correlated replies, publishes lifecycle and context, and keeps execution authority local to the process doing the work.
 
+October Bus is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
+
 October Harness started as a fork of [Pi](https://github.com/earendil-works/pi). Pi remains the foundation for much of the agent core, provider layer, TUI, session model, and extension system. The project has since been substantially changed for October with its own package and CLI, inference and authentication, permission modes, Bus-native tools and hooks, October context handling, managed Desktop runtime, and product identity.
 
 ## Why another coding harness?
