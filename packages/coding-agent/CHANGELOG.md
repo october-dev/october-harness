@@ -21,7 +21,11 @@
 - Added an optional `powershell` tool for Windows, configurable through `defaultTools` and the SDK. See [PowerShell Tool](docs/windows.md#powershell-tool).
 - Added a `/thinking` selector and searchable default choices to the model and thinking selectors; Ctrl+S saves the selected model as the global default. See [Models and Thinking](docs/keybindings.md#models-and-thinking).
 - Added optional routing session IDs to exported compaction summary helpers so callers can preserve provider routing without enabling prompt cache writes.
-- Added transcript usage notices for compaction and branch summaries when cache miss notices are enabled.
+- Added 
+
+
+
+usage notices for compaction and branch summaries when cache miss notices are enabled.
 - Added `session_compact_failed` extension events so compaction failures and aborts expose their reason, retry state, source, and error message to handlers ([#8175](https://github.com/earendil-works/pi/issues/8175)).
 - Added inherited provider-neutral `toolChoice` support to simple stream requests.
 - Added inherited automatic Anthropic server-side refusal fallback for supported first-party models, including returned-model usage pricing ([#8017](https://github.com/earendil-works/pi/issues/8017)).
@@ -72,7 +76,7 @@
 - Fixed the subagent example repeatedly prompting before running project-local agents in trusted repositories ([#8261](https://github.com/earendil-works/pi/issues/8261)).
 - Fixed truncated compaction and branch summaries being persisted when generation reaches its output token limit ([#7048](https://github.com/earendil-works/pi/issues/7048)).
 - Fixed npm package update checks treating older registry versions as available updates, preventing `pi update` from downgrading already-newer installed packages ([#8226](https://github.com/earendil-works/pi/issues/8226)).
-- Fixed built-in llama.cpp models disappearing from `/model` when `/llama` refreshed a configured server under `PI_OFFLINE`, and included idle-slept `sleeping` router models plus autoloadable unloaded presets in the selectable catalog ([#8167](https://github.com/earendil-works/pi/issues/8167)).
+- Fixed built-in llama.cpp models disappearing from `/model` when `/llama` refreshed a configured server under `PI_OFFLINE`, and included idle-slept `sleeping` router models plus autoloadable unloaded presets in the selectable catalog ([#8558](https://github.com/earendil-works/pi/pull/8558) by [@cristinaponcela](https://github.com/cristinaponcela)).
 - Fixed `pi.registerFlag()` accepting default values that do not match the declared flag type ([#8064](https://github.com/earendil-works/pi/issues/8064)).
 - Fixed Z.AI Coding Plan defaults referencing the removed GLM-5.1 model ([#8096](https://github.com/earendil-works/pi/issues/8096)).
 - Fixed repeated ambiguous truncated-response recovery being mislabeled as context overflow ([#8130](https://github.com/earendil-works/pi/issues/8130)).
