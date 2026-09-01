@@ -5,11 +5,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        **Before you start:** Read [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md).
+        **Before you start:** Read [CONTRIBUTING.md](https://github.com/october-dev/october-harness/blob/main/CONTRIBUTING.md).
 
-        New issues from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. Issues that do not meet the quality bar in [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md) will not be reopened or receive a reply.
+        New issues from new contributors are auto-closed by default. Maintainers review auto-closed issues and reopen worthwhile ones. Issues that do not meet the quality bar in the contribution guide may not receive a reply.
 
         Keep this short. If it doesn't fit on one screen, it's too long. Write in your own voice.
+
+        October Harness is a downstream product with its own CLI, inference, permissions, Bus integration, Desktop contract, and public roadmap. Explain why this repository should own the proposed behavior.
 
   - type: textarea
     id: what
@@ -34,3 +36,27 @@ body:
       description: Brief technical approach if you have one in mind.
     validations:
       required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - October CLI, TUI, or SDK
+        - October inference or authentication
+        - October Bus or multiplayer behavior
+        - Permissions or security boundaries
+        - Agent, provider, session, or protocol foundation
+        - Extensions, skills, or customization
+        - Documentation or developer experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: ownership
+    attributes:
+      label: Why does this belong in October Harness?
+      description: Explain whether the change is October-specific, shared with upstream Pi, or best implemented as an extension.
+    validations:
+      required: true

@@ -1,102 +1,105 @@
-# Contributing to pi
+# Contributing to October Harness
 
-This guide exists to save both sides time.
+October Harness is October's open, multiplayer-first coding harness. It is useful as a standalone agent and becomes a collaborative runtime when connected to [October Bus](https://github.com/october-dev/october-bus).
 
-## Philosophy
+This guide explains what the project is trying to become, where changes belong, and what maintainers need in order to review a contribution.
 
-First things first: **pi's core is minimal**.
+## Project direction
 
-If your feature does not belong in the core, it should be an extension. PRs that bloat the core will likely be rejected.
+Contributions should strengthen at least one of these goals:
 
-Pi's core exists to be minimal and to be extensible so that it can be influenced and manipulated by extensions.  Even hook points for extensions however should be well considered and discussed to avoid adding unmaintainable bloat and complex interactions.
+- keep the standalone coding agent fast, dependable, and understandable;
+- make multiplayer behavior a first-class runtime capability;
+- preserve local authority over tools, files, credentials, and execution;
+- keep providers, extensions, skills, prompts, themes, RPC, and SDK usage open and extensible;
+- maintain a clear, reviewable relationship with the upstream Pi foundation.
 
-## The One Rule
+October Harness is a downstream product, not a cosmetic rename. Its CLI and package identity, October inference and authentication, permission modes, October Bus integration, Desktop runtime contract, and product documentation are owned here.
 
-**You must understand your code.** If you cannot explain what your changes do and how they interact with the rest of the system, your PR will be closed.
+The agent core, provider layer, TUI, session model, and several workspace packages originated in [Pi](https://github.com/earendil-works/pi). Changes to inherited code are welcome when they improve October Harness or are needed by its public contracts. Generally useful, October-neutral fixes should also be proposed upstream when practical. Preserve upstream copyright, license notices, package attribution, and provenance.
 
-Using AI to write code is fine. Submitting AI-generated slop without understanding it is not.
+## The one rule
 
-If you use an agent, run it from the `pi` root directory so it picks up `AGENTS.md` automatically. Your agent must follow the rules and guidelines in that file.
+**You must understand your contribution.** You should be able to explain what changed, why it belongs in October Harness, how it interacts with the rest of the system, and how you verified it.
 
-## Contribution Gate
+Using an AI coding tool is fine. The contributor remains responsible for reviewing every submitted change and for the accuracy of issue and pull-request descriptions.
 
-All issues and PRs from new contributors are auto-closed by default.
+If you use an agent, run it from the October Harness repository root so it loads `AGENTS.md`. The agent must follow the rules in that file.
 
-Issues submitted Friday through Sunday are not guaranteed to be reviewed.  If something is urgent, ask on Discord: https://discord.com/invite/3cU7Bz4UPx
+## Contribution gate
 
-Maintainers review auto-closed issues daily and reopen worthwhile ones. Issues that do not meet the quality bar below will not be reopened or receive a reply.
+Issues and pull requests from new contributors are automatically closed by default. This gives maintainers time to review new submissions without allowing low-signal or automated traffic to overwhelm the tracker.
 
-Approval happens through maintainer replies on issues:
+Maintainers review auto-closed issues and reopen worthwhile ones. Approval happens through a maintainer reply:
 
-- `lgtmi`: your future issues will not be auto-closed
-- `lgtm`: your future issues and PRs will not be auto-closed
+- `lgtmi` approves the contributor's future issues;
+- `lgtm` approves the contributor's future issues and pull requests.
 
-The command must be at the start of the reply (optionally after one or more `@username` mentions) or at the end. `lgtmi` does not grant rights to submit PRs. Only `lgtm` grants rights to submit PRs.
+The command must appear at the start of the reply, optionally after one or more `@username` mentions, or at the end. `lgtmi` does not approve pull requests.
 
-## Quality Bar For Issues
+Do not open a pull request until a maintainer has approved you with `lgtm`. Start with a contribution proposal if the change is substantial or changes public behavior.
 
-If you open an issue, you must use one of the two GitHub issue templates.
+## Opening an issue
 
-If you open an issue, keep it short, concrete, and worth reading.
+Use the issue form that best matches the report. Keep the submission concise, concrete, and written in your own voice.
 
-- Keep it concise. If it does not fit on one screen, it is too long.
-- Write in your own voice (do not use an LLM to generate text, if you must, follow up with a clearly AI labeled comment).
-- State the bug or request clearly.
-- Explain why it matters.
-- If you want to implement the change yourself, say so.
+A useful bug report includes:
 
-If the issue is real and written well, a maintainer may reopen it or reply with `lgtmi` or `lgtm` in the command position described above.
+- the October Harness version or commit;
+- a minimal reproduction;
+- expected and actual behavior;
+- relevant logs with credentials and personal information removed;
+- whether the problem still occurs with project extensions and configuration disabled.
 
-## Blocking
+A useful contribution proposal includes:
 
-If you ignore this document twice, or if you spam the tracker with agent-generated issues, your GitHub account will be permanently blocked.
+- the problem being solved;
+- why the change belongs in October Harness;
+- the public behavior or contract that would change;
+- a brief implementation approach, if known.
 
-If you send a large volume of issues through automation, your GitHub account will be permanently blocked. No taksies backsies.
+Do not open a public issue for a vulnerability. Follow [SECURITY.md](SECURITY.md).
 
-## Before Submitting a PR
+## Before submitting a pull request
 
-Do not open a PR unless you have already been approved by a maintainer using `lgtm` in the command position described above.
+Keep each pull request focused on one coherent change. Explain the problem, the solution, and why the repository should own the behavior.
 
-Before submitting a PR:
+Before submitting:
 
 ```bash
 npm run check
 ./test.sh
 ```
 
-Both must pass.
+Both commands must pass. Run focused tests while developing and add regression coverage for behavior changes.
 
-Do not edit `CHANGELOG.md`. Changelog entries are added by maintainers.
+Also verify that:
 
-If you are adding a new provider to `packages/ai`, see `AGENTS.md` for required tests.
+- user-facing behavior is documented;
+- new dependencies are necessary, pinned, and reviewed;
+- October Bus and permission changes preserve local authority boundaries;
+- inherited code retains required Pi attribution and license notices;
+- the change does not expose October credentials, private services, or internal product logic.
 
-## Questions?
+Do not edit released changelog sections. Maintainers coordinate release notes and upstream synchronization.
 
-Ask on [Discord](https://discord.com/invite/nKXTsAcmbT).
+## Review criteria
 
-## FAQ
+Maintainers evaluate contributions for correctness, test coverage, clarity, security boundaries, maintenance cost, and alignment with October Harness. A technically valid change may still need a different abstraction or may fit better as an extension.
 
-### Why are new issues and PRs auto-closed?
+Review is also an ownership decision:
 
-pi receives more issues than the maintainers can responsibly review in real time. Many reports do not meet the quality bar in this guide or do not follow CONTRIBUTING.md. Some are slung at the repository mindlessly via an agent instead of being reviewed and shaped by the person submitting them. Auto-closing creates a buffer so maintainers can review the tracker on their own schedule and reopen the issues that meet the quality bar.
+- October-specific runtime and integration behavior belongs here;
+- portable improvements may belong here and upstream;
+- proprietary October cloud and orchestration behavior does not belong in this repository;
+- behavior owned entirely by an external project should be reported to that project.
 
-### Why are weekend issues lower priority?
+## Conduct
 
-We triage the tracker during working hours. That means more issues can accumulate over the weekend. Anything submitted Friday through Sunday may be missed or given lower priority in the Monday review queue. If a problem is urgent, ask on Discord and include the short version, a repro, and the relevant logs.
+Be direct, respectful, and focused on the work. Harassment, spam, deceptive reports, and repeated unreviewed automated submissions are not accepted. Contributors who repeatedly ignore this guide may be blocked.
 
-### Why do some issues get no reply?
+## Questions and plans
 
-A reply is maintenance work too. Low-signal issues, unclear reports, duplicates, and issues that do not follow this guide may be closed without discussion. This keeps time available for reproducible bugs, thoughtful requests, and contributors who have done the work to make their report actionable.
+Ask short usage and development questions in the [October Discord](https://discord.gg/E6PwPyXRt).
 
-### Why not let AI triage everything?
-
-AI can help group duplicates, summarize reports, and spot missing information. It is not trusted to make final maintainer decisions. Polished AI-generated issues can still be wrong, misleading, or expensive to investigate. Human review remains the final gate.
-
-### Is this hostile to contributors?
-
-No. It is a guardrail against burnout and tracker spam. Short, concrete, reproducible issues are welcome. Thoughtful contributions are welcome. Automated slop, entitlement, and large volumes of low-effort reports are not.
-
-## Where can I learn about plans?
-
-Earendil uses RFCs to discuss larger changes.  Not all of them are public, but
-quite a few are.  They can be found at [rfc.earendil.com](https://rfc.earendil.com/keyword/pi/).
+The public direction is documented in the [README roadmap](README.md#roadmap) and in repository issues. For substantial work, open a contribution proposal before implementation so the ownership and approach can be agreed on first.

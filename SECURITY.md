@@ -1,87 +1,54 @@
 # Security Policy
 
-This document should guide you about understanding the security concept behind
-Pi and also where the boundaries are.
+October Harness is a local coding agent. It runs with the operating-system permissions of the user who starts it and does not claim to provide an in-process sandbox.
 
-In general Pi is a coding agent that runs locally within the security boundary
-of the user that is running it.  It's the responsibility of the user to monitor
-its operations or to contain it within a container, virtual machine or other
-Sandbox solution.
+The local user account, files writable by that account, shell configuration, environment, and trusted October Harness configuration are normally inside the same security boundary as the harness process. Project instructions, extensions, skills, prompts, themes, packages, and model output can influence agent behavior and must be treated as untrusted until the user chooses to trust them.
 
-Pi treats the local user account and files writable by that account as inside
-the same trust boundary as the Pi process itself.  If an attacker can modify files
-under the user's home directory, workspace, shell startup files, environment, or
-Pi configuration, they can generally influence Pi or other local developer tools.
-Reports that depend on such prior local write access are not security
-vulnerabilities unless they demonstrate how Pi grants that write access or crosses
-an operating-system privilege boundary.
+October permission modes control when tool operations require confirmation. They are not an operating-system security boundary. Use a container, virtual machine, micro-VM, or external policy sandbox when running untrusted or unattended work.
 
-Pi relies on users installing trustworthy extensions and loading trustworthy
-skills and only to use pi within trusted repositories.  This is because files
-like `AGENTS.md` or instructions in comments can be used to prompt inject the
-coding agent trivially and this cannot be protected against.
+October Bus peers can request work and exchange context. A peer request must not grant the receiving harness new tool permissions, credentials, filesystem access, or process authority.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-If you believe you found a security vulnerability in pi or another package in
-this repository, please report it privately by either:
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/october-dev/october-harness/security/advisories/new).
 
-- Emailing `security@earendil.com`, or
-- Opening a private report through GitHub Security Advisories for this repository
+Include:
 
-Please include:
+- a description of the issue and its impact;
+- steps to reproduce, a proof of concept, or relevant logs;
+- the affected package, version, commit, and configuration;
+- the expected security boundary and how it was crossed;
+- any known mitigations.
 
-- A description of the issue and its impact
-- Steps to reproduce, proof of concept, or relevant logs
-- Affected package, version, commit, or configuration
-- Any known mitigations
+Remove credentials and personal information from the report. Do not open a public issue for security-sensitive findings. Maintainers will review the report and coordinate disclosure when appropriate.
 
-Do not open a public issue for security-sensitive reports.  We will review
-reports and coordinate disclosure as appropriate.
+## In scope
 
-## Scope
+Security issues in the distributed October Harness package, CLI, SDK, RPC runtime, APIs, repository code, October authentication, permission enforcement, and October Bus capability handling are in scope.
 
-Security issues in the distributed packages, command-line tools, APIs, and
-repository code are in scope as well as earendil operated infrastructure
-on `pi.dev`.
+Examples include:
 
-## Out Of Scope
+- bypassing an explicit October permission decision;
+- accepting a Bus identity or capability outside its intended execution scope;
+- exposing credentials through October-owned code or default behavior;
+- crossing an operating-system privilege boundary because of a defect in the harness;
+- a remotely reachable vulnerability in an October-operated service directly used by this repository.
 
-- Local code execution or sandboxing behavior (the Pi coding agent intentionally does not have a sandbox)
-- Behavior of pi extensions or skills installed by the user
-- Risks from working in untrusted repositories
-- Risks from installing untrusted extensions, skills, packages, or tools
-- Isuses caused by non trustworthy MITM proxies
-- Public internet exposure of a Pi installation
-- Prompt injection attacks
-- Exposed secrets that are third-party/user-controlled credentials
-- Reports requiring the ability to create, modify, delete, or replace files,
-  directories, symlinks, environment variables, shell configuration, or other
-  user-controlled local state on the target machine. This includes `~/.pi`,
-  `~/.pi/agent/models.json`, workspace files, `AGENTS.md`, skills, extensions,
-  extension configuration, dotfiles, and files synchronized through NFS, roaming
-  profiles, or dotfile managers, unless the report shows how Pi itself grants
-  that access.
-- Issues caused by intentionally weakened user configuration.
-- Resource/DOS claims that require trusted local input/config against the pi coding agent.
-- Reports about malicious model output.
-- User-approved or user-initiated local actions presented as vulnerabilities.
+## Out of scope
 
-## Notes for Reporters
+- expected local code execution that the user approved or enabled with `bypass`;
+- prompt injection without a demonstrated boundary bypass;
+- behavior of an intentionally installed third-party extension, skill, package, model, or tool;
+- reports that require prior write access to the user's files, environment, shell configuration, or trusted October configuration unless October Harness grants that access;
+- risks inherent in opening an untrusted repository without isolation;
+- exposed third-party or user-controlled credentials;
+- denial-of-service claims that require trusted local input or configuration;
+- public internet exposure of an unsupported local Harness or RPC setup;
+- malicious or incorrect model output by itself;
+- vulnerabilities that exist only in upstream Pi and are not reachable through October Harness.
 
-The most useful reports show a current, reproducible security boundary bypass
-with demonstrated impact.  Reports that only show expected local-agent behavior,
-prompt injection, or a malicious trusted extension/skill are not security
-vulnerabilities under this model.
+## Notes for reporters
 
-For example, a report showing that malicious contents written to a trusted Pi
-configuration file cause Pi to execute commands, load attacker-controlled tools,
-send credentials to an attacker-controlled endpoint, or otherwise change behavior
-is out of scope.
+The most useful reports demonstrate a current, reproducible security-boundary failure against the latest release or `main`. Include the exact path, package version or commit SHA, configuration, and proof of impact.
 
-When possible, include the exact affected path, package version or commit SHA,
-configuration, and a proof of concept against the latest release or latest
-`main`.  For dependency reports, include evidence that the shipped dependency is
-affected and that the issue is reachable through Pi.  For exposed-secret reports,
-include evidence that the credential is owned by Earendil or grants access to
-Earendil-operated infrastructure or services.
+A malicious instruction in a repository, model response, extension, or skill is not by itself a Harness vulnerability. It becomes relevant when October Harness violates a documented permission, credential, Bus capability, process, or operating-system boundary because of that input.
