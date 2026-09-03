@@ -508,6 +508,14 @@ discard October's commits.
 |---|---|---|
 | 2026-08-14 | `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004` | 0.84.2 |
 | 2026-08-17 | `d3ab2af969d64997338253c9151190aa1bc33580` | 0.84.2 |
+| 2026-09-03 | `e44d75c20a51142abc056c243b13c1d7bb4be687` | 0.84.4 |
+
+2026-09-03: merged 435 upstream commits through `e44d75c20`, including the Chord application
+runtime, the durable session/runtime overhaul, source-resolved workspace tests, and current TUI and
+provider fixes. October's package identity, inference/auth, Bus integration, permission modes,
+telemetry defaults, update endpoints, Node-version preflight, and product documentation remain
+intact. The root lockfile, publish shrinkwrap, and installer lock were regenerated; `npm run check`
+passes after hydrating the gitignored model data.
 
 2026-08-17: caught up 4 upstream commits (xAI → Responses / Grok 4.6 #8124, Copilot login
 retry/sequencing, kimi cached-token tracking #8119) via the merge above — conflict-free; the model

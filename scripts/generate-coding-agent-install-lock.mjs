@@ -12,9 +12,11 @@ const rootLockfilePath = join(repoRoot, "package-lock.json");
 const outputPackageJsonPath = join(outputDir, "package.json");
 const outputLockfilePath = join(outputDir, "package-lock.json");
 const internalPackagePrefix = "@earendil-works/pi-";
+const internalPackageNames = new Set(["@earendil-works/chord"]);
 const installPackageName = "@october-dev/october-install";
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
+	["esbuild@0.28.1", "postinstall selects and verifies the platform-specific esbuild binary"],
 	["protobufjs@7.6.5", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
 
@@ -143,7 +145,11 @@ function getInternalWorkspaces(lockPackages) {
 		if (!lockPath.startsWith("packages/") || lockPath.includes("/node_modules/") || !entry.name || !entry.version) {
 			continue;
 		}
-		if (!entry.name.startsWith(internalPackagePrefix) && lockPath !== "packages/coding-agent") {
+		if (
+			!entry.name.startsWith(internalPackagePrefix) &&
+			!internalPackageNames.has(entry.name) &&
+			lockPath !== "packages/coding-agent"
+		) {
 			continue;
 		}
 
@@ -294,7 +300,10 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 		if (entry.dev || entry.devOptional || entry.extraneous) {
 			errors.push(`${lockPath || "root"} contains dev/extraneous metadata`);
 		}
-		if (packageName?.startsWith(internalPackagePrefix)) {
+		if (
+			packageName !== undefined &&
+			(packageName.startsWith(internalPackagePrefix) || internalPackageNames.has(packageName))
+		) {
 			// Forked coding-agent versions as 0.84.2-october.N; the other @earendil-works/pi-*
 			// workspaces stay on the upstream 0.84.2 line. Compare each to its own package.json.
 			const expected = internalWorkspaces.get(packageName)?.packageJson.version ?? installerPackageJson.version;

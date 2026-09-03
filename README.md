@@ -326,6 +326,7 @@ The open harness should be enough to run, study, extend, and use as a reference 
 | Package | Role |
 | --- | --- |
 | [`@october-dev/october`](packages/coding-agent) | October CLI, SDK, permissions, inference, and Bus integration |
+| [`@earendil-works/chord`](packages/chord) | Application-composition runtime for services, replicated state, RPC, and plugins |
 | [`@earendil-works/pi-agent-core`](packages/agent) | Agent loop, tool calling, and state management |
 | [`@earendil-works/pi-ai`](packages/ai) | Unified multi-provider model API |
 | [`@earendil-works/pi-tui`](packages/tui) | Differentially rendered terminal UI |
