@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Redesigned the October README and TUI wordmark with Bus-inspired block lettering, an autumn TUI gradient, a transit line, and a compact layout for narrow terminals.
+
 ### Fixed
 
 - Fixed branch summaries failing when reasoning consumes the previous 2048-token output cap ([#8845](https://github.com/earendil-works/pi/issues/8845)).
