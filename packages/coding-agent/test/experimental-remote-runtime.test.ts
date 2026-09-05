@@ -39,7 +39,7 @@ beforeEach(async () => {
 	agentDir = await mkdtemp(join("/tmp", "pi-experimental-agent-"));
 	directories.add(agentDir);
 	await configureExperimentalWorkerModel(agentDir);
-	vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
+	vi.stubEnv("OCTOBER_CODING_AGENT_DIR", agentDir);
 	await createExperimentalSessions(join(agentDir, "experimental", "sessions"), ["demo-1", "demo-2"]);
 });
 

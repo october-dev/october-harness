@@ -1,5 +1,9 @@
 # October integration — execution plan
 
+> **Current audit (2026-09-05):** See [the sync and audit report](OCTOBER-AUDIT-2026-09-05.md).
+> The plan below is historical; its Desktop Bus contract is not the current public October Bus
+> launcher contract. The report covers the Pi v0.85.1 sync and subsequent October-owned fixes.
+
 > **Status: execution-ready plan.** This file was rewritten on 2026-08-14 after a full code audit
 > of the fork at upstream base 0.84.2 (`b1efcf7d7`). It supersedes the original specification: every
 > requirement from that spec is preserved below, but now mapped to verified facts about the
@@ -509,6 +513,7 @@ discard October's commits.
 | 2026-08-14 | `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004` | 0.84.2 |
 | 2026-08-17 | `d3ab2af969d64997338253c9151190aa1bc33580` | 0.84.2 |
 | 2026-09-03 | `e44d75c20a51142abc056c243b13c1d7bb4be687` | 0.84.4 |
+| 2026-09-05 (pending commit) | `da840b6216578c2a571d0374ac6a2091a83f9d91` | 0.85.1 |
 
 2026-09-03: merged 435 upstream commits through `e44d75c20`, including the Chord application
 runtime, the durable session/runtime overhaul, source-resolved workspace tests, and current TUI and

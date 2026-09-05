@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	argvRequestsVersion,
@@ -51,6 +54,19 @@ describe("Node version preflight", () => {
 		expect(log).toHaveBeenCalledWith(VERSION);
 		expect(VERSION).toMatch(/^\d+\.\d+\.\d+/);
 	});
+
+	it.each(["file:///$bunfs/root/cli.js", "file:///~BUN/root/cli.js", "file:///%7EBUN/root/cli.js"])(
+		"reads compiled Bun metadata next to the executable (%s)",
+		(moduleUrl) => {
+			const directory = mkdtempSync(join(tmpdir(), "october-bun-version-"));
+			try {
+				writeFileSync(join(directory, "package.json"), JSON.stringify({ version: VERSION }));
+				expect(readCliPackageVersion(undefined, moduleUrl, join(directory, "october"))).toBe(VERSION);
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe("EACCES guidance", () => {

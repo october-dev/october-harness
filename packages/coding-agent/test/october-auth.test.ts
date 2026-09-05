@@ -185,6 +185,34 @@ describe("october oauth", () => {
 });
 
 describe("october credential seeding", () => {
+	it("preserves an explicit inference token when Desktop has no Supabase session", async () => {
+		process.env.OCTOBER_BUS_PORT = "9";
+		process.env.OCTOBER_INFERENCE_TOKEN = "oct_inf_explicit";
+		await seedOctoberCredential();
+		await ensureDesktopOctoberAccess();
+		expect(process.env.OCTOBER_INFERENCE_TOKEN).toBe("oct_inf_explicit");
+	});
+
+	it("restores the explicit token when the Desktop-owned session is removed", async () => {
+		process.env.OCTOBER_BUS_PORT = "9";
+		process.env.OCTOBER_INFERENCE_TOKEN = "oct_inf_explicit";
+		setSupabaseEnv();
+		await seedOctoberCredential();
+		expect(process.env.OCTOBER_INFERENCE_TOKEN).toBe("access-1");
+		delete process.env.OCTOBER_SUPABASE_ACCESS_TOKEN;
+		await ensureDesktopOctoberAccess();
+		expect(process.env.OCTOBER_INFERENCE_TOKEN).toBe("oct_inf_explicit");
+	});
+
+	it("does not erase an externally replaced token when clearing Desktop state", async () => {
+		process.env.OCTOBER_BUS_PORT = "9";
+		setSupabaseEnv();
+		await seedOctoberCredential();
+		process.env.OCTOBER_INFERENCE_TOKEN = "oct_inf_replacement";
+		delete process.env.OCTOBER_SUPABASE_ACCESS_TOKEN;
+		await ensureDesktopOctoberAccess();
+		expect(process.env.OCTOBER_INFERENCE_TOKEN).toBe("oct_inf_replacement");
+	});
 	it("writes the app session into the credential store, is idempotent, and lets a fresher session win", async () => {
 		const dir = makeTmpDir();
 		const authPath = join(dir, "auth.json");
@@ -296,7 +324,6 @@ describe("october credential seeding", () => {
 	it("surfaces a failed standalone store write instead of swallowing it", async () => {
 		const dir = makeTmpDir();
 		setSupabaseEnv({ OCTOBER_CODING_AGENT_DIR: dir });
-		const { AuthStorage } = await import("../src/core/auth-storage.ts");
 		const original = AuthStorage.create;
 		AuthStorage.create = () => {
 			throw new Error("disk full");

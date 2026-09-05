@@ -27,7 +27,7 @@ Fast in a terminal. Extensible as a runtime. Native to October Bus.
 
 **October Harness is a complete open-source coding agent built to work alone and with other agents.** Run it as an interactive terminal partner, a one-shot command, a JSON process, an RPC server, or an embedded SDK. Use October inference or bring another supported model provider.
 
-Inside October, the same harness becomes a first-class multiplayer agent: it discovers peers through [October Bus](https://github.com/october-dev/october-bus), receives durable work, delegates tasks, exchanges correlated replies, publishes lifecycle and context, and keeps execution authority local to the process doing the work.
+October discovers tools automatically from the public [October Bus](https://github.com/october-dev/october-bus) launcher or October Desktop. Agents can pull durable messages, acknowledge handled work, coordinate tasks, and send correlated replies. Public Bus delivery is pull-only: idle agents do not wake automatically. Desktop additionally supplies session and turn context through its hook protocol.
 
 October Bus is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
 
@@ -146,11 +146,20 @@ october --no-session               # run without persistence
 october -p "Summarize this repo"   # one-shot prompt
 ```
 
-Bus integration is execution-gated. Without a valid Bus port, canvas, and node identity, October registers no Bus tools or hooks and behaves as a normal standalone harness.
+Bus integration is execution-gated. Public Bus requires the launcher's address, MCP URL, agent ID, execution ID, and agent token. Desktop uses its port, canvas, and node contract. With neither valid configuration, October registers no Bus tools or hooks. Startup never prints “What's New”; use `/changelog` explicitly to view release history.
 
 ## Two harnesses, one Bus
 
-Attach two October Harness processes, or October plus another compatible harness, to the same local [October Bus](https://github.com/october-dev/october-bus). In October Desktop, this is as simple as placing two terminal nodes on one canvas and launching the harness in each.
+Start a local [October Bus](https://github.com/october-dev/october-bus), create a scope, and keep its scope token in the launching shell. In separate terminals, using the same scope:
+
+```bash
+# Terminal 1
+OCTOBER_BUS_SCOPE_TOKEN=<scope-token> october-bus agent run --id planner --name Planner -- october
+# Terminal 2
+OCTOBER_BUS_SCOPE_TOKEN=<scope-token> october-bus agent run --id builder --name Builder --connect-to planner -- october
+```
+
+The launcher injects execution-scoped credentials; October discovers MCP tools without a separate MCP configuration. The scope token is not passed to October. Submit a prompt to each agent: this adapter does not automatically wake an idle session. In Desktop, launch the harness in two terminal nodes on one canvas; Desktop uses its own hook contract.
 
 Ask the first agent:
 
@@ -165,16 +174,18 @@ The collaboration is visible in protocol operations:
 planner  → list_peers()
 bus      → builder [attached, ready, local]
 
-planner  → message_peer(builder, intent=request,
+planner  → message_peer(builder, mode=request,
                          "Review the authentication flow for failure cases.")
 bus      → request accepted durably as msg_01
 
 builder  → check_inbox()
-builder  → claim_task("Review authentication flow")
-builder  → message_peer(planner, intent=response, responseTo=msg_01,
+planner  → add_task(title="Review authentication flow") → task_01
+builder  → claim_task(taskId=task_01)
+builder  → message_peer(planner, mode=response, responseTo=msg_01,
                          "Found two gaps: expired-device-code recovery and token revocation UX.")
 
-planner  → correlated response received
+builder  → acknowledge_messages(messageIds=[msg_01])
+planner  → check_inbox() → correlated response received
 ```
 
 This is more than agent-to-agent chat. The Bus keeps peer identity, reachability, durable delivery, request/reply correlation, shared tasks, dependencies, lifecycle, and human escalation as explicit protocol state. A peer request never expands the receiving harness's permissions.
@@ -184,9 +195,9 @@ This is more than agent-to-agent chat. The Bus keeps peer identity, reachability
 October Harness is the first-party terminal agent for the October Desktop app:
 
 - **Zero-config authentication.** Desktop supplies and refreshes the current October session.
-- **Managed runtime.** The app installs and pins a verified harness build on its private Node runtime.
+- **Managed runtime.** Desktop controls its installed harness version. Updating npm alone does not update a Desktop-pinned installation.
 - **Bus-native collaboration.** The harness receives an execution-scoped identity and registers peer, inbox, task, and status tools from the local Bus.
-- **Lifecycle hooks.** Prompt, turn, input, and session events provide evidence for safe delivery and reply completion.
+- **Lifecycle hooks.** Desktop receives session live/offline, pre-prompt, and turn-stop hooks. User-dialog readiness and background inbox wake-up are not implemented. Public Bus registration, heartbeat, and shutdown belong to its launcher.
 - **October context.** Bounded orientation, peer, inbox, and summary context can enter the agent at the appropriate prompt boundary.
 - **Local authority.** Bus credentials and process identity belong to one execution and disappear when that run ends.
 
@@ -222,7 +233,7 @@ October adds three explicit tool-permission modes:
 | `accept-edits` | Allow | Allow | Ask |
 | `bypass` | Allow | Allow | Allow |
 
-Select a mode with `--permission-mode`, `OCTOBER_PERMISSION_MODE`, project `.october/settings.json`, or global `~/.october/agent/settings.json`. The default is `bypass`. In a non-interactive run, an operation that requires a prompt is blocked rather than silently approved.
+Set the process policy with `--permission-mode`, then `OCTOBER_PERMISSION_MODE`, then global `~/.october/agent/settings.json` (in that precedence order). The default is `bypass`. Trusted project `.october/settings.json` may only tighten that policy; untrusted project settings are ignored. Policy is fixed for the session, so tool edits cannot grant more authority. Restart with an explicit user-selected mode to change it. Non-interactive operations requiring approval are blocked.
 
 Project trust is separate from tool permissions. It controls whether October loads project-local settings, extensions, skills, prompts, themes, and packages. It is an input-loading boundary, not a sandbox.
 
@@ -300,7 +311,7 @@ October Harness is a real downstream product, not a renamed Pi binary. We contin
 | --- | --- | --- |
 | Runtime | Agent loop, tools, provider abstraction, TUI, sessions, RPC, SDK | `october` CLI/package identity, `.october` configuration, managed distribution |
 | Models | Multi-provider APIs and catalogs | October inference provider, dynamic October catalog, device login, Desktop session refresh |
-| Collaboration | General extension primitives | Native October Bus client, peer tools, durable inbox, task coordination, lifecycle and reply hooks |
+| Collaboration | General extension primitives | Public/desktop Bus MCP tools, pull-based durable inbox and task operations, Desktop session/turn hooks |
 | Context | Project instructions, skills, prompts, extensions | Bus orientation and peer/inbox context, execution identity, turn summaries |
 | Permissions | Project trust and host-process security model | `ask`, `accept-edits`, and `bypass` tool-permission modes |
 | Product integration | Portable terminal harness | October header, Desktop launch contract, safe self-update and first-party runtime behavior |
@@ -352,7 +363,7 @@ npm run check
 Our upstream policy is straightforward:
 
 - keep Pi copyright, MIT license, package attribution, and provenance intact;
-- track Pi through explicit, reviewable upstream merges;
+- treat Pi as the source of truth for inherited code and track it through explicit, reviewable upstream merges;
 - prefer sending generally useful, October-neutral fixes upstream when practical;
 - keep October-specific inference, Bus, permission, Desktop, and product behavior in this repository;
 - resolve upstream conflicts without weakening October's public harness or Bus contracts;
@@ -363,7 +374,7 @@ For substantial October-specific work, open an issue before implementation. If a
 ## Roadmap
 
 - Make the October Harness the clearest reference implementation of the October Bus compatibility contract.
-- Reduce standalone Bus setup to a single, well-documented local workflow.
+- Complete released-harness Bus conformance evidence, then add opt-in idle delivery and user-dialog readiness signals.
 - Expand adapter and conformance examples for mixed-harness teams.
 - Keep provider and model support current without coupling the harness to one inference backend.
 - Improve session portability between standalone, Desktop, RPC, and SDK usage.

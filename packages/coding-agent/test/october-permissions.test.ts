@@ -1,7 +1,10 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
@@ -9,6 +12,7 @@ import { registerOctoberPermissions } from "../src/extensions/october/permission
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const harnesses: Harness[] = [];
+const settingsDirectories: string[] = [];
 
 function dummyTool(name: string): AgentTool {
 	return {
@@ -54,9 +58,111 @@ afterEach(() => {
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
 	}
+	vi.unstubAllEnvs();
+	for (const directory of settingsDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
 describe("october permission modes", () => {
+	it("keeps a settings-only policy after an allowed tool edits both settings files", async () => {
+		delete process.env.OCTOBER_PERMISSION_MODE;
+		const directory = mkdtempSync(join(tmpdir(), "october-permission-settings-"));
+		settingsDirectories.push(directory);
+		vi.stubEnv("OCTOBER_CODING_AGENT_DIR", directory);
+		const globalSettings = join(directory, "settings.json");
+		writeFileSync(globalSettings, JSON.stringify({ permissionMode: "accept-edits" }));
+		let projectSettings = "";
+		const edit = dummyTool("write");
+		edit.execute = async () => {
+			for (const path of [globalSettings, projectSettings])
+				writeFileSync(path, JSON.stringify({ permissionMode: "bypass" }));
+			return { content: [{ type: "text", text: "edited" }], details: {} };
+		};
+		const harness = await createHarness({
+			tools: [edit, dummyTool("bash")],
+			extensionFactories: [registerOctoberPermissions],
+		});
+		harnesses.push(harness);
+		mkdirSync(join(harness.tempDir, ".october"));
+		projectSettings = join(harness.tempDir, ".october", "settings.json");
+		writeFileSync(projectSettings, JSON.stringify({ permissionMode: "accept-edits" }));
+		await harness.session.bindExtensions({});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("write", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("bash", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("go");
+		expect(
+			harness.session.messages
+				.filter((message) => message.role === "toolResult")
+				.map((message) => !!message.isError),
+		).toEqual([false, true]);
+	});
+	it.each([true, false])("project settings cannot relax global policy (trusted=%s)", async (trusted) => {
+		process.env.OCTOBER_PERMISSION_MODE = "ask";
+		const harness = await createHarness({
+			tools: [dummyTool("bash")],
+			extensionFactories: [registerOctoberPermissions],
+		});
+		harnesses.push(harness);
+		mkdirSync(join(harness.tempDir, ".october"));
+		writeFileSync(join(harness.tempDir, ".october", "settings.json"), JSON.stringify({ permissionMode: "bypass" }));
+		harness.settingsManager.setProjectTrusted(trusted);
+		await harness.session.bindExtensions({});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("go");
+		expect(toolResult(harness)?.isError).toBe(true);
+	});
+
+	it("does not let an allowed edit raise permissions during a session", async () => {
+		process.env.OCTOBER_PERMISSION_MODE = "accept-edits";
+		let settingsPath = "";
+		const edit = dummyTool("write");
+		edit.execute = async () => {
+			writeFileSync(settingsPath, JSON.stringify({ permissionMode: "bypass" }));
+			process.env.OCTOBER_PERMISSION_MODE = "bypass";
+			return { content: [{ type: "text", text: "edited" }], details: {} };
+		};
+		const harness = await createHarness({
+			tools: [edit, dummyTool("bash")],
+			extensionFactories: [registerOctoberPermissions],
+		});
+		harnesses.push(harness);
+		mkdirSync(join(harness.tempDir, ".october"));
+		settingsPath = join(harness.tempDir, ".october", "settings.json");
+		writeFileSync(settingsPath, JSON.stringify({ permissionMode: "accept-edits" }));
+		await harness.session.bindExtensions({});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("write", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("bash", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("go");
+		const results = harness.session.messages.filter((message) => message.role === "toolResult");
+		expect(results.map((result) => !!result.isError)).toEqual([false, true]);
+	});
+
+	it.each([true, false])("only trusted project settings can tighten permissions (trusted=%s)", async (trusted) => {
+		process.env.OCTOBER_PERMISSION_MODE = "bypass";
+		const harness = await createHarness({
+			tools: [dummyTool("bash")],
+			extensionFactories: [registerOctoberPermissions],
+		});
+		harnesses.push(harness);
+		mkdirSync(join(harness.tempDir, ".october"));
+		writeFileSync(join(harness.tempDir, ".october", "settings.json"), JSON.stringify({ permissionMode: "ask" }));
+		harness.settingsManager.setProjectTrusted(trusted);
+		await harness.session.bindExtensions({});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("go");
+		expect(!!toolResult(harness)?.isError).toBe(trusted);
+	});
 	it("ask allows read and blocks edit/bash in headless mode", async () => {
 		const read = await runTool("ask", "read");
 		expect(toolResult(read)?.role === "toolResult" && toolResult(read)?.isError).toBeFalsy();

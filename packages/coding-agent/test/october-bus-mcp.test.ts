@@ -19,6 +19,11 @@ const BUS_ENV_KEYS = [
 	"OCTOBER_BUS_NODE",
 	"OCTOBER_BUS_MCP_CAPABILITY",
 	"OCTOBER_BUS_TOKEN",
+	"OCTOBER_BUS_ADDRESS",
+	"OCTOBER_BUS_MCP_URL",
+	"OCTOBER_BUS_AGENT_ID",
+	"OCTOBER_BUS_EXECUTION_ID",
+	"OCTOBER_BUS_AGENT_TOKEN",
 ] as const;
 
 interface RecordedRequest {
@@ -190,6 +195,7 @@ describe("october bus env gate", () => {
 				OCTOBER_BUS_NODE: "n",
 			}),
 		).toEqual({
+			transport: "desktop",
 			port: 4377,
 			canvas: "c",
 			node: "n",
@@ -227,6 +233,104 @@ describe("october bus inertness", () => {
 });
 
 describe("october bus MCP client", () => {
+	it.each([null, 1, {}, { jsonrpc: "2.0", id: 999999, result: {} }, { jsonrpc: "1.0", id: 1, result: {} }])(
+		"rejects invalid or mismatched responses: %j",
+		async (payload) => {
+			const { port } = await listen((_request, response) => writeJson(response, payload));
+			setBusEnv(port);
+			expect((await new OctoberMcpClient(parseOctoberBusEnv()!).listTools()).ok).toBe(false);
+		},
+	);
+
+	it("rejects HTTP failures even when the body contains a matching result", async () => {
+		const { port } = await listen(async (request, response) => {
+			const body = JSON.parse(await readBody(request)) as { id: number };
+			response.writeHead(500, { "Content-Type": "application/json" });
+			response.end(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } }));
+		});
+		setBusEnv(port);
+		expect(await new OctoberMcpClient(parseOctoberBusEnv()!).listTools()).toEqual({
+			ok: false,
+			error: "MCP HTTP 500",
+		});
+	});
+
+	it("rejects oversized chunked responses", async () => {
+		const { port } = await listen((_request, response) => {
+			response.writeHead(200, { "Content-Type": "application/json" });
+			response.end(" ".repeat(8 * 1024 * 1024 + 1));
+		});
+		setBusEnv(port);
+		const result = await new OctoberMcpClient(parseOctoberBusEnv()!).listTools();
+		expect(result).toEqual({ ok: false, error: expect.stringContaining("exceeds") });
+	});
+
+	it.each(["\n", "\r\n"])("finishes SSE requests without waiting for EOF (separator=%j)", async (newline) => {
+		const { port } = await listen(async (request, response) => {
+			const body = JSON.parse(await readBody(request)) as { id?: number; method: string };
+			if (!body.id) {
+				response.writeHead(202).end();
+				return;
+			}
+			response.writeHead(200, { "Content-Type": "text/event-stream" });
+			const result = body.method === "initialize" ? { protocolVersion: "2025-03-26" } : { tools: [] };
+			response.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: 999, result: {} })}${newline}${newline}`);
+			response.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: body.id, result })}${newline}${newline}`);
+		});
+		setBusEnv(port);
+		expect(await new OctoberMcpClient(parseOctoberBusEnv()!).listTools(AbortSignal.timeout(1000))).toEqual({
+			ok: true,
+			value: [],
+		});
+	});
+
+	it("automatically attaches public launcher identities using bearer auth, with no Desktop hooks", async () => {
+		const stub = await startStubBus().ready;
+		process.env.OCTOBER_BUS_ADDRESS = `http://127.0.0.1:${stub.port}`;
+		process.env.OCTOBER_BUS_MCP_URL = `http://127.0.0.1:${stub.port}/mcp`;
+		process.env.OCTOBER_BUS_AGENT_ID = "reviewer";
+		process.env.OCTOBER_BUS_EXECUTION_ID = "exec-1";
+		process.env.OCTOBER_BUS_AGENT_TOKEN = "public-secret";
+		const harness = await createHarness({ extensionFactories: [octoberExtension] });
+		harnesses.push(harness);
+		await harness.session.bindExtensions({});
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall(`${MCP_TOOL_PREFIX}echo`, { message: "public" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("go");
+		expect(harness.session.messages.some((message) => message.role === "toolResult" && !message.isError)).toBe(true);
+		expect(stub.hits.count).toBe(stub.requests.length);
+		for (const request of stub.requests) {
+			expect(request.headers.authorization).toBe("Bearer public-secret");
+			expect(request.headers["x-october-node"]).toBeUndefined();
+		}
+		const context = harness.session.messages.filter((message) => message.role === "custom");
+		expect(JSON.stringify(context)).toContain("reviewer");
+		expect(JSON.stringify(context)).not.toContain("public-secret");
+	});
+
+	it("rejects partial public configuration, cross-origin MCP URLs and plaintext remote tokens", () => {
+		const env = {
+			OCTOBER_BUS_ADDRESS: "http://127.0.0.1:4765",
+			OCTOBER_BUS_MCP_URL: "http://127.0.0.1:4765/mcp",
+			OCTOBER_BUS_AGENT_ID: "a",
+			OCTOBER_BUS_EXECUTION_ID: "e",
+			OCTOBER_BUS_AGENT_TOKEN: "secret",
+		};
+		expect(parseOctoberBusEnv(env)?.transport).toBe("public");
+		expect(parseOctoberBusEnv({ ...env, OCTOBER_BUS_AGENT_TOKEN: undefined })).toBeUndefined();
+		expect(parseOctoberBusEnv({ ...env, OCTOBER_BUS_MCP_URL: "https://other.example/mcp" })).toBeUndefined();
+		expect(
+			parseOctoberBusEnv({
+				...env,
+				OCTOBER_BUS_ADDRESS: "http://remote.example",
+				OCTOBER_BUS_MCP_URL: "http://remote.example/mcp",
+			}),
+		).toBeUndefined();
+	});
 	it("lists prefixed tools, echoes the session id, and round-trips a call", async () => {
 		const stub = await startStubBus().ready;
 		setBusEnv(stub.port);

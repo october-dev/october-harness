@@ -22,7 +22,15 @@ describe("October package branding", () => {
 		expect(pkg.bugs?.url).toBe("https://github.com/october-dev/october-harness/issues");
 		expect(pkg.repository?.url).toBe("git+https://github.com/october-dev/october-harness.git");
 		expect(pkg.repository?.directory).toBe("packages/coding-agent");
-		expect(pkg.files).toEqual(["dist", "docs", "CHANGELOG.md", "npm-shrinkwrap.json"]);
+		expect(pkg.files).toEqual([
+			"dist",
+			"!dist/client",
+			"!dist/experimental",
+			"!dist/cli/experimental",
+			"docs",
+			"CHANGELOG.md",
+			"npm-shrinkwrap.json",
+		]);
 		expect(pkg.files).not.toContain("examples");
 		const tsconfig = JSON.parse(readFileSync(join(dirname(packageJsonPath), "tsconfig.build.json"), "utf-8")) as {
 			compilerOptions?: { inlineSources?: boolean };

@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symli
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { installCodingAgentConsumer, packReleasePackages, smokeTestCodingAgentConsumer } from "./coding-agent-consumer.mjs";
 
 const packages = [
 	{ directory: "packages/chord", name: "@earendil-works/chord" },
@@ -137,11 +138,6 @@ function prepareOutputDirectory(options, repoRoot) {
 	return outDir;
 }
 
-function fileSpecifier(fromDirectory, file) {
-	const relativePath = relative(fromDirectory, file).replaceAll("\\", "/");
-	return `file:${relativePath.startsWith(".") ? relativePath : `./${relativePath}`}`;
-}
-
 function currentBinaryPlatform() {
 	if (process.platform === "win32") return process.arch === "arm64" ? "windows-arm64" : "windows-x64";
 	if (process.platform === "darwin") return process.arch === "arm64" ? "darwin-arm64" : "darwin-x64";
@@ -166,40 +162,24 @@ function buildBunBinaryRelease(targetDirectory, archiveDirectory) {
 	]);
 	rmSync(targetDirectory, { force: true, recursive: true });
 	cpSync(join(binaryBuildDirectory, platform), targetDirectory, { recursive: true });
-	const archiveName = platform.startsWith("windows-") ? `pi-${platform}.zip` : `pi-${platform}.tar.gz`;
+	const archiveName = platform.startsWith("windows-") ? `october-${platform}.zip` : `october-${platform}.tar.gz`;
 	cpSync(join(binaryBuildDirectory, archiveName), join(archiveDirectory, archiveName));
 	return platform;
 }
 
-function createPiShim(installDirectory) {
+function createOctoberShim(installDirectory) {
 	const binDirectory = join(installDirectory, "node_modules", ".bin");
 	if (process.platform === "win32") {
-		if (existsSync(join(binDirectory, "pi.cmd"))) {
-			writeFileSync(join(installDirectory, "pi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pi.cmd" %*\r\n');
-			writeFileSync(join(installDirectory, "pi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pi.ps1" @args\n');
+		if (existsSync(join(binDirectory, "october.cmd"))) {
+			writeFileSync(join(installDirectory, "october.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\october.cmd" %*\r\n');
+			writeFileSync(join(installDirectory, "october.ps1"), '& "$PSScriptRoot/node_modules/.bin/october.ps1" @args\n');
 			return;
 		}
-		writeFileSync(join(installDirectory, "pi.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\pi.exe" %*\r\n');
-		writeFileSync(join(installDirectory, "pi.ps1"), '& "$PSScriptRoot/node_modules/.bin/pi.exe" @args\n');
+		writeFileSync(join(installDirectory, "october.cmd"), '@ECHO off\r\n"%~dp0node_modules\\.bin\\october.exe" %*\r\n');
+		writeFileSync(join(installDirectory, "october.ps1"), '& "$PSScriptRoot/node_modules/.bin/october.exe" @args\n');
 		return;
 	}
-	symlinkSync(join("node_modules", ".bin", "pi"), join(installDirectory, "pi"));
-}
-
-function packPackage(pkg, tarballDirectory) {
-	const packageJson = readPackageJson(pkg.directory);
-	if (packageJson.name !== pkg.name) {
-		throw new Error(`${pkg.directory}/package.json has name ${packageJson.name}, expected ${pkg.name}`);
-	}
-
-	const output = run("npm", ["pack", "--json", "--pack-destination", tarballDirectory], {
-		capture: true,
-		cwd: pkg.directory,
-	});
-	// npm <11.6 returns an array; newer npm returns an object keyed by package name.
-	const parsed = JSON.parse(output);
-	const packed = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
-	return join(tarballDirectory, packed.filename);
+	symlinkSync(join("node_modules", ".bin", "october"), join(installDirectory, "october"));
 }
 
 const options = parseArgs();
@@ -234,37 +214,23 @@ if (!options.skipTest) {
 	run("./test.sh", [], { cwd: repoRoot });
 }
 
-const tarballs = new Map();
-for (const pkg of packages) {
-	const tarball = packPackage(pkg, tarballDirectory);
-	tarballs.set(pkg.name, tarball);
-}
+const tarballs = packReleasePackages(packages, tarballDirectory);
 
 let binaryPlatform;
 if (!options.skipInstall) {
 	binaryPlatform = buildBunBinaryRelease(binaryDirectory, outDir);
 
-	mkdirSync(nodeInstallDirectory, { recursive: true });
-	const dependencies = Object.fromEntries(
-		packages.map((pkg) => [pkg.name, fileSpecifier(nodeInstallDirectory, tarballs.get(pkg.name))]),
-	);
-	const installPackageJson = `${JSON.stringify({ private: true, dependencies, overrides: dependencies }, undefined, "\t")}\n`;
-	writeFileSync(join(nodeInstallDirectory, "package.json"), installPackageJson);
-
-	run("npm", ["install", "--omit=dev", "--ignore-scripts"], { cwd: nodeInstallDirectory });
-	createPiShim(nodeInstallDirectory);
+	installCodingAgentConsumer(nodeInstallDirectory, tarballs);
+	smokeTestCodingAgentConsumer(nodeInstallDirectory);
+	createOctoberShim(nodeInstallDirectory);
 
 	if (!options.skipBunInstall) {
 		if (!commandExists("bun")) {
 			throw new Error("Bun is required for the isolated Bun install. Use --skip-bun-install to skip it.");
 		}
-		mkdirSync(bunInstallDirectory, { recursive: true });
-		const bunDependencies = Object.fromEntries(
-			packages.map((pkg) => [pkg.name, fileSpecifier(bunInstallDirectory, tarballs.get(pkg.name))]),
-		);
-		writeFileSync(join(bunInstallDirectory, "package.json"), `${JSON.stringify({ private: true, dependencies: bunDependencies, overrides: bunDependencies }, undefined, "\t")}\n`);
-		run("bun", ["install", "--production", "--ignore-scripts"], { cwd: bunInstallDirectory });
-		createPiShim(bunInstallDirectory);
+		installCodingAgentConsumer(bunInstallDirectory, tarballs, "bun");
+		smokeTestCodingAgentConsumer(bunInstallDirectory, "bun");
+		createOctoberShim(bunInstallDirectory);
 	}
 }
 
@@ -278,19 +244,19 @@ for (const tarball of tarballs.values()) {
 if (!options.skipInstall) {
 	console.log("\nLocal Bun binary release:");
 	console.log(`  ${binaryDirectory}`);
-	console.log(`  ${join(outDir, `pi-${binaryPlatform}.${String(binaryPlatform).startsWith("windows-") ? "zip" : "tar.gz"}`)}`);
+	console.log(`  ${join(outDir, `october-${binaryPlatform}.${String(binaryPlatform).startsWith("windows-") ? "zip" : "tar.gz"}`)}`);
 	console.log("\nRun the local Bun binary release from outside the repository:");
-	console.log(`  ${join(binaryDirectory, String(binaryPlatform).startsWith("windows-") ? "pi.exe" : "pi")} --help`);
+	console.log(`  ${join(binaryDirectory, String(binaryPlatform).startsWith("windows-") ? "october.exe" : "october")} --help`);
 
 	console.log("\nIsolated npm install:");
 	console.log(`  ${nodeInstallDirectory}`);
 	console.log("\nRun the locally packed npm CLI from outside the repository:");
-	console.log(`  ${join(nodeInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi")} --help`);
+	console.log(`  ${join(nodeInstallDirectory, process.platform === "win32" ? "october.cmd" : "october")} --help`);
 
 	if (!options.skipBunInstall) {
 		console.log("\nIsolated Bun package install:");
 		console.log(`  ${bunInstallDirectory}`);
 		console.log("\nRun the locally packed Bun package CLI from outside the repository:");
-		console.log(`  ${join(bunInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi")} --help`);
+		console.log(`  ${join(bunInstallDirectory, process.platform === "win32" ? "october.cmd" : "october")} --help`);
 	}
 }

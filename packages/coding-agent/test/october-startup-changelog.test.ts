@@ -63,7 +63,7 @@ describe("October interactive startup changelog", () => {
 	});
 
 	it("never returns changelog markdown on a version bump", () => {
-		expect(VERSION).toBe("0.84.3-october.1");
+		expect(VERSION).not.toBe("0.84.2-october.3");
 		const context = createContext("0.84.2-october.3");
 		expect(getChangelogForDisplay.call(context)).toBeUndefined();
 		expect(context.session.settingsManager.setLastChangelogVersion).toHaveBeenCalledWith(VERSION);

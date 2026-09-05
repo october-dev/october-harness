@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "../../core/extensions/types.ts";
 import { registerOctoberDesktopAuth, seedOctoberCredential } from "./auth.ts";
 import { parseOctoberBusEnv } from "./bus/env.ts";
 import { registerOctoberHooks } from "./bus/hooks.ts";
+import { registerOctoberPublicBus } from "./bus/public.ts";
 import { registerOctoberBusTools } from "./bus/tools.ts";
 import { registerOctoberHeader } from "./header.ts";
 import { registerOctoberPermissions } from "./permissions.ts";
@@ -16,6 +17,7 @@ export default async function octoberExtension(pi: ExtensionAPI): Promise<void> 
 	registerOctoberDesktopAuth(pi);
 	const bus = parseOctoberBusEnv();
 	if (!bus) return;
-	registerOctoberHooks(pi, bus);
+	if (bus.transport === "desktop") registerOctoberHooks(pi, bus);
+	else registerOctoberPublicBus(pi, bus);
 	await registerOctoberBusTools(pi, bus);
 }

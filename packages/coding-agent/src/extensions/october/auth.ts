@@ -122,6 +122,8 @@ interface SupabaseTokenResponse {
 
 let desktopCredential: OAuthCredentials | undefined;
 let desktopUserId: string | undefined;
+let desktopOwnedToken: string | undefined;
+let previousInferenceToken: string | undefined;
 let desktopRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let desktopRefreshInFlight: Promise<void> | undefined;
 /** Process-global: once Desktop has rotated the session via the bus, the spawn-time refresh token is dead. */
@@ -147,14 +149,17 @@ export function stopDesktopOctoberRefresh(): void {
 export function resetDesktopOctoberState(): void {
 	stopDesktopOctoberRefresh();
 	desktopRefreshInFlight = undefined;
-	desktopCredential = undefined;
-	desktopUserId = undefined;
+	clearDesktopCredential();
 	busRefreshEverSucceeded = false;
 }
 
 function applyDesktopCredential(next: OAuthCredentials, userId?: string): OAuthCredentials {
+	if (desktopOwnedToken === undefined || process.env.OCTOBER_INFERENCE_TOKEN !== desktopOwnedToken) {
+		previousInferenceToken = process.env.OCTOBER_INFERENCE_TOKEN;
+	}
 	desktopCredential = next;
 	if (userId) desktopUserId = userId;
+	desktopOwnedToken = next.access;
 	process.env.OCTOBER_INFERENCE_TOKEN = next.access;
 	return next;
 }
@@ -162,7 +167,12 @@ function applyDesktopCredential(next: OAuthCredentials, userId?: string): OAuthC
 function clearDesktopCredential(): void {
 	desktopCredential = undefined;
 	desktopUserId = undefined;
-	delete process.env.OCTOBER_INFERENCE_TOKEN;
+	if (desktopOwnedToken !== undefined && process.env.OCTOBER_INFERENCE_TOKEN === desktopOwnedToken) {
+		if (previousInferenceToken === undefined) delete process.env.OCTOBER_INFERENCE_TOKEN;
+		else process.env.OCTOBER_INFERENCE_TOKEN = previousInferenceToken;
+	}
+	desktopOwnedToken = undefined;
+	previousInferenceToken = undefined;
 }
 
 async function refreshViaBus(credentials: OAuthCredentials, signal: AbortSignal): Promise<OAuthCredentials> {

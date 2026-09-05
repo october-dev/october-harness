@@ -1,0 +1,68 @@
+name: Publish October
+
+on:
+  push:
+    tags:
+      - 'october-v*'
+
+permissions: {}
+
+concurrency:
+  group: publish-october
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'october-dev/october-harness'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+      - run: npm ci --ignore-scripts
+      - run: npm run hydrate:model-data
+      - run: npm run build:offline
+      - run: npm run check
+      - run: node --test scripts/october-release.test.mjs
+      - name: October regression tests (no live providers)
+        working-directory: packages/coding-agent
+        env:
+          PI_OFFLINE: '1'
+          PI_TELEMETRY: '0'
+        run: node ../../node_modules/vitest/dist/cli.js --run test/october-auth.test.ts test/october-permissions.test.ts test/october-bus-mcp.test.ts test/october-hooks.test.ts test/october-startup-changelog.test.ts test/october-header.test.ts test/october-branding.test.ts test/october-provider.test.ts test/october-device-code.test.ts test/october-phone-home.test.ts test/cli-node-version.test.ts
+      - name: Pack and verify isolated npm and Bun installs
+        run: node scripts/october-release.mjs pack "${RUNNER_TEMP}/october-release"
+      - name: Build pinned public Bus for interoperability tests
+        env:
+          OCTOBER_BUS_COMMIT: e65eef2158aeed6c27493000f85de6b940675c2e
+        run: |
+          git init "${RUNNER_TEMP}/october-bus"
+          git -C "${RUNNER_TEMP}/october-bus" remote add origin https://github.com/october-dev/october-bus.git
+          git -C "${RUNNER_TEMP}/october-bus" fetch --depth=1 origin "${OCTOBER_BUS_COMMIT}"
+          git -C "${RUNNER_TEMP}/october-bus" checkout --detach FETCH_HEAD
+          cd "${RUNNER_TEMP}/october-bus"
+          go build -o "${RUNNER_TEMP}/october-bus-test" ./cmd/october-bus
+      - name: Test two faux-provider harnesses against public Bus
+        working-directory: packages/coding-agent
+        env:
+          OCTOBER_BUS_TEST_BINARY: ${{ runner.temp }}/october-bus-test
+          PI_OFFLINE: '1'
+          PI_TELEMETRY: '0'
+        run: node ../../node_modules/vitest/dist/cli.js --run test/october-public-bus.integration.test.ts
+      - name: Publish only October with npm trusted publishing
+        env:
+          OCTOBER_RELEASE_ROOT: ${{ runner.temp }}/october-release
+        run: |
+          version="${GITHUB_REF_NAME#october-v}"
+          node scripts/october-release.mjs publish "${OCTOBER_RELEASE_ROOT}/tarballs/october-dev-october-${version}.tgz"

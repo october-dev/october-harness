@@ -19,8 +19,14 @@ export function argvRequestsVersion(argv: readonly string[]): boolean {
  * Walk up from the compiled (or source) file to package.json. Node-builtin only —
  * Desktop's `october --version` gate must not load config/main/undici.
  */
-export function readCliPackageVersion(startDir = dirname(fileURLToPath(import.meta.url))): string {
-	let dir = startDir;
+export function readCliPackageVersion(
+	startDir?: string,
+	moduleUrl = import.meta.url,
+	executablePath = process.execPath,
+): string {
+	// Match Pi's compiled-Bun package lookup without importing config/undici.
+	const compiled = moduleUrl.includes("$bunfs") || moduleUrl.includes("~BUN") || moduleUrl.includes("%7EBUN");
+	let dir = startDir ?? (compiled ? dirname(executablePath) : dirname(fileURLToPath(moduleUrl)));
 	for (;;) {
 		const candidate = join(dir, "package.json");
 		if (existsSync(candidate)) {

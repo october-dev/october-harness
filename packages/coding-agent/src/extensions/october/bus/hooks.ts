@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "../../../core/extensions/types.ts";
-import type { OctoberBusEnv } from "./env.ts";
+import type { OctoberDesktopBusEnv } from "./env.ts";
 import { octoberBusUrl } from "./env.ts";
+import { readBusResponse } from "./response.ts";
 
 const FIRE_TIMEOUT_MS = 3_000;
 const PRE_PROMPT_TIMEOUT_MS = 5_000;
@@ -10,13 +11,13 @@ const EXCERPT_ASSISTANT_LIMIT = 12_000;
 const INJECT_LIMIT = 100_000;
 const AGENT = "october";
 
-function hookHeaders(env: OctoberBusEnv): Record<string, string> {
+function hookHeaders(env: OctoberDesktopBusEnv): Record<string, string> {
 	const headers: Record<string, string> = {};
 	if (env.token) headers["X-October-Bus-Token"] = env.token;
 	return headers;
 }
 
-function identity(env: OctoberBusEnv): { canvas: string; node: string; launch?: string; agent: string } {
+function identity(env: OctoberDesktopBusEnv): { canvas: string; node: string; launch?: string; agent: string } {
 	return {
 		canvas: env.canvas,
 		node: env.node,
@@ -61,15 +62,16 @@ function turnExcerpt(
 	};
 }
 
-async function postJson(env: OctoberBusEnv, route: string, body: unknown): Promise<unknown> {
+async function postJson(env: OctoberDesktopBusEnv, route: string, body: unknown): Promise<unknown> {
 	try {
 		const response = await fetch(octoberBusUrl(env, route), {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...hookHeaders(env) },
 			body: JSON.stringify(body),
+			redirect: "error",
 			signal: AbortSignal.timeout(FIRE_TIMEOUT_MS),
 		});
-		const text = await response.text();
+		const text = await readBusResponse(response, INJECT_LIMIT * 4);
 		if (!response.ok || text.trim().length === 0) return undefined;
 		try {
 			return JSON.parse(text) as unknown;
@@ -81,12 +83,12 @@ async function postJson(env: OctoberBusEnv, route: string, body: unknown): Promi
 	}
 }
 
-function fireAndForget(env: OctoberBusEnv, route: string, body: unknown): void {
+function fireAndForget(env: OctoberDesktopBusEnv, route: string, body: unknown): void {
 	void postJson(env, route, body);
 }
 
 /** GET /hook/pre-prompt — desktop records turn-start and returns orientation + unread peers as text. */
-async function pullPrePrompt(env: OctoberBusEnv): Promise<string> {
+async function pullPrePrompt(env: OctoberDesktopBusEnv): Promise<string> {
 	try {
 		const response = await fetch(
 			octoberBusUrl(env, "/hook/pre-prompt", {
@@ -97,17 +99,18 @@ async function pullPrePrompt(env: OctoberBusEnv): Promise<string> {
 			}),
 			{
 				headers: hookHeaders(env),
+				redirect: "error",
 				signal: AbortSignal.timeout(PRE_PROMPT_TIMEOUT_MS),
 			},
 		);
 		if (!response.ok) return "";
-		return (await response.text()).trim();
+		return (await readBusResponse(response, INJECT_LIMIT * 4)).trim();
 	} catch {
 		return "";
 	}
 }
 
-export function registerOctoberHooks(pi: ExtensionAPI, env: OctoberBusEnv): void {
+export function registerOctoberHooks(pi: ExtensionAPI, env: OctoberDesktopBusEnv): void {
 	pi.on("session_start", (_event, ctx) => {
 		let session = "";
 		let file: string | undefined;

@@ -4,7 +4,13 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "../../../core/extensions/types.ts";
 import type { OctoberBusEnv } from "./env.ts";
 import { logOctoberDebug } from "./log.ts";
-import { MCP_TOOL_PREFIX, type McpContentPart, type McpToolDefinition, OctoberMcpClient } from "./mcp-client.ts";
+import {
+	MCP_PROTOCOL_VERSION,
+	MCP_TOOL_PREFIX,
+	type McpContentPart,
+	type McpToolDefinition,
+	OctoberMcpClient,
+} from "./mcp-client.ts";
 
 const RETRY_MS = 5_000;
 
@@ -67,6 +73,30 @@ function registerTools(pi: ExtensionAPI, client: OctoberMcpClient, tools: McpToo
 
 export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusEnv): Promise<void> {
 	const client = new OctoberMcpClient(env);
+	let discoveryStatus = "discovering";
+	let closed = false;
+	let retryTimer: ReturnType<typeof setTimeout> | undefined;
+	pi.on("session_shutdown", () => {
+		closed = true;
+		if (retryTimer) clearTimeout(retryTimer);
+	});
+	pi.registerCommand("bus", {
+		description: "Show October Bus attachment and tool discovery status (no credentials)",
+		handler: async (args, ctx) => {
+			if (args.trim() && args.trim() !== "status") {
+				ctx.ui.notify("Usage: /bus status", "warning");
+				return;
+			}
+			const identity =
+				env.transport === "public"
+					? { agent: env.agentId, execution: env.executionId }
+					: { canvas: env.canvas, node: env.node };
+			ctx.ui.notify(
+				`${env.transport} Bus ${JSON.stringify(identity)}; MCP ${MCP_PROTOCOL_VERSION}; ${discoveryStatus}. Inbox delivery is pull-only. If unavailable, check the launcher configuration and restart.`,
+				"info",
+			);
+		},
+	});
 	let listed: Awaited<ReturnType<OctoberMcpClient["listTools"]>>;
 	try {
 		listed = await client.listTools();
@@ -77,7 +107,9 @@ export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusE
 	if (listed.ok) {
 		try {
 			registerTools(pi, client, listed.value);
+			discoveryStatus = `${listed.value.length} tools discovered`;
 		} catch (error) {
+			discoveryStatus = "tool registration failed";
 			// Mirror the retry path: a throw from registerTool must not discard the provider/hooks.
 			logOctoberDebug(`october-bus mcp register failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -85,17 +117,24 @@ export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusE
 	}
 
 	logOctoberDebug(`october-bus mcp unavailable: ${listed.error}`);
-	const timer = setTimeout(() => {
+	discoveryStatus = "unavailable; retry pending";
+	retryTimer = setTimeout(() => {
 		void (async () => {
 			try {
 				const retry = await client.listTools();
-				if (!retry.ok) return;
+				if (closed) return;
+				if (!retry.ok) {
+					discoveryStatus = "unavailable";
+					return;
+				}
 				registerTools(pi, client, retry.value);
+				discoveryStatus = `${retry.value.length} tools discovered`;
 			} catch (error) {
+				discoveryStatus = "unavailable";
 				// The session (or an unreachable October) must never crash the process.
 				logOctoberDebug(`october-bus mcp retry failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		})();
 	}, RETRY_MS);
-	timer.unref();
+	retryTimer.unref();
 }

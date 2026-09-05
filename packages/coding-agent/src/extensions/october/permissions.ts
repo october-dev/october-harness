@@ -1,7 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getSettingsPath } from "../../config.ts";
-import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from "../../core/extensions/types.ts";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ToolCallEvent,
+	ToolCallEventResult,
+} from "../../core/extensions/types.ts";
 
 export type OctoberPermissionMode = "ask" | "accept-edits" | "bypass";
 
@@ -32,15 +37,11 @@ function modeFromSettingsFile(path: string): OctoberPermissionMode | undefined {
 	}
 }
 
-export function resolveOctoberPermissionMode(pi: ExtensionAPI, cwd?: string): OctoberPermissionMode {
+export function resolveOctoberPermissionMode(pi: ExtensionAPI): OctoberPermissionMode {
 	const flag = pi.getFlag("permission-mode");
 	if (isMode(flag)) return flag;
 	const env = process.env.OCTOBER_PERMISSION_MODE?.trim();
 	if (isMode(env)) return env;
-	if (cwd) {
-		const project = modeFromSettingsFile(join(cwd, CONFIG_DIR_NAME, "settings.json"));
-		if (project) return project;
-	}
 	const global = modeFromSettingsFile(getSettingsPath());
 	if (global) return global;
 	return "bypass";
@@ -68,13 +69,27 @@ export function registerOctoberPermissions(pi: ExtensionAPI): void {
 		description: "Tool permission mode: ask, accept-edits, or bypass. Default bypass. Not --approve.",
 	});
 
+	// Snapshot process-owned policy before a tool can edit settings. Project settings
+	// may tighten it, never grant more authority than the user supplied globally.
+	let mode = resolveOctoberPermissionMode(pi);
+	let locked = false;
+	const lockMode = (ctx: ExtensionContext): void => {
+		if (locked) return;
+		locked = true;
+		const flag = pi.getFlag("permission-mode");
+		if (isMode(flag)) mode = flag;
+		if (!ctx.isProjectTrusted()) return;
+		const project = modeFromSettingsFile(join(ctx.cwd, CONFIG_DIR_NAME, "settings.json"));
+		const rank = { ask: 0, "accept-edits": 1, bypass: 2 };
+		if (project && rank[project] < rank[mode]) mode = project;
+	};
 	let subscribed = false;
-	const subscribe = (cwd?: string): void => {
+	const subscribe = (): void => {
 		if (subscribed) return;
-		if (resolveOctoberPermissionMode(pi, cwd) === "bypass") return;
+		if (mode === "bypass") return;
 		subscribed = true;
 		pi.on("tool_call", async (event: ToolCallEvent, ctx): Promise<ToolCallEventResult | undefined> => {
-			const mode = resolveOctoberPermissionMode(pi, ctx.cwd);
+			lockMode(ctx);
 			const toolClass = classifyTool(event.toolName);
 			if (!permissionRequiresPrompt(mode, toolClass)) return undefined;
 
@@ -96,6 +111,7 @@ export function registerOctoberPermissions(pi: ExtensionAPI): void {
 
 	subscribe();
 	pi.on("session_start", (_event, ctx) => {
-		subscribe(ctx.cwd);
+		lockMode(ctx);
+		subscribe();
 	});
 }

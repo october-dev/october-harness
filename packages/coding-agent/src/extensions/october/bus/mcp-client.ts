@@ -1,6 +1,7 @@
 import { VERSION } from "../../../config.ts";
 import type { OctoberBusEnv } from "./env.ts";
 import { octoberBusUrl } from "./env.ts";
+import { readBusResponse } from "./response.ts";
 
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 export const MCP_TOOL_PREFIX = "mcp__october-bus__";
@@ -8,6 +9,7 @@ export const MCP_TOOL_PREFIX = "mcp__october-bus__";
 const INIT_TIMEOUT_MS = 5_000;
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_TOOL_PAGES = 100;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 export interface McpToolDefinition {
 	name: string;
@@ -58,7 +60,8 @@ function parseSseMessages(body: string): JsonRpcSuccess[] {
 		const raw = dataLines.join("\n");
 		if (!raw || raw === "[DONE]") return;
 		try {
-			messages.push(JSON.parse(raw) as JsonRpcSuccess);
+			const parsed: unknown = JSON.parse(raw);
+			if (isResponse(parsed)) messages.push(parsed);
 		} catch {
 			// Ignore malformed SSE payloads.
 		}
@@ -77,6 +80,17 @@ function parseSseMessages(body: string): JsonRpcSuccess[] {
 	}
 	flush(dataLines);
 	return messages;
+}
+
+function isResponse(value: unknown): value is JsonRpcSuccess {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const message = value as JsonRpcSuccess;
+	if (message.jsonrpc !== "2.0") return false;
+	if ("result" in message === "error" in message) return false;
+	return (
+		!("error" in message) ||
+		(!!message.error && typeof message.error === "object" && typeof message.error.message === "string")
+	);
 }
 
 export class OctoberMcpClient {
@@ -109,6 +123,7 @@ export class OctoberMcpClient {
 			);
 			if (!result.ok) return result;
 			const batch = result.value.tools;
+			if (!Array.isArray(batch)) return { ok: false, error: "MCP tools/list: malformed tools" };
 			if (Array.isArray(batch)) {
 				for (const entry of batch) {
 					if (!entry || typeof entry !== "object") continue;
@@ -160,7 +175,7 @@ export class OctoberMcpClient {
 	private async ensureInitialized(signal?: AbortSignal): Promise<McpResult<void>> {
 		if (this.initialized) return { ok: true, value: undefined };
 
-		const result = await this.rpc<unknown>(
+		const result = await this.rpc<{ protocolVersion?: unknown }>(
 			"initialize",
 			{
 				protocolVersion: MCP_PROTOCOL_VERSION,
@@ -171,6 +186,9 @@ export class OctoberMcpClient {
 			signal,
 		);
 		if (!result.ok) return result;
+		if (result.value.protocolVersion !== MCP_PROTOCOL_VERSION) {
+			return { ok: false, error: "MCP initialize: unsupported protocol version" };
+		}
 
 		const notified = await this.notify("notifications/initialized", INIT_TIMEOUT_MS, signal);
 		if (!notified.ok) return notified;
@@ -187,7 +205,7 @@ export class OctoberMcpClient {
 	): Promise<McpResult<T>> {
 		const id = this.nextId++;
 		const payload = { jsonrpc: "2.0", id, method, params };
-		const response = await this.post(payload, timeoutMs, signal);
+		const response = await this.post(payload, timeoutMs, signal, id);
 		if (!response.ok) return response;
 
 		const message = this.selectMessage(response.value.messages, id);
@@ -211,52 +229,67 @@ export class OctoberMcpClient {
 	}
 
 	private selectMessage(messages: JsonRpcSuccess[], id: number): JsonRpcSuccess | undefined {
-		return (
-			messages.find((message) => message.id === id) ??
-			messages.find((message) => message.result !== undefined || message.error !== undefined)
-		);
+		return messages.find((message) => message.id === id);
 	}
 
 	private async post(
 		payload: unknown,
 		timeoutMs: number,
 		signal?: AbortSignal,
+		id?: number,
 	): Promise<McpResult<{ messages: JsonRpcSuccess[] }>> {
 		try {
 			const headers: Record<string, string> = {
 				"Content-Type": "application/json",
 				Accept: "application/json, text/event-stream",
-				"X-October-Canvas": this.env.canvas,
-				"X-October-Node": this.env.node,
 			};
-			if (this.env.capability) {
-				headers["X-October-MCP-Capability"] = this.env.capability;
+			if (this.env.transport === "public") {
+				headers.Authorization = `Bearer ${this.env.agentToken}`;
+			} else {
+				headers["X-October-Canvas"] = this.env.canvas;
+				headers["X-October-Node"] = this.env.node;
+				if (this.env.capability) headers["X-October-MCP-Capability"] = this.env.capability;
 			}
+			if (this.initialized) headers["MCP-Protocol-Version"] = MCP_PROTOCOL_VERSION;
 			if (this.sessionId) {
 				headers["Mcp-Session-Id"] = this.sessionId;
 			}
 
-			const response = await fetch(octoberBusUrl(this.env, "/mcp"), {
+			const url = this.env.transport === "public" ? this.env.mcpUrl : octoberBusUrl(this.env, "/mcp");
+			const response = await fetch(url, {
 				method: "POST",
 				headers,
 				body: JSON.stringify(payload),
+				redirect: "error",
 				signal: combineSignals(timeoutMs, signal),
 			});
 
-			const issued = response.headers.get("mcp-session-id");
-			if (issued) this.sessionId = issued;
-
 			const contentType = response.headers.get("content-type") ?? "";
-			const body = await response.text();
-			if (!response.ok && body.trim().length === 0) {
+			if (!response.ok) {
+				await response.body?.cancel();
+				if (response.status === 404) {
+					this.initialized = false;
+					this.sessionId = undefined;
+				}
 				return { ok: false, error: `MCP HTTP ${response.status}` };
 			}
+			const sse = contentType.includes("text/event-stream");
+			const body = await readBusResponse(
+				response,
+				MAX_RESPONSE_BYTES,
+				sse && id !== undefined
+					? (text) => {
+							const boundary = Math.max(text.lastIndexOf("\n\n") + 2, text.lastIndexOf("\r\n\r\n") + 4);
+							return parseSseMessages(text.slice(0, boundary)).some((message) => message.id === id);
+						}
+					: undefined,
+			);
 
-			const messages = contentType.includes("text/event-stream")
-				? parseSseMessages(body)
-				: body.trim().length > 0
-					? [JSON.parse(body) as JsonRpcSuccess]
-					: [];
+			const parsed: unknown = !sse && body.trim() ? JSON.parse(body) : undefined;
+			const messages = sse ? parseSseMessages(body) : isResponse(parsed) ? [parsed] : [];
+			const issued = response.headers.get("mcp-session-id");
+			if (issued && id !== undefined && messages.some((message) => message.id === id && message.result))
+				this.sessionId = issued;
 			return { ok: true, value: { messages } };
 		} catch (error) {
 			return { ok: false, error: errorMessage(error) };
