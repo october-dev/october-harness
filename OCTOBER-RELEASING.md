@@ -2,7 +2,7 @@
 
 Pi remains the source of truth for inherited packages. October publishes only `@october-dev/october`; never use Pi's root `publish`, `release:patch`, or `release:minor` commands to publish this fork. Those commands intentionally retain Pi's lockstep/all-workspace release model.
 
-The October candidate version is `0.85.1-october.1`. Its upstream dependency versions stay on Pi 0.85.1. Keep the October dependency in `packages/evals/package.json` aligned when changing the October version. Refresh the root lockfile without scripts and regenerate the coding-agent shrinkwrap/install lock using the repository helpers.
+The October candidate version is `0.85.1-october.2`. Its upstream dependency versions stay on Pi 0.85.1. Keep the October dependency in `packages/evals/package.json` aligned when changing the October version. Refresh the root lockfile without scripts and regenerate the coding-agent shrinkwrap/install lock using the repository helpers.
 
 ## Required gates
 

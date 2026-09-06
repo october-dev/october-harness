@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.85.1-october.2] - 2026-09-06
+
 ### Changed
 
 - Redesigned the October README and TUI wordmark with Bus-inspired block lettering, a golden-to-burnt-orange autumn gradient, a transit line, and a compact layout for narrow terminals.
