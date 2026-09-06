@@ -17,7 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: npm-publish
     permissions:
-      contents: read
+      attestations: write
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +41,7 @@ jobs:
         env:
           PI_OFFLINE: '1'
           PI_TELEMETRY: '0'
-        run: node ../../node_modules/vitest/dist/cli.js --run test/october-auth.test.ts test/october-permissions.test.ts test/october-bus-mcp.test.ts test/october-hooks.test.ts test/october-startup-changelog.test.ts test/october-header.test.ts test/october-branding.test.ts test/october-provider.test.ts test/october-device-code.test.ts test/october-phone-home.test.ts test/cli-node-version.test.ts
+        run: node ../../node_modules/vitest/dist/cli.js --run test/october-auth.test.ts test/october-permissions.test.ts test/october-bus-mcp.test.ts test/october-team-launcher.test.ts test/october-hooks.test.ts test/october-startup-changelog.test.ts test/october-header.test.ts test/october-branding.test.ts test/october-provider.test.ts test/october-device-code.test.ts test/october-phone-home.test.ts test/cli-node-version.test.ts
       - name: Pack and verify isolated npm and Bun installs
         run: node scripts/october-release.mjs pack "${RUNNER_TEMP}/october-release"
       - name: Build pinned public Bus for interoperability tests
@@ -60,9 +61,92 @@ jobs:
           PI_OFFLINE: '1'
           PI_TELEMETRY: '0'
         run: node ../../node_modules/vitest/dist/cli.js --run test/october-public-bus.integration.test.ts
+      - name: Build native October release archives
+        run: ./scripts/build-binaries.sh --skip-install --skip-build --out "${RUNNER_TEMP}/october-binaries"
+      - name: Checksum and smoke-test native archives
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/october-binaries"
+          cp "${RUNNER_TEMP}"/october-release/tarballs/*.tgz .
+          sha256sum *.tgz october-*.tar.gz october-*.zip > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          ./linux-x64/october --help >/dev/null
+          ./linux-x64/october --version
+      - name: Attest npm package
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/october-release/tarballs/*.tgz
+      - name: Attest native release archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/october-binaries/*.tar.gz
+            ${{ runner.temp }}/october-binaries/*.zip
+      - name: Upload verified release payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: october-${{ github.ref_name }}
+          path: |
+            ${{ runner.temp }}/october-binaries/*.tgz
+            ${{ runner.temp }}/october-binaries/*.tar.gz
+            ${{ runner.temp }}/october-binaries/*.zip
+            ${{ runner.temp }}/october-binaries/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
       - name: Publish only October with npm trusted publishing
         env:
           OCTOBER_RELEASE_ROOT: ${{ runner.temp }}/october-release
         run: |
           version="${GITHUB_REF_NAME#october-v}"
           node scripts/october-release.mjs publish "${OCTOBER_RELEASE_ROOT}/tarballs/october-dev-october-${version}.tgz"
+      - name: Publish verified GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#october-v}"
+          tarball="${RUNNER_TEMP}/october-binaries/october-dev-october-${version}.tgz"
+          assets=(
+            "${tarball}"
+            "${RUNNER_TEMP}"/october-binaries/october-*.tar.gz
+            "${RUNNER_TEMP}"/october-binaries/october-*.zip
+            "${RUNNER_TEMP}/october-binaries/SHA256SUMS"
+          )
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            expected="$(printf '%s\n' "${assets[@]##*/}" | sort)"
+            actual="$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | sort)"
+            if [[ "${actual}" != "${expected}" ]]; then
+              echo "::error::Existing GitHub Release assets do not match the verified payload."
+              exit 1
+            fi
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --title "October ${version}" \
+              --generate-notes \
+              "${assets[@]}"
+          fi
+      - name: Notify October Desktop release automation
+        env:
+          DESKTOP_REPOSITORY: ${{ vars.OCTOBER_DESKTOP_REPOSITORY }}
+          GH_TOKEN: ${{ secrets.OCTOBER_DESKTOP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DESKTOP_REPOSITORY}" ]]; then
+            echo "OCTOBER_DESKTOP_REPOSITORY is not configured; Desktop dispatch skipped."
+            exit 0
+          fi
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo "::error::OCTOBER_DESKTOP_TOKEN is required when Desktop dispatch is configured."
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#october-v}"
+          jq -n \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg version "${version}" \
+            '{event_type:"october-release",client_payload:{tag:$tag,version:$version}}' \
+            > "${RUNNER_TEMP}/desktop-dispatch.json"
+          gh api \
+            --method POST \
+            "repos/${DESKTOP_REPOSITORY}/dispatches" \
+            --input "${RUNNER_TEMP}/desktop-dispatch.json"

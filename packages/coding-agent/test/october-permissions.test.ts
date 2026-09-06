@@ -8,7 +8,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
-import { registerOctoberPermissions } from "../src/extensions/october/permissions.ts";
+import {
+	createOctoberPermissionController,
+	registerOctoberPermissions,
+} from "../src/extensions/october/permissions.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
 const harnesses: Harness[] = [];
@@ -200,7 +203,7 @@ describe("october permission modes", () => {
 		).toBe(true);
 	});
 
-	it("bypass allows read, edit, and bash without a tool_call subscription", async () => {
+	it("bypass allows read, edit, and bash while retaining the temporary-ceiling gate", async () => {
 		const runtime = createExtensionRuntime();
 		const extension = await loadExtensionFromFactory(
 			(pi) => {
@@ -212,7 +215,7 @@ describe("october permission modes", () => {
 			runtime,
 			"<inline:october-permissions>",
 		);
-		expect(extension.handlers.has("tool_call")).toBe(false);
+		expect(extension.handlers.has("tool_call")).toBe(true);
 
 		const read = await runTool("bypass", "read");
 		const edit = await runTool("bypass", "edit");
@@ -222,7 +225,7 @@ describe("october permission modes", () => {
 		expect(toolResult(bash)?.role === "toolResult" && toolResult(bash)?.isError).toBeFalsy();
 	});
 
-	it("does not subscribe to tool_call when the built-in extension stays in bypass", async () => {
+	it("keeps the temporary-ceiling gate registered when the built-in extension stays in bypass", async () => {
 		delete process.env.OCTOBER_PERMISSION_MODE;
 		const runtime = createExtensionRuntime();
 		const extension = await loadExtensionFromFactory(
@@ -232,6 +235,32 @@ describe("october permission modes", () => {
 			runtime,
 			"<inline:october>",
 		);
-		expect(extension.handlers.has("tool_call")).toBe(false);
+		expect(extension.handlers.has("tool_call")).toBe(true);
+	});
+
+	it("enforces and clears a read-only Bus delegation ceiling without broadening local policy", async () => {
+		process.env.OCTOBER_PERMISSION_MODE = "bypass";
+		const controller = createOctoberPermissionController();
+		const harness = await createHarness({
+			tools: [dummyTool("read"), dummyTool("edit")],
+			extensionFactories: [(pi) => registerOctoberPermissions(pi, controller)],
+		});
+		harnesses.push(harness);
+		controller.setTemporaryCeiling("read-only");
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("edit", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("blocked");
+		expect(toolResult(harness)?.role === "toolResult" && toolResult(harness)?.isError).toBe(true);
+
+		controller.setTemporaryCeiling(undefined);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("edit", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("allowed");
+		const results = harness.session.messages.filter((message) => message.role === "toolResult");
+		expect(results.at(-1)?.isError).toBeFalsy();
 	});
 });

@@ -85,7 +85,7 @@ describe.skipIf(!binary)("October public Bus integration", () => {
 			],
 		});
 		harnesses.push(harness);
-		await harness.session.bindExtensions({});
+		await harness.session.bindExtensions({ mode: "tui" });
 		await api("/v1/me/heartbeat", registration.agentToken, { lifecycle: "idle", ready: true }, "PATCH");
 		return harness;
 	}
@@ -102,33 +102,86 @@ describe.skipIf(!binary)("October public Bus integration", () => {
 		return (error ? getMessageText(result) : JSON.parse(getMessageText(result))) as T;
 	}
 
+	async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (predicate()) return;
+			await delay(25);
+		}
+		throw new Error("timed out waiting for active Bus delivery");
+	}
+
+	function acknowledged(harness: Harness, messageId: string): boolean {
+		return harness.sessionManager.getBranch().some((entry) => {
+			if (entry.type !== "custom" || entry.customType !== "october-bus-delivery") return false;
+			const data = entry.data;
+			return (
+				!!data &&
+				typeof data === "object" &&
+				"state" in data &&
+				data.state === "acknowledged" &&
+				"messages" in data &&
+				Array.isArray(data.messages) &&
+				data.messages.some(
+					(message) => !!message && typeof message === "object" && "id" in message && message.id === messageId,
+				)
+			);
+		});
+	}
+
 	it("discovers peers, sends durable correlated messages, acknowledges, coordinates dependencies and rejects replaced credentials", async () => {
 		const planner = await peer("planner");
 		const builder = await peer("builder", ["planner"]);
 		expect((await call<{ peers: { id: string }[] }>(planner, "list_peers", {})).peers.map((p) => p.id)).toContain(
 			"builder",
 		);
+		builder.setResponses([fauxAssistantMessage("Request received")]);
 		const args = { peer: "builder", mode: "request", message: "Review auth", idempotencyKey: "review-request-1" };
-		const sent = await call<{ messageId: string }>(planner, "message_peer", args);
+		planner.setResponses([
+			fauxAssistantMessage([fauxToolCall(`${MCP_TOOL_PREFIX}message_peer`, args)], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Request sent"),
+		]);
+		await planner.session.prompt("Send review request");
+		const sendResult = planner.session.messages.find(
+			(message) => message.role === "toolResult" && getMessageText(message).includes("messageId"),
+		);
+		const sent = JSON.parse(getMessageText(sendResult)) as { messageId: string };
 		const retried = await call<{ messageId: string }>(planner, "message_peer", args);
 		expect(retried.messageId).toBe(sent.messageId);
-		const inbox = await call<{ messages: { id: string; body: string }[] }>(builder, "check_inbox", {});
-		expect(inbox.messages).toHaveLength(1);
-		expect(inbox.messages[0].body).toBe("Review auth");
-		await call(builder, "message_peer", {
+		await waitFor(() => acknowledged(builder, sent.messageId));
+		expect(
+			builder.session.messages.some(
+				(message) =>
+					message.role === "custom" &&
+					message.customType === "october-bus-inbox" &&
+					getMessageText(message).includes("Review auth"),
+			),
+		).toBe(true);
+		planner.setResponses([fauxAssistantMessage("Reply received")]);
+		const replied = await call<{ messageId: string }>(builder, "message_peer", {
 			peer: "planner",
 			message: "Reviewed",
 			mode: "response",
 			responseTo: sent.messageId,
+			idempotencyKey: "review-response-1",
 		});
-		expect(await call(builder, "acknowledge_messages", { messageIds: [sent.messageId] })).toMatchObject({
-			acknowledged: 1,
+		await waitFor(() =>
+			planner.sessionManager
+				.getBranch()
+				.some(
+					(entry) =>
+						entry.type === "custom_message" &&
+						entry.customType === "october-bus-inbox" &&
+						getMessageText({ content: entry.content }).includes(`"responseTo":"${sent.messageId}"`),
+				),
+		);
+		await waitFor(() => acknowledged(planner, replied.messageId));
+		const first = await call<{ id: string }>(planner, "add_task", { title: "Implement", description: "" });
+		const next = await call<{ id: string }>(planner, "add_task", {
+			title: "Review",
+			description: "",
+			dependencies: [first.id],
 		});
-		const replies = await call<{ messages: { id: string; responseTo: string }[] }>(planner, "check_inbox", {});
-		expect(replies.messages[0].responseTo).toBe(sent.messageId);
-		await call(planner, "acknowledge_messages", { messageIds: [replies.messages[0].id] });
-		const first = await call<{ id: string }>(planner, "add_task", { title: "Implement" });
-		const next = await call<{ id: string }>(planner, "add_task", { title: "Review", dependencies: [first.id] });
 		await call(builder, "claim_task", { taskId: next.id }, true);
 		await call(builder, "claim_task", { taskId: first.id });
 		await call(builder, "complete_task", { taskId: first.id });

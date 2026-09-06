@@ -27,7 +27,7 @@ Fast in a terminal. Extensible as a runtime. Native to October Bus.
 
 **October Harness is a complete open-source coding agent built to work alone and with other agents.** Run it as an interactive terminal partner, a one-shot command, a JSON process, an RPC server, or an embedded SDK. Use October inference or bring another supported model provider.
 
-October discovers tools automatically from the public [October Bus](https://github.com/october-dev/october-bus) launcher or October Desktop. Agents can pull durable messages, acknowledge handled work, coordinate tasks, and send correlated replies. Public Bus delivery is pull-only: idle agents do not wake automatically. Desktop additionally supplies session and turn context through its hook protocol.
+October discovers tools automatically from the public [October Bus](https://github.com/october-dev/october-bus) launcher or October Desktop. Public Bus sessions actively wake for durable messages while idle, acknowledge only after successful processing, expose peer and task state in the TUI, and support bounded delegation and correlated replies. Desktop additionally supplies session and turn context through its hook protocol.
 
 October Bus is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
 
@@ -74,6 +74,14 @@ october login
 cd /path/to/your/project
 october
 ```
+
+Start multiplayer mode with one additional flag:
+
+```bash
+october --team
+```
+
+On first use, October downloads the pinned Bus release for the current platform, verifies its SHA-256 digest, starts the local daemon, creates a stable per-project scope, and joins every reachable peer in that scope. Scope credentials are stored owner-only in `~/.october/agent/team-scopes.json`; execution credentials alone enter the agent process.
 
 Ask for a quick orientation:
 
@@ -150,16 +158,20 @@ Bus integration is execution-gated. Public Bus requires the launcher's address, 
 
 ## Two harnesses, one Bus
 
-Start a local [October Bus](https://github.com/october-dev/october-bus), create a scope, and keep its scope token in the launching shell. In separate terminals, using the same scope:
+In separate terminals opened in the same project:
 
 ```bash
 # Terminal 1
-OCTOBER_BUS_SCOPE_TOKEN=<scope-token> october-bus agent run --id planner --name Planner -- october
+october --team --team-id planner --team-name Planner
 # Terminal 2
-OCTOBER_BUS_SCOPE_TOKEN=<scope-token> october-bus agent run --id builder --name Builder --connect-to planner -- october
+october --team --team-id builder --team-name Builder
 ```
 
-The launcher injects execution-scoped credentials; October discovers MCP tools without a separate MCP configuration. The scope token is not passed to October. Submit a prompt to each agent: this adapter does not automatically wake an idle session. In Desktop, launch the harness in two terminal nodes on one canvas; Desktop uses its own hook contract.
+The first terminal checksum-installs and starts Bus when needed. Both terminals reuse the project scope and link to reachable peers automatically. The launcher injects execution-scoped credentials; the scope token is not passed to the model-facing process. Idle sessions wake for new messages, persist delivery state in the session, and acknowledge exact message IDs only after a successful settled turn. Failed or aborted turns remain unacknowledged and require `/inbox retry`.
+
+Use `/team` for peer presence, `/tasks` for the shared board, `/inbox` for delivery state, `/delegate` for a bounded task request, and `/handoff` to include a capped excerpt of the current session. A delegation can tighten the receiving turn to `read-only` or `accept-edits`; it cannot relax the receiver's local permission policy.
+
+For an existing local or remote Bus, set `OCTOBER_BUS_ADDRESS` and `OCTOBER_BUS_SCOPE_TOKEN` before `october --team`. Use `--team-connect-to <peer>` for a specific additional link and `--team-bus <path>` to select a preinstalled runtime.
 
 Ask the first agent:
 
@@ -178,7 +190,7 @@ planner  → message_peer(builder, mode=request,
                          "Review the authentication flow for failure cases.")
 bus      → request accepted durably as msg_01
 
-builder  → check_inbox()
+bus      → wakes builder while idle
 planner  → add_task(title="Review authentication flow") → task_01
 builder  → claim_task(taskId=task_01)
 builder  → message_peer(planner, mode=response, responseTo=msg_01,
@@ -197,7 +209,7 @@ October Harness is the first-party terminal agent for the October Desktop app:
 - **Zero-config authentication.** Desktop supplies and refreshes the current October session.
 - **Managed runtime.** Desktop controls its installed harness version. Updating npm alone does not update a Desktop-pinned installation.
 - **Bus-native collaboration.** The harness receives an execution-scoped identity and registers peer, inbox, task, and status tools from the local Bus.
-- **Lifecycle hooks.** Desktop receives session live/offline, pre-prompt, and turn-stop hooks. User-dialog readiness and background inbox wake-up are not implemented. Public Bus registration, heartbeat, and shutdown belong to its launcher.
+- **Lifecycle hooks.** Desktop receives session live/offline, pre-prompt, and turn-stop hooks. Public Bus receives proven working, idle, user-dialog, and offline states from the harness while registration and process shutdown remain launcher-owned.
 - **October context.** Bounded orientation, peer, inbox, and summary context can enter the agent at the appropriate prompt boundary.
 - **Local authority.** Bus credentials and process identity belong to one execution and disappear when that run ends.
 
@@ -234,6 +246,8 @@ October adds three explicit tool-permission modes:
 | `bypass` | Allow | Allow | Allow |
 
 Set the process policy with `--permission-mode`, then `OCTOBER_PERMISSION_MODE`, then global `~/.october/agent/settings.json` (in that precedence order). The default is `bypass`. Trusted project `.october/settings.json` may only tighten that policy; untrusted project settings are ignored. Policy is fixed for the session, so tool edits cannot grant more authority. Restart with an explicit user-selected mode to change it. Non-interactive operations requiring approval are blocked.
+
+Bus-delivered delegations may add a temporary `read-only` or `accept-edits` ceiling for their processing turn. The strongest restriction wins, it is cleared when the turn settles, and remote context can never broaden the process-owned policy.
 
 Project trust is separate from tool permissions. It controls whether October loads project-local settings, extensions, skills, prompts, themes, and packages. It is an input-loading boundary, not a sandbox.
 
@@ -311,7 +325,7 @@ October Harness is a real downstream product, not a renamed Pi binary. We contin
 | --- | --- | --- |
 | Runtime | Agent loop, tools, provider abstraction, TUI, sessions, RPC, SDK | `october` CLI/package identity, `.october` configuration, managed distribution |
 | Models | Multi-provider APIs and catalogs | October inference provider, dynamic October catalog, device login, Desktop session refresh |
-| Collaboration | General extension primitives | Public/desktop Bus MCP tools, pull-based durable inbox and task operations, Desktop session/turn hooks |
+| Collaboration | General extension primitives | Public/desktop Bus MCP tools, active durable inbox delivery, task UI, bounded delegation, and Desktop session/turn hooks |
 | Context | Project instructions, skills, prompts, extensions | Bus orientation and peer/inbox context, execution identity, turn summaries |
 | Permissions | Project trust and host-process security model | `ask`, `accept-edits`, and `bypass` tool-permission modes |
 | Product integration | Portable terminal harness | October header, Desktop launch contract, safe self-update and first-party runtime behavior |
@@ -371,10 +385,14 @@ Our upstream policy is straightforward:
 
 For substantial October-specific work, open an issue before implementation. If a change belongs cleanly in Pi, contributors are encouraged to coordinate it upstream first and then bring it back through the normal sync path.
 
+The scheduled `Sync Upstream Pi` workflow fetches upstream `main`, validates a merge with `npm run check` and `./test.sh`, and opens a review branch and pull request. It never merges automatically. The daily `October Compatibility` workflow builds the requested October Bus revision, runs its MCP adapter conformance profile, exercises active two-harness delivery, and stores the exact Harness and Bus revisions as evidence.
+
+October release tags publish the npm package through trusted publishing, build checksummed native archives, attach GitHub build-provenance attestations, and create a GitHub Release. If `OCTOBER_DESKTOP_REPOSITORY` and `OCTOBER_DESKTOP_TOKEN` are configured, the same workflow sends an `october-release` repository dispatch after publication so Desktop can verify and stage the new version. GitHub provenance does not replace Apple notarization or Windows code signing; those require platform signing identities in the release environment.
+
 ## Roadmap
 
 - Make the October Harness the clearest reference implementation of the October Bus compatibility contract.
-- Complete released-harness Bus conformance evidence, then add opt-in idle delivery and user-dialog readiness signals.
+- Publish compatibility evidence for every released Harness and Bus pair.
 - Expand adapter and conformance examples for mixed-harness teams.
 - Keep provider and model support current without coupling the harness to one inference backend.
 - Improve session portability between standalone, Desktop, RPC, and SDK usage.
@@ -393,7 +411,9 @@ October Harness is a local coding agent. It runs with the operating-system permi
 - Review changes before committing or deploying them.
 - Remember that Bus peers can request work but cannot grant new local authority.
 
-Credentials are stored under `~/.october/agent/`; Bus capabilities, tokens, process identity, and readiness evidence are execution-scoped and remain local.
+Credentials are stored under `~/.october/agent/`. Local team scope tokens are written to `team-scopes.json` with owner-only permissions. They are used only by the outer launcher and removed before the agent process starts; Bus capabilities, execution tokens, process identity, and readiness evidence remain execution-scoped.
+
+The scope file is access-controlled but not encrypted. Protect the operating-system account and home directory, and rotate or remove a scope in Bus if its token may have been exposed.
 
 Report vulnerabilities privately through this repository's [security policy](https://github.com/october-dev/october-harness/blob/main/SECURITY.md) or [GitHub Security Advisories](https://github.com/october-dev/october-harness/security/advisories/new). Do not open a public issue for a security-sensitive report.
 

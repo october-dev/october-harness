@@ -324,6 +324,12 @@ ${chalk.bold("Options:")}
   --approve, -a                  Trust project-local files for this run
   --no-approve, -na              Ignore project-local files for this run
   --offline                      Disable startup network operations (same as PI_OFFLINE=1)
+  --team                         Start or join the per-project October Bus team
+  --team-id <id>                 Stable agent ID for this team execution
+  --team-name <name>             Agent display name shown to peers
+  --team-scope <id>              Named local scope instead of the project-derived scope
+  --team-connect-to <peer>       Link an additional peer (repeatable; reachable peers link automatically)
+  --team-bus <path>              Use a specific October Bus executable
   --                             End option parsing; treat remaining arguments as messages/files
   --help, -h                     Show this help
   --version, -v                  Show version number
@@ -339,6 +345,9 @@ ${chalk.bold("Examples:")}
 
   # Interactive mode
   ${APP_NAME}
+
+  # Multiplayer mode (installs/starts October Bus and joins this project)
+  ${APP_NAME} --team
 
   # Interactive mode with initial prompt
   ${APP_NAME} "List all .ts files in src/"

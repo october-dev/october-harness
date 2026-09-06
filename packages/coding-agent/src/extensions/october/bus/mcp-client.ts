@@ -27,6 +27,7 @@ export interface McpContentPart {
 export interface McpToolCallResult {
 	content: McpContentPart[];
 	isError: boolean;
+	structuredContent?: unknown;
 }
 
 export type McpResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -149,10 +150,15 @@ export class OctoberMcpClient {
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	): Promise<McpResult<McpToolCallResult>> {
+		// Early protocol 0.1 builds exposed incompatible task shapes through MCP.
+		// The public HTTP route lets this client normalize both shapes at one boundary.
+		if (this.env.transport === "public" && name === "add_task") {
+			return this.callPublicAddTask(args, signal);
+		}
 		const ready = await this.ensureInitialized(signal);
 		if (!ready.ok) return ready;
 
-		const result = await this.rpc<{ content?: unknown; isError?: unknown }>(
+		const result = await this.rpc<{ content?: unknown; isError?: unknown; structuredContent?: unknown }>(
 			"tools/call",
 			{ name, arguments: args },
 			CALL_TIMEOUT_MS,
@@ -168,8 +174,80 @@ export class OctoberMcpClient {
 			value: {
 				content,
 				isError: result.value.isError === true,
+				...(result.value.structuredContent === undefined
+					? {}
+					: { structuredContent: result.value.structuredContent }),
 			},
 		};
+	}
+
+	private async callPublicAddTask(
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<McpResult<McpToolCallResult>> {
+		if (this.env.transport !== "public") return { ok: false, error: "Public Bus configuration is required" };
+		try {
+			const attempts = [args];
+			if (typeof args.title === "string") {
+				const description = typeof args.description === "string" ? args.description.trim() : "";
+				const legacyArgs = { ...args };
+				delete legacyArgs.title;
+				legacyArgs.description = description ? `${args.title}\n\n${description}` : args.title;
+				attempts.push(legacyArgs);
+			}
+			for (let index = 0; index < attempts.length; index++) {
+				const response = await fetch(`${this.env.address}/v1/tasks`, {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.env.agentToken}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify(attempts[index]),
+					redirect: "error",
+					signal: combineSignals(CALL_TIMEOUT_MS, signal),
+				});
+				const body = await readBusResponse(response, MAX_RESPONSE_BYTES);
+				const parsed: unknown = body.trim() ? JSON.parse(body) : undefined;
+				const message =
+					parsed &&
+					typeof parsed === "object" &&
+					"error" in parsed &&
+					parsed.error &&
+					typeof parsed.error === "object" &&
+					"message" in parsed.error &&
+					typeof parsed.error.message === "string"
+						? parsed.error.message
+						: `HTTP ${response.status}`;
+				if (!response.ok) {
+					if (index === 0 && response.status === 400 && message.includes('unknown field "title"')) continue;
+					return { ok: false, error: `October Bus add_task: ${message}` };
+				}
+				if (
+					!parsed ||
+					typeof parsed !== "object" ||
+					!("result" in parsed) ||
+					!parsed.result ||
+					typeof parsed.result !== "object"
+				) {
+					return { ok: false, error: "October Bus add_task: malformed response" };
+				}
+				const result =
+					!("title" in parsed.result) && typeof args.title === "string"
+						? { ...parsed.result, title: args.title }
+						: parsed.result;
+				return {
+					ok: true,
+					value: {
+						content: [{ type: "text", text: JSON.stringify(result) }],
+						isError: false,
+						structuredContent: result,
+					},
+				};
+			}
+			return { ok: false, error: "October Bus add_task: no compatible task shape" };
+		} catch (error) {
+			return { ok: false, error: errorMessage(error) };
+		}
 	}
 
 	private async ensureInitialized(signal?: AbortSignal): Promise<McpResult<void>> {

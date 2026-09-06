@@ -1,0 +1,114 @@
+name: Sync Upstream Pi
+
+on:
+  schedule:
+    - cron: '31 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-pi
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'october-dev/october-harness'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout October main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Fetch upstream Pi
+        id: upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/earendil-works/pi.git
+          git fetch --no-tags upstream main
+          upstream_sha="$(git rev-parse upstream/main)"
+          echo "sha=${upstream_sha}" >> "${GITHUB_OUTPUT}"
+          echo "short=${upstream_sha:0:12}" >> "${GITHUB_OUTPUT}"
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Merge upstream into a review branch
+        id: merge
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          SYNC_BRANCH: automation/pi-sync-${{ steps.upstream.outputs.short }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code origin "refs/heads/${SYNC_BRANCH}" >/dev/null 2>&1; then
+            echo "Branch ${SYNC_BRANCH} already exists; an earlier run owns this upstream revision."
+            echo "proceed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "proceed=true" >> "${GITHUB_OUTPUT}"
+          git checkout -b "${SYNC_BRANCH}"
+          git config user.name october-dev-bot
+          git config user.email 204613038+october-dev-bot@users.noreply.github.com
+          if ! git merge --no-commit --no-ff upstream/main; then
+            echo "::error::Upstream merge needs manual conflict resolution."
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        if: steps.merge.outputs.proceed == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install system dependencies
+        if: steps.merge.outputs.proceed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev fd-find ripgrep
+          sudo ln -s "$(which fdfind)" /usr/local/bin/fd
+
+      - name: Validate merged source
+        if: steps.merge.outputs.proceed == 'true'
+        run: |
+          npm ci --ignore-scripts
+          npm run check
+          ./test.sh
+
+      - name: Commit and push review branch
+        if: steps.merge.outputs.proceed == 'true'
+        env:
+          SYNC_BRANCH: automation/pi-sync-${{ steps.upstream.outputs.short }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git add -u
+          git commit -m "fix(coding-agent): sync upstream Pi ${UPSTREAM_SHA:0:12}"
+          git push origin "HEAD:refs/heads/${SYNC_BRANCH}"
+
+      - name: Open upstream sync pull request
+        if: steps.merge.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_BRANCH: automation/pi-sync-${{ steps.upstream.outputs.short }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            "Automated merge of earendil-works/pi@${UPSTREAM_SHA}." \
+            "" \
+            "Validation: npm run check; ./test.sh" \
+            "" \
+            "Review October-owned branding, multiplayer, Bus, and release integrations before merging." \
+            > "${RUNNER_TEMP}/pi-sync-pr.md"
+          gh pr create \
+            --base main \
+            --head "${SYNC_BRANCH}" \
+            --title "fix(coding-agent): sync upstream Pi ${UPSTREAM_SHA:0:12}" \
+            --body-file "${RUNNER_TEMP}/pi-sync-pr.md"

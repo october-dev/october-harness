@@ -9,6 +9,24 @@ import type {
 } from "../../core/extensions/types.ts";
 
 export type OctoberPermissionMode = "ask" | "accept-edits" | "bypass";
+export type OctoberTemporaryPermissionCeiling = "read-only" | "accept-edits" | "inherit";
+
+export interface OctoberPermissionController {
+	setTemporaryCeiling(ceiling: OctoberTemporaryPermissionCeiling | undefined): void;
+	getTemporaryCeiling(): OctoberTemporaryPermissionCeiling | undefined;
+}
+
+export function createOctoberPermissionController(): OctoberPermissionController {
+	let temporaryCeiling: OctoberTemporaryPermissionCeiling | undefined;
+	return {
+		setTemporaryCeiling(ceiling): void {
+			temporaryCeiling = ceiling;
+		},
+		getTemporaryCeiling(): OctoberTemporaryPermissionCeiling | undefined {
+			return temporaryCeiling;
+		},
+	};
+}
 
 const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const EDIT_TOOLS = new Set(["edit", "write"]);
@@ -63,7 +81,7 @@ function argumentPreview(input: unknown): string {
 	}
 }
 
-export function registerOctoberPermissions(pi: ExtensionAPI): void {
+export function registerOctoberPermissions(pi: ExtensionAPI, controller = createOctoberPermissionController()): void {
 	pi.registerFlag("permission-mode", {
 		type: "string",
 		description: "Tool permission mode: ask, accept-edits, or bypass. Default bypass. Not --approve.",
@@ -86,17 +104,24 @@ export function registerOctoberPermissions(pi: ExtensionAPI): void {
 	let subscribed = false;
 	const subscribe = (): void => {
 		if (subscribed) return;
-		if (mode === "bypass") return;
 		subscribed = true;
 		pi.on("tool_call", async (event: ToolCallEvent, ctx): Promise<ToolCallEventResult | undefined> => {
 			lockMode(ctx);
 			const toolClass = classifyTool(event.toolName);
-			if (!permissionRequiresPrompt(mode, toolClass)) return undefined;
+			const temporaryCeiling = controller.getTemporaryCeiling();
+			if (temporaryCeiling === "read-only" && toolClass !== "read") {
+				return {
+					block: true,
+					reason: "blocked by the read-only ceiling on the active October Bus delegation",
+				};
+			}
+			const effectiveMode = temporaryCeiling === "accept-edits" && mode === "bypass" ? "accept-edits" : mode;
+			if (!permissionRequiresPrompt(effectiveMode, toolClass)) return undefined;
 
 			if (!ctx.hasUI) {
 				return {
 					block: true,
-					reason: `blocked by permission mode ${mode} in non-interactive mode`,
+					reason: `blocked by permission mode ${effectiveMode} in non-interactive mode`,
 				};
 			}
 

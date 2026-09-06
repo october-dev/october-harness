@@ -1,0 +1,104 @@
+name: October Compatibility
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      bus_ref:
+        description: October Bus git ref to verify
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: october-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-bus:
+    if: github.repository == 'october-dev/october-harness'
+    runs-on: ubuntu-latest
+    env:
+      OCTOBER_BUS_REF: ${{ inputs.bus_ref || 'main' }}
+      PI_OFFLINE: '1'
+      PI_TELEMETRY: '0'
+    steps:
+      - name: Checkout October Harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: 1.27.x
+          cache: false
+
+      - name: Install Harness dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Checkout requested October Bus revision
+        run: |
+          set -euo pipefail
+          git init "${RUNNER_TEMP}/october-bus"
+          git -C "${RUNNER_TEMP}/october-bus" remote add origin https://github.com/october-dev/october-bus.git
+          git -C "${RUNNER_TEMP}/october-bus" fetch --depth=1 origin "${OCTOBER_BUS_REF}"
+          git -C "${RUNNER_TEMP}/october-bus" checkout --detach FETCH_HEAD
+
+      - name: Build Bus and conformance runner
+        working-directory: ${{ runner.temp }}/october-bus
+        run: |
+          go test ./bus
+          go build -o "${RUNNER_TEMP}/october-bus-test" ./cmd/october-bus
+          go build -o "${RUNNER_TEMP}/october-bus-conformance" ./cmd/october-bus-conformance
+
+      - name: Verify Bus MCP adapter conformance
+        run: |
+          set -o pipefail
+          "${RUNNER_TEMP}/october-bus-conformance" \
+            --profile mcp-adapter \
+            --start-runtime \
+            --adapter-command "${RUNNER_TEMP}/october-bus-test" \
+            --adapter-arg mcp \
+            --adapter-arg stdio \
+            --format text | tee "${RUNNER_TEMP}/bus-conformance.txt"
+
+      - name: Verify Harness collaboration contract
+        working-directory: packages/coding-agent
+        env:
+          OCTOBER_BUS_TEST_BINARY: ${{ runner.temp }}/october-bus-test
+        run: >-
+          node ../../node_modules/vitest/dist/cli.js --run
+          test/october-team-launcher.test.ts
+          test/october-permissions.test.ts
+          test/october-bus-mcp.test.ts
+          test/october-public-bus.integration.test.ts
+
+      - name: Record compatibility revisions
+        if: always()
+        run: |
+          {
+            echo "harness=$(git rev-parse HEAD)"
+            echo "bus=$(git -C "${RUNNER_TEMP}/october-bus" rev-parse HEAD)"
+          } > "${RUNNER_TEMP}/compatibility-revisions.txt"
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: october-compatibility-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/bus-conformance.txt
+            ${{ runner.temp }}/compatibility-revisions.txt
+          if-no-files-found: warn
+          retention-days: 30

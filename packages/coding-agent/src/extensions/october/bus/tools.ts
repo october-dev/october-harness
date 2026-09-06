@@ -17,6 +17,25 @@ const RETRY_MS = 5_000;
 function schemaFor(tool: McpToolDefinition) {
 	const schema = tool.inputSchema;
 	if (schema && typeof schema === "object") {
+		// Some protocol 0.1 task schemas omit title. Restore October's normalized
+		// task contract until every supported Bus release emits it itself.
+		if (tool.name === "add_task" && !Array.isArray(schema)) {
+			const record = schema as Record<string, unknown>;
+			const properties =
+				record.properties && typeof record.properties === "object" && !Array.isArray(record.properties)
+					? (record.properties as Record<string, unknown>)
+					: {};
+			if (!("title" in properties)) {
+				const required = Array.isArray(record.required)
+					? record.required.filter((value): value is string => typeof value === "string")
+					: [];
+				return Type.Unsafe({
+					...record,
+					properties: { title: { type: "string" }, ...properties },
+					required: ["title", ...required],
+				});
+			}
+		}
 		return Type.Unsafe(schema);
 	}
 	return Type.Object({});
@@ -71,8 +90,11 @@ function registerTools(pi: ExtensionAPI, client: OctoberMcpClient, tools: McpToo
 	}
 }
 
-export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusEnv): Promise<void> {
-	const client = new OctoberMcpClient(env);
+export async function registerOctoberBusTools(
+	pi: ExtensionAPI,
+	env: OctoberBusEnv,
+	client = new OctoberMcpClient(env),
+): Promise<void> {
 	let discoveryStatus = "discovering";
 	let closed = false;
 	let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -92,7 +114,7 @@ export async function registerOctoberBusTools(pi: ExtensionAPI, env: OctoberBusE
 					? { agent: env.agentId, execution: env.executionId }
 					: { canvas: env.canvas, node: env.node };
 			ctx.ui.notify(
-				`${env.transport} Bus ${JSON.stringify(identity)}; MCP ${MCP_PROTOCOL_VERSION}; ${discoveryStatus}. Inbox delivery is pull-only. If unavailable, check the launcher configuration and restart.`,
+				`${env.transport} Bus ${JSON.stringify(identity)}; MCP ${MCP_PROTOCOL_VERSION}; ${discoveryStatus}. ${env.transport === "public" ? "Idle delivery and lifecycle reporting are active." : "Desktop owns delivery and lifecycle."} If unavailable, check the launcher configuration and restart.`,
 				"info",
 			);
 		},

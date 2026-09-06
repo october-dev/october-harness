@@ -284,7 +284,7 @@ describe("october bus MCP client", () => {
 		});
 	});
 
-	it("automatically attaches public launcher identities using bearer auth, with no Desktop hooks", async () => {
+	it("automatically attaches public launcher identities with bearer auth and native lifecycle", async () => {
 		const stub = await startStubBus().ready;
 		process.env.OCTOBER_BUS_ADDRESS = `http://127.0.0.1:${stub.port}`;
 		process.env.OCTOBER_BUS_MCP_URL = `http://127.0.0.1:${stub.port}/mcp`;
@@ -302,7 +302,7 @@ describe("october bus MCP client", () => {
 		]);
 		await harness.session.prompt("go");
 		expect(harness.session.messages.some((message) => message.role === "toolResult" && !message.isError)).toBe(true);
-		expect(stub.hits.count).toBe(stub.requests.length);
+		expect(stub.hits.count).toBeGreaterThan(stub.requests.length);
 		for (const request of stub.requests) {
 			expect(request.headers.authorization).toBe("Bearer public-secret");
 			expect(request.headers["x-october-node"]).toBeUndefined();

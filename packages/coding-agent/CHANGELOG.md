@@ -4,14 +4,19 @@
 
 ### Changed
 
-- Redesigned the October README and TUI wordmark with Bus-inspired block lettering, an autumn TUI gradient, a transit line, and a compact layout for narrow terminals.
+- Redesigned the October README and TUI wordmark with Bus-inspired block lettering, a golden-to-burnt-orange autumn gradient, a transit line, and a compact layout for narrow terminals.
 
 - Synced the inherited runtime with Pi 0.85.1, preserving October-owned behavior.
 
 ### Added
 
-- Automatically discover public October Bus tools when launched with `october-bus agent run`, using execution-scoped bearer authentication. Desktop hooks remain separate; public inbox delivery is pull-only.
+- Automatically discover public October Bus tools when launched with `october-bus agent run`, using execution-scoped bearer authentication. Desktop hooks remain separate.
 - Added an October-only npm release workflow with isolated npm and Bun consumer checks.
+- Added `october --team` to checksum-install and start the pinned October Bus runtime, reuse an owner-only per-project scope credential, link reachable peers, and launch with execution-scoped authority.
+- Added active idle inbox delivery with session-persisted processing state, post-success acknowledgement, explicit failed-turn retry, and working/idle/user-input lifecycle evidence.
+- Added `/team`, `/tasks`, `/inbox`, `/delegate`, and `/handoff` collaboration surfaces with bounded context, acceptance criteria, dependencies, and temporary permission ceilings.
+- Added scheduled upstream Pi sync pull requests and daily public Bus conformance and two-harness compatibility evidence.
+- Added checksummed native archives, GitHub build-provenance attestations, GitHub Releases, and optional October Desktop release dispatches to the October publish workflow.
 
 ### Fixed
 
@@ -21,6 +26,7 @@
 - Kept startup free of the inherited “What's New” section, including upgrades from older October releases. `/changelog` remains available.
 - Corrected October local-release launchers and documented the supported Bus contracts and delivery limits.
 - Fixed the compiled Bun binary reporting `0.0.0` from October's fast `--version` preflight.
+- Prevented duplicate acknowledgement retries from growing Bus delivery history, and serialized creation of shared project scope credentials across concurrent team launches.
 
 ## [0.85.1] - 2026-09-05
 
