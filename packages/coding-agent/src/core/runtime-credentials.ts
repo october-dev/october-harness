@@ -3,13 +3,16 @@ import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore 
 /** Async credential store overlay for non-persistent runtime API keys. */
 export class RuntimeCredentials implements CredentialStore {
 	private readonly store: CredentialStore;
-	private readonly overrides = new Map<string, string>();
+	private readonly overrides = new Map<string, string | ((signal?: AbortSignal) => Promise<string | undefined>)>();
 
 	constructor(store: CredentialStore) {
 		this.store = store;
 	}
 
-	setRuntimeApiKey(providerId: string, apiKey: string): void {
+	setRuntimeApiKey(
+		providerId: string,
+		apiKey: string | ((signal?: AbortSignal) => Promise<string | undefined>),
+	): void {
 		this.overrides.set(providerId, apiKey);
 	}
 
@@ -24,6 +27,13 @@ export class RuntimeCredentials implements CredentialStore {
 	async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
 		options?.signal?.throwIfAborted();
 		const override = this.overrides.get(providerId);
+		if (typeof override === "function") {
+			// A runtime-owned session remains authoritative when absent or when
+			// refresh fails. Never fall through to a saved account's credential.
+			const key = await override(options?.signal);
+			options?.signal?.throwIfAborted();
+			return { type: "api_key", key };
+		}
 		return override ? { type: "api_key", key: override } : this.store.read(providerId, options);
 	}
 

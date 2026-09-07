@@ -4,6 +4,28 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { RuntimeCredentials } from "../src/core/runtime-credentials.ts";
 
 describe("RuntimeCredentials", () => {
+	test("runtime resolvers rotate without persistence and never fall back on missing or failed auth", async () => {
+		const storage = AuthStorage.inMemory({ october: { type: "api_key", key: "saved-account" } });
+		const read = vi.spyOn(storage, "read");
+		const write = vi.spyOn(storage, "modify");
+		const credentials = new RuntimeCredentials(storage);
+		const resolve = vi
+			.fn<(signal?: AbortSignal) => Promise<string | undefined>>()
+			.mockResolvedValueOnce("desktop-one")
+			.mockResolvedValueOnce("desktop-two")
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("refresh failed"));
+		credentials.setRuntimeApiKey("october", resolve);
+		const signal = new AbortController().signal;
+		expect(await credentials.read("october", { signal })).toEqual({ type: "api_key", key: "desktop-one" });
+		expect(await credentials.read("october")).toEqual({ type: "api_key", key: "desktop-two" });
+		expect(await credentials.read("october")).toEqual({ type: "api_key", key: undefined });
+		await expect(credentials.read("october")).rejects.toThrow("refresh failed");
+		expect(resolve).toHaveBeenNthCalledWith(1, signal);
+		expect(read).not.toHaveBeenCalled();
+		expect(write).not.toHaveBeenCalled();
+	});
+
 	test("runtime overrides mask stored credentials without persisting", async () => {
 		const storage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "stored-key" } });
 		const credentials = new RuntimeCredentials(storage);

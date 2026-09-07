@@ -38,6 +38,12 @@ import {
 } from "@earendil-works/pi-ai";
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
+import {
+	ensureDesktopOctoberAccess,
+	getDesktopOctoberCredential,
+	isOctoberDesktopMode,
+	OCTOBER_PROVIDER_ID,
+} from "../extensions/october/auth.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
@@ -171,6 +177,16 @@ export class ModelRuntime implements Models {
 
 	static async create(options: CreateModelRuntimeOptions = {}): Promise<ModelRuntime> {
 		const credentials = new RuntimeCredentials(options.credentials ?? DefaultAuthStorage.create(options.authPath));
+		if (isOctoberDesktopMode()) {
+			// Install before catalog refresh or availability checks. Keep ownership
+			// for this runtime even if Desktop later clears the injected session.
+			credentials.setRuntimeApiKey(OCTOBER_PROVIDER_ID, async (signal) => {
+				if (!isOctoberDesktopMode()) return undefined;
+				await ensureDesktopOctoberAccess(signal);
+				const credential = getDesktopOctoberCredential();
+				return credential && credential.expires > Date.now() ? credential.access : undefined;
+			});
+		}
 		const modelsPath =
 			options.modelsPath === null ? undefined : (options.modelsPath ?? join(getAgentDir(), "models.json"));
 		const config = await ModelConfig.load(modelsPath);

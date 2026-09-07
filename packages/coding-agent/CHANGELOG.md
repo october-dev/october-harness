@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep October Desktop's current JWT authoritative for model discovery and inference even when a standalone credential is saved. Refresh it before requests without persisting it or falling back to another account.
+
 ## [0.85.1-october.2] - 2026-09-06
 
 ### Changed

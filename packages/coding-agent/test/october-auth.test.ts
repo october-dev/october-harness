@@ -635,11 +635,8 @@ describe("october credential seeding", () => {
 		runtime.registerProvider(OCTOBER_PROVIDER_ID, createOctoberProviderConfig());
 
 		expect(await credentials.read(OCTOBER_PROVIDER_ID)).toBeUndefined();
-		expect((await runtime.getAuth(OCTOBER_PROVIDER_ID))?.auth.apiKey).toBe("access-seed");
-
-		await ensureDesktopOctoberAccess();
-
-		expect(await credentials.read(OCTOBER_PROVIDER_ID)).toBeUndefined();
+		// Request-time resolution refreshes before returning auth; callers no
+		// longer have to drive the lifecycle hook to avoid an expiring JWT.
 		expect((await runtime.getAuth(OCTOBER_PROVIDER_ID))?.auth.apiKey).toBe("access-via-runtime");
 		expect(await credentials.read(OCTOBER_PROVIDER_ID)).toBeUndefined();
 	});
