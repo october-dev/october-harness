@@ -45,7 +45,11 @@ october
 october login
 ```
 
-This runs a device-code flow against october.dev and stores a long-lived token. Inside the October app you can skip this — Desktop injects the session.
+This opens the October website. Sign in to your October account, confirm that the code matches your terminal, and click **Approve CLI**. The CLI stores an inference-only token in `~/.october/agent/auth.json`; it does not receive your browser session or password. Inside the October app you can skip this — Desktop injects the session.
+
+For SSH or a terminal without a browser, run `october login --no-browser` and open the printed link on another device. Codes expire after ten minutes; run the command again if needed. Only approve a code from a login you started yourself.
+
+Run `october logout` to revoke this installation's token and remove the local credential. If the website is unreachable, logout warns that remote revocation failed and removes only the local credential.
 
 ### Option 2: another provider via `/login`
 

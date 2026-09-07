@@ -23,8 +23,9 @@ describe("October header", () => {
 		expect(lines).toHaveLength(10);
 		expect(plain[0]).toBe(" ██████╗  ██████╗ ████████╗ ██████╗ ██████╗  ███████╗ ██████╗  ");
 		expect(plain[6]).toBe("────○────".repeat(7));
-		expect(lines[0]).toContain("\x1b[38;2;242;184;75m");
-		expect(lines[0]).toContain("\x1b[38;2;169;54;54m");
+		expect(lines[0]).toContain("\x1b[38;2;255;196;82m");
+		expect(lines[0]).toContain("\x1b[38;2;190;64;12m");
+		expect(lines[8]).toContain("\x1b[38;2;247;130;14mOctober coding agent");
 		expect(plain[8]).toContain("october  October coding agent");
 		expect(plain.slice(0, 7).every((line) => visibleWidth(line) === 63)).toBe(true);
 	});
@@ -33,8 +34,8 @@ describe("October header", () => {
 		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 		const lines = renderOctoberHeader(getDarkTheme(), 80);
 
-		expect(lines[0]).toContain("\x1b[38;5;215m");
-		expect(lines[0]).toContain("\x1b[38;5;131m");
+		expect(lines[0]).toContain("\x1b[38;5;221m");
+		expect(lines[0]).toContain("\x1b[38;5;130m");
 	});
 
 	it("falls back to a compact header without overflowing narrow terminals", () => {

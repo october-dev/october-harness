@@ -11,13 +11,18 @@ import { logoutOctober, storeOctoberInferenceToken } from "../src/extensions/oct
 import {
 	OCTOBER_DEVICE_CODE_PATH,
 	OCTOBER_DEVICE_TOKEN_PATH,
+	octoberAuthBaseUrl,
 	runOctoberDeviceCodeLogin,
 } from "../src/extensions/october/device-code.ts";
+import { openBrowser } from "../src/utils/open-browser.ts";
+
+vi.mock("../src/utils/open-browser.ts", () => ({ openBrowser: vi.fn() }));
 
 const servers: Server[] = [];
 const tmpDirs: string[] = [];
 
 afterEach(async () => {
+	vi.clearAllMocks();
 	delete process.env.OCTOBER_AUTH_BASE_URL;
 	delete process.env.OCTOBER_CODING_AGENT_DIR;
 	await Promise.all(
@@ -68,8 +73,9 @@ describe("october device-code login", () => {
 					JSON.stringify({
 						device_code: "dev-1",
 						user_code: "ABCD-1234",
-						verification_uri: "http://127.0.0.1/verify",
-						interval: 0,
+						verification_uri: `http://${request.headers.host}/verify`,
+						verification_uri_complete: `http://${request.headers.host}/verify?user_code=ABCD-1234`,
+						interval: 1,
 						expires_in: 30,
 					}),
 				);
@@ -95,7 +101,8 @@ describe("october device-code login", () => {
 			},
 		});
 		expect(token).toBe("oct_inf_live");
-		expect(seen).toEqual([{ userCode: "ABCD-1234", verificationUri: "http://127.0.0.1/verify" }]);
+		expect(seen).toEqual([{ userCode: "ABCD-1234", verificationUri: `${stub.url}/verify` }]);
+		expect(openBrowser).toHaveBeenCalledExactlyOnceWith(`${stub.url}/verify?user_code=ABCD-1234`);
 	});
 
 	it("fails clearly when the user denies the device", async () => {
@@ -106,8 +113,8 @@ describe("october device-code login", () => {
 					JSON.stringify({
 						device_code: "dev-denied",
 						user_code: "DENY-1",
-						verification_uri: "http://127.0.0.1/verify",
-						interval: 0,
+						verification_uri: `http://${request.headers.host}/verify`,
+						interval: 1,
 						expires_in: 30,
 					}),
 				);
@@ -132,8 +139,8 @@ describe("october device-code login", () => {
 					JSON.stringify({
 						device_code: "dev-exp",
 						user_code: "EXP-1",
-						verification_uri: "http://127.0.0.1/verify",
-						interval: 0,
+						verification_uri: `http://${request.headers.host}/verify`,
+						interval: 1,
 						expires_in: 30,
 					}),
 				);
@@ -159,10 +166,17 @@ describe("october device-code login", () => {
 			runOctoberDeviceCodeLogin({
 				onDeviceCode: () => {},
 			}),
-		).rejects.toThrow(/October login is not available yet/);
+		).rejects.toThrow(/HTTP 404/);
+		expect(openBrowser).not.toHaveBeenCalled();
 	});
 
 	it("stores the token as an api_key credential and logout removes it", async () => {
+		const requests: string[] = [];
+		const stub = await listen((request, response) => {
+			requests.push(`${request.method} ${request.url} ${request.headers.authorization}`);
+			response.writeHead(204).end();
+		});
+		process.env.OCTOBER_AUTH_BASE_URL = stub.url;
 		const dir = mkdtempSync(join(tmpdir(), "october-login-"));
 		tmpDirs.push(dir);
 		process.env.OCTOBER_CODING_AGENT_DIR = dir;
@@ -172,10 +186,134 @@ describe("october device-code login", () => {
 		expect(stored).toEqual({ type: "api_key", key: "oct_inf_stored" });
 		expect(await logoutOctober(authPath)).toBe(true);
 		expect(readStoredCredential("october", authPath)).toBeUndefined();
+		expect(requests).toEqual(["DELETE /api/cli/device/revoke Bearer oct_inf_stored"]);
+	});
+
+	it.each([
+		"https://attacker.example/verify",
+		"javascript:alert(1)",
+		"https://www.october.dev@attacker.example/verify",
+	])("does not open an untrusted verification link: %s", async (uri) => {
+		const stub = await listen((_request, response) => {
+			response
+				.writeHead(200)
+				.end(JSON.stringify({ device_code: "secret", user_code: "code", verification_uri: uri }));
+		});
+		process.env.OCTOBER_AUTH_BASE_URL = stub.url;
+		await expect(runOctoberDeviceCodeLogin({ onDeviceCode: () => {} })).rejects.toThrow(/Untrusted/);
+		expect(openBrowser).not.toHaveBeenCalled();
+	});
+
+	it("validates the complete verification link too", async () => {
+		const stub = await listen((request, response) => {
+			response.writeHead(200).end(
+				JSON.stringify({
+					device_code: "secret",
+					user_code: "code",
+					verification_uri: `http://${request.headers.host}/verify`,
+					verification_uri_complete: "https://attacker.example/verify",
+				}),
+			);
+		});
+		process.env.OCTOBER_AUTH_BASE_URL = stub.url;
+		await expect(runOctoberDeviceCodeLogin({ onDeviceCode: () => {} })).rejects.toThrow(/Untrusted/);
+		expect(openBrowser).not.toHaveBeenCalled();
+	});
+
+	it("supports headless login without opening a browser", async () => {
+		const controller = new AbortController();
+		const stub = await listen((request, response) => {
+			response.writeHead(200).end(
+				JSON.stringify({
+					device_code: "secret",
+					user_code: "code",
+					verification_uri: `http://${request.headers.host}/verify`,
+				}),
+			);
+		});
+		process.env.OCTOBER_AUTH_BASE_URL = stub.url;
+		await expect(
+			runOctoberDeviceCodeLogin(
+				{ onDeviceCode: () => controller.abort(), signal: controller.signal },
+				{ openBrowser: false },
+			),
+		).rejects.toThrow(/cancelled/);
+		expect(openBrowser).not.toHaveBeenCalled();
+	});
+
+	it("rejects a token sent with a failed HTTP response", async () => {
+		const stub = await listen((request, response) => {
+			if (request.url === OCTOBER_DEVICE_CODE_PATH) {
+				response.writeHead(200).end(
+					JSON.stringify({
+						device_code: "secret",
+						user_code: "code",
+						verification_uri: `http://${request.headers.host}/verify`,
+						interval: 1,
+					}),
+				);
+			} else response.writeHead(500).end(JSON.stringify({ access_token: "oct_inf_bad" }));
+		});
+		process.env.OCTOBER_AUTH_BASE_URL = stub.url;
+		await expect(runOctoberDeviceCodeLogin({ onDeviceCode: () => {} })).rejects.toThrow(/HTTP 500/);
+	});
+
+	it("bounds polling when the server never approves", async () => {
+		const stub = await listen((request, response) => {
+			response.writeHead(200).end(
+				JSON.stringify({
+					device_code: "secret",
+					user_code: "code",
+					verification_uri: `http://${request.headers.host}/verify`,
+					expires_in: 0.02,
+				}),
+			);
+		});
+		process.env.OCTOBER_AUTH_BASE_URL = stub.url;
+		await expect(runOctoberDeviceCodeLogin({ onDeviceCode: () => {} })).rejects.toThrow(/timed out/);
+	});
+
+	it("only permits HTTP loopback auth overrides", () => {
+		expect(octoberAuthBaseUrl({ OCTOBER_AUTH_BASE_URL: "http://localhost:5000/path" })).toBe("http://localhost:5000");
+		expect(octoberAuthBaseUrl({ OCTOBER_AUTH_BASE_URL: "ftp://localhost" })).toBe("https://www.october.dev");
+		expect(octoberAuthBaseUrl({ OCTOBER_AUTH_BASE_URL: "https://attacker.example" })).toBe("https://www.october.dev");
 	});
 });
 
 describe("october login/logout command routing", () => {
+	it("completes the standalone headless command and persists the issued token", async () => {
+		const stub = await listen((request, response) => {
+			response.writeHead(200).end(
+				JSON.stringify(
+					request.url === OCTOBER_DEVICE_CODE_PATH
+						? {
+								device_code: "secret",
+								user_code: "BCDFG-HJKLM",
+								verification_uri: `http://${request.headers.host}/verify`,
+								interval: 1,
+							}
+						: { access_token: "oct_inf_standalone" },
+				),
+			);
+		});
+		const dir = mkdtempSync(join(tmpdir(), "october-command-login-"));
+		tmpDirs.push(dir);
+		process.env.OCTOBER_AUTH_BASE_URL = stub.url;
+		process.env.OCTOBER_CODING_AGENT_DIR = dir;
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			expect(await handleOctoberLoginCommand(["login", "--no-browser"])).toBe(true);
+			expect(readStoredCredential("october", join(dir, "auth.json"))).toEqual({
+				type: "api_key",
+				key: "oct_inf_standalone",
+			});
+			expect(openBrowser).not.toHaveBeenCalled();
+			expect(log.mock.calls.flat().join("\n")).toContain("Signed in to October");
+		} finally {
+			log.mockRestore();
+		}
+	});
+
 	it("does not steal bare --help from the main CLI", async () => {
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {

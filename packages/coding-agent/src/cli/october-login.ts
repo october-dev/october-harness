@@ -13,12 +13,12 @@ export function isOctoberLogoutCommand(args: string[]): boolean {
 
 export function printOctoberLoginHelp(): void {
 	console.log(`${chalk.bold("Usage:")}
-  ${APP_NAME} login [october]
+  ${APP_NAME} login [october] [--no-browser]
   ${APP_NAME} logout [october]
 
-Sign in with your October account using a device code, or remove a stored October token.
-When the october.dev device-code endpoints are not live yet, login prints a clear error
-and you can use the October app or OCTOBER_INFERENCE_TOKEN instead.
+Open october.dev, sign in to your October account, and approve the code shown in your terminal.
+Use --no-browser to open the printed link yourself (for example, over SSH).
+Logout revokes the CLI token and removes the stored credential.
 `);
 }
 
@@ -43,16 +43,22 @@ export async function handleOctoberLoginCommand(args: string[]): Promise<boolean
 	if (!isOctoberLoginCommand(args)) {
 		return false;
 	}
+	const controller = new AbortController();
+	const cancel = () => controller.abort();
+	process.once("SIGINT", cancel);
 	try {
-		const token = await runOctoberDeviceCodeLogin({
-			onDeviceCode: printOctoberDeviceCode,
-		});
+		const token = await runOctoberDeviceCodeLogin(
+			{ onDeviceCode: printOctoberDeviceCode, signal: controller.signal },
+			{ openBrowser: !args.includes("--no-browser") },
+		);
 		await storeOctoberInferenceToken(token);
 		console.log(chalk.green("Signed in to October. You can use --provider october."));
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(message));
 		process.exitCode = 1;
+	} finally {
+		process.removeListener("SIGINT", cancel);
 	}
 	return true;
 }

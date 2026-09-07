@@ -409,7 +409,9 @@ export async function logoutOctober(authPath = getAuthPath(), signal?: AbortSign
 	if (!current) return false;
 	const token = current.type === "api_key" ? current.key : current.type === "oauth" ? current.access : undefined;
 	if (typeof token === "string" && token.startsWith("oct_inf_")) {
-		await revokeOctoberInferenceToken(token, signal);
+		if (!(await revokeOctoberInferenceToken(token, signal))) {
+			console.error("October could not revoke the token remotely. Removing the local credential only.");
+		}
 	}
 	await store.delete(OCTOBER_PROVIDER_ID);
 	return true;

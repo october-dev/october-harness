@@ -14,13 +14,13 @@ const OCTOBER_LETTERS: readonly (readonly string[])[] = [
 ];
 
 const OCTOBER_PALETTE = [
-	{ rgb: [242, 184, 75], ansi256: 215 },
-	{ rgb: [240, 164, 60], ansi256: 215 },
-	{ rgb: [237, 146, 51], ansi256: 209 },
-	{ rgb: [230, 109, 44], ansi256: 166 },
-	{ rgb: [209, 79, 48], ansi256: 167 },
-	{ rgb: [195, 69, 50], ansi256: 131 },
-	{ rgb: [169, 54, 54], ansi256: 131 },
+	{ rgb: [255, 196, 82], ansi256: 221 },
+	{ rgb: [255, 176, 59], ansi256: 215 },
+	{ rgb: [255, 154, 34], ansi256: 214 },
+	{ rgb: [247, 130, 14], ansi256: 208 },
+	{ rgb: [233, 105, 4], ansi256: 202 },
+	{ rgb: [215, 82, 8], ansi256: 166 },
+	{ rgb: [190, 64, 12], ansi256: 130 },
 ] as const;
 
 const WORDMARK_HEIGHT = 6;
@@ -50,9 +50,10 @@ function gradientName(theme: OctoberHeaderTheme): string {
 
 export function renderOctoberHeader(theme: OctoberHeaderTheme, width: number): string[] {
 	const name = gradientName(theme);
+	const label = autumn(OCTOBER_PALETTE[3], "October coding agent", theme);
 	const version = theme.fg("muted", `v${VERSION}`);
 	if (width < WORDMARK_WIDTH) {
-		return [truncateToWidth(` ${name}  ${theme.fg("muted", "coding agent")}  ${version}`, width), ""];
+		return [truncateToWidth(` ${name}  ${autumn(OCTOBER_PALETTE[3], "coding agent", theme)}  ${version}`, width), ""];
 	}
 
 	const wordmark = Array.from({ length: WORDMARK_HEIGHT }, (_, row) =>
@@ -65,7 +66,7 @@ export function renderOctoberHeader(theme: OctoberHeaderTheme, width: number): s
 		OCTOBER_LETTERS.map(() => ROUTE_SEGMENT),
 		theme,
 	);
-	return [...wordmark, route, "", ` ${name}  October coding agent  ${version}`, ""];
+	return [...wordmark, route, "", ` ${name}  ${label}  ${version}`, ""];
 }
 
 export function registerOctoberHeader(pi: ExtensionAPI): void {
