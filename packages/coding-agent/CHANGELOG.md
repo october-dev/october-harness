@@ -6,7 +6,8 @@
 
 - Keep October Desktop's current JWT authoritative for model discovery and inference even when a standalone credential is saved. Refresh it before requests without persisting it or falling back to another account.
 - Open the October website during CLI and interactive account login, validate verification links, and bound login requests and polling. Added `october login --no-browser` for remote terminals.
-- Use the CLI token self-revocation endpoint on logout and report remote revocation failures before removing the local credential.
+- Use the CLI token self-revocation endpoint on logout; report failures and retain local credentials and cleanup state for retry.
+- Revoke superseded October login tokens after saving the replacement, serialize login/logout under the credential-store lock, and retain private recovery state when persistence or revocation fails. Cover CLI and interactive login without changing Desktop JWT precedence.
 
 ## [0.85.1-october.2] - 2026-09-06
 

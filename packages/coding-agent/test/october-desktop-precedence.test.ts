@@ -146,6 +146,49 @@ describe("Desktop credential ownership through the composed model runtime", () =
 		expect(await storage.read("october")).toEqual({ type: "api_key", key: savedToken });
 	});
 
+	it("explicit Desktop login leaves the standalone credential untouched and keeps JWT inference", async () => {
+		const requests = await gateway();
+		const stored = { type: "api_key" as const, key: savedToken };
+		const storage = AuthStorage.inMemory({ october: stored });
+		const write = vi.spyOn(storage, "modify");
+		const transaction = vi.spyOn(storage, "transactCredential");
+		const runtime = await createRuntime(storage);
+		const prompt = vi.fn(async () => "unused");
+		const credential = await runtime.login("october", "oauth", { prompt, notify: () => {} });
+		expect(credential).toMatchObject({ type: "oauth", access: process.env.OCTOBER_SUPABASE_ACCESS_TOKEN });
+		expect(prompt).not.toHaveBeenCalled();
+		expect(write).not.toHaveBeenCalled();
+		expect(transaction).not.toHaveBeenCalled();
+		expect(await storage.read("october")).toEqual(stored);
+		await runtime.refresh({ allowNetwork: true, providers: ["october"] });
+		const model = runtime.getModel("october", OCTOBER_DEFAULT_MODEL_ID)!;
+		expect((await runtime.completeSimple(model, { messages })).stopReason).toBe("stop");
+		expect(
+			requests.every((request) => request.bearer === `Bearer ${process.env.OCTOBER_SUPABASE_ACCESS_TOKEN}`),
+		).toBe(true);
+	});
+
+	it("standalone logout inside Desktop revokes only that token and preserves JWT inference", async () => {
+		const requests = await gateway();
+		const fetch = globalThis.fetch;
+		const revoked: string[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			if (String(input) === "https://www.october.dev/api/cli/device/revoke") {
+				revoked.push(new Headers(init?.headers).get("Authorization") ?? "");
+				return new Response(null, { status: 204 });
+			}
+			return fetch(input, init);
+		});
+		const storage = AuthStorage.inMemory({ october: { type: "api_key", key: savedToken } });
+		const runtime = await createRuntime(storage);
+		await runtime.logout("october");
+		expect(revoked).toEqual([`Bearer ${savedToken}`]);
+		expect(await storage.read("october")).toBeUndefined();
+		const model = runtime.getModel("october", OCTOBER_DEFAULT_MODEL_ID)!;
+		expect((await runtime.completeSimple(model, { messages })).stopReason).toBe("stop");
+		expect(requests.at(-1)?.bearer).toBe(`Bearer ${process.env.OCTOBER_SUPABASE_ACCESS_TOKEN}`);
+	});
+
 	it("does not use the saved account when Desktop is signed out or its environment disappears", async () => {
 		const requests = await gateway();
 		const storage = AuthStorage.inMemory({ october: { type: "api_key", key: savedToken } });

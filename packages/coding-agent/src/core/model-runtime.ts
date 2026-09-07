@@ -44,6 +44,7 @@ import {
 	isOctoberDesktopMode,
 	OCTOBER_PROVIDER_ID,
 } from "../extensions/october/auth.ts";
+import { loginOctoberWithStore, logoutOctoberWithStore } from "../extensions/october/token-lifecycle.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
 import { ModelConfig } from "./model-config.ts";
@@ -701,7 +702,35 @@ export class ModelRuntime implements Models {
 	login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
 		const signal = operationSignal(interaction.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
-			const credential = await this.models.login(providerId, type, { ...interaction, signal });
+			let credential: Credential;
+			const persistentStore = this.credentials.getPersistentStore();
+			if (providerId === OCTOBER_PROVIDER_ID && persistentStore instanceof DefaultAuthStorage) {
+				if (type === "oauth" && isOctoberDesktopMode()) {
+					await ensureDesktopOctoberAccess(signal);
+					const desktop = getDesktopOctoberCredential();
+					if (!desktop || desktop.expires <= Date.now()) throw new Error("Sign in through October Desktop first.");
+					// Explicit /login in Desktop must not replace the standalone account on disk.
+					credential = { type: "oauth", ...desktop };
+				} else {
+					const provider = this.models.getProvider(providerId);
+					const method = type === "oauth" ? provider?.auth.oauth : provider?.auth.apiKey;
+					if (!method?.login) throw new ModelsError("auth", `October does not support ${type} login`);
+					try {
+						credential = await loginOctoberWithStore(
+							persistentStore,
+							() => method.login!({ ...interaction, signal }),
+							{ signal, newlyIssued: type === "oauth" },
+						);
+					} catch (error) {
+						// A persistence failure can be reported after the commit. Refresh from
+						// storage, but preserve the original recovery instructions if that fails.
+						await this.refresh({ allowNetwork: false, providers: [providerId] }).catch(() => {});
+						throw error;
+					}
+				}
+			} else {
+				credential = await this.models.login(providerId, type, { ...interaction, signal });
+			}
 			await this.synchronizeCredentialState(providerId, "login", credential, signal);
 			return credential;
 		});
@@ -710,7 +739,12 @@ export class ModelRuntime implements Models {
 	logout(providerId: string, options: AuthOperationOptions = {}): Promise<void> {
 		const signal = operationSignal(options.signal);
 		return this.enqueueCredentialOperation(providerId, signal, async () => {
-			await this.models.logout(providerId, { signal });
+			const persistentStore = this.credentials.getPersistentStore();
+			if (providerId === OCTOBER_PROVIDER_ID && persistentStore instanceof DefaultAuthStorage) {
+				await logoutOctoberWithStore(persistentStore, signal);
+			} else {
+				await this.models.logout(providerId, { signal });
+			}
 			await this.synchronizeCredentialState(providerId, "logout", undefined, signal);
 		});
 	}

@@ -470,6 +470,33 @@ export class AuthStorage implements CredentialStore {
 		return result;
 	}
 
+	/** Persistent location, or undefined for an intentionally in-memory store. */
+	getPath(): string | undefined {
+		return this.authPath;
+	}
+
+	/** Read, replace, or delete one credential under the existing backend lock.
+	 * An omitted credential leaves it unchanged; null deletes it.
+	 */
+	async transactCredential<T>(
+		provider: string,
+		fn: (current: Credential | undefined) => Promise<{ result: T; credential?: Credential | null }>,
+		options?: AuthOperationOptions,
+	): Promise<T> {
+		let latestData = this.readState.data;
+		const result = await this.storage.withLockAsync(async (content) => {
+			const currentData = this.parseStorageData(content);
+			const decision = await fn(currentData[provider]);
+			latestData = { ...currentData };
+			if (decision.credential === undefined) return { result: decision.result };
+			if (decision.credential === null) delete latestData[provider];
+			else latestData[provider] = decision.credential;
+			return { result: decision.result, next: JSON.stringify(latestData, null, 2) };
+		}, options);
+		this.updateReadState(latestData);
+		return result;
+	}
+
 	async delete(provider: string, options?: AuthOperationOptions): Promise<void> {
 		let latestData = this.readState.data;
 		await this.storage.withLockAsync(async (content) => {

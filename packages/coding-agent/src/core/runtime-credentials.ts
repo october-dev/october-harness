@@ -9,6 +9,10 @@ export class RuntimeCredentials implements CredentialStore {
 		this.store = store;
 	}
 
+	getPersistentStore(): CredentialStore {
+		return this.store;
+	}
+
 	setRuntimeApiKey(
 		providerId: string,
 		apiKey: string | ((signal?: AbortSignal) => Promise<string | undefined>),

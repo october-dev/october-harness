@@ -49,7 +49,13 @@ This opens the October website. Sign in to your October account, confirm that th
 
 For SSH or a terminal without a browser, run `october login --no-browser` and open the printed link on another device. Codes expire after ten minutes; run the command again if needed. Only approve a code from a login you started yourself.
 
-Run `october logout` to revoke this installation's token and remove the local credential. If the website is unreachable, logout warns that remote revocation failed and removes only the local credential.
+Logging in again saves the new credential before revoking the previous CLI token. Concurrent login and logout operations use the credential-store lock so logout cannot erase a later login.
+
+Run `october logout` to revoke this installation's tokens and remove the local credential. If revocation fails, the command reports failure and retains the credential and pending cleanup for retry. Do not delete `auth.json.october-pending.json`: it is an owner-only file containing tokens awaiting cleanup. A later login retries cleanup before issuing another token; `october logout` retries all pending revocations.
+
+If local persistence and remote revocation both fail, October prints the path to a private recovery file and an `october logout --recovery-file <path>` command. Keep that file until recovery succeeds. This command revokes only those uncommitted tokens without changing your current login. If no recovery file can be written either, October reports that account-side token cleanup is required.
+
+These lifecycle protections also apply to interactive `/login` and `/logout` with the built-in credential store. SDK in-memory `AuthStorage` retains pending cleanup only for that store's lifetime; custom credential-store implementations remain responsible for their own token lifecycle. Desktop's current JWT continues to take precedence for discovery and inference without replacing a saved standalone credential.
 
 ### Option 2: another provider via `/login`
 

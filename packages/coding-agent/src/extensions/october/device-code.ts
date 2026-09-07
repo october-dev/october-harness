@@ -297,7 +297,7 @@ export async function revokeOctoberInferenceToken(token: string, signal?: AbortS
 		});
 		return response.ok;
 	} catch {
-		// Revoke is best-effort; the token is still removed locally.
+		// The caller retains the credential or recovery journal for retry.
 		return false;
 	}
 }

@@ -3,7 +3,8 @@ import { getAuthPath } from "../../config.ts";
 import { AuthStorage } from "../../core/auth-storage.ts";
 import type { ExtensionAPI, ProviderConfig } from "../../core/extensions/types.ts";
 import { logOctoberDebug } from "./bus/log.ts";
-import { revokeOctoberInferenceToken, runOctoberDeviceCodeLogin } from "./device-code.ts";
+import { runOctoberDeviceCodeLogin } from "./device-code.ts";
+import { logoutOctoberWithStore, saveOctoberCredential } from "./token-lifecycle.ts";
 
 export const OCTOBER_PROVIDER_ID = "october";
 
@@ -393,28 +394,13 @@ export function buildOctoberOAuth(): OctoberOAuth {
 	};
 }
 
-/**
- * Import the app-provided session into pi's credential store so inference works with no `/login`.
- * Idempotent and race-safe (write under the store lock); a no-op when no session is present, and it
- * never throws — an auth hiccup must not break a coding session.
- */
+/** Commit a CLI token, then revoke superseded inference tokens without losing recovery state. */
 export async function storeOctoberInferenceToken(token: string, authPath = getAuthPath()): Promise<void> {
-	const store = AuthStorage.create(authPath);
-	await store.modify(OCTOBER_PROVIDER_ID, async () => ({ type: "api_key", key: token }));
+	await saveOctoberCredential(AuthStorage.create(authPath), { type: "api_key", key: token });
 }
 
 export async function logoutOctober(authPath = getAuthPath(), signal?: AbortSignal): Promise<boolean> {
-	const store = AuthStorage.create(authPath);
-	const current = await store.read(OCTOBER_PROVIDER_ID);
-	if (!current) return false;
-	const token = current.type === "api_key" ? current.key : current.type === "oauth" ? current.access : undefined;
-	if (typeof token === "string" && token.startsWith("oct_inf_")) {
-		if (!(await revokeOctoberInferenceToken(token, signal))) {
-			console.error("October could not revoke the token remotely. Removing the local credential only.");
-		}
-	}
-	await store.delete(OCTOBER_PROVIDER_ID);
-	return true;
+	return logoutOctoberWithStore(AuthStorage.create(authPath), signal);
 }
 
 export async function seedOctoberCredential(): Promise<void> {
