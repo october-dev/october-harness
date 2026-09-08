@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.85.1-october.3] - 2026-09-08
+
+### New Features
+
+- Browser login with explicit approval — `october login` opens the October website and waits for you to approve the terminal's code. See [Quickstart](docs/quickstart.md).
+- Safe repeated login and logout, preserving Desktop sign-in — superseded CLI tokens are revoked, failed cleanup remains recoverable, and Desktop's JWT stays authoritative. See [Authentication](docs/quickstart.md).
+
+### Changed
+
+- Brightened the October terminal header's orange gradient and applied the accent color to the coding-agent label, including narrow layouts.
+
 ### Fixed
 
 - Keep October Desktop's current JWT authoritative for model discovery and inference even when a standalone credential is saved. Refresh it before requests without persisting it or falling back to another account.
