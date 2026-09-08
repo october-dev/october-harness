@@ -390,7 +390,7 @@ describe("October token lifecycle", () => {
 	it.each(["login", "logout"])("redacts corrupt auth file contents from CLI %s failures", async (command) => {
 		writeFileSync(authPath, `{broken:${A}`);
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
-		await handleOctoberLoginCommand([command]);
+		await handleOctoberLoginCommand(command === "login" ? [command, "--no-browser"] : [command]);
 		expect(process.exitCode).toBe(1);
 		expect(error).toHaveBeenCalled();
 		expect(error.mock.calls.flat().join(" ")).not.toContain(A);

@@ -44,6 +44,7 @@ import {
 	isOctoberDesktopMode,
 	OCTOBER_PROVIDER_ID,
 } from "../extensions/october/auth.ts";
+import { OCTOBER_NVIDIA_COMPAT } from "../extensions/october/provider.ts";
 import { loginOctoberWithStore, logoutOctoberWithStore } from "../extensions/october/token-lifecycle.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
@@ -607,6 +608,14 @@ export class ModelRuntime implements Models {
 			signal: options?.signal,
 		});
 		if (!resolution) throw new ModelsError("auth", `Provider is not configured: ${model.provider}`);
+		// Explicit --model IDs can bypass catalog metadata during cache-only startup.
+		if (
+			model.provider === OCTOBER_PROVIDER_ID &&
+			model.api === "openai-completions" &&
+			model.id.startsWith("nvidia/")
+		) {
+			model = { ...model, compat: { ...model.compat, ...OCTOBER_NVIDIA_COMPAT } };
+		}
 
 		const { transformHeaders, ...rawProviderOptions } = options ?? {};
 		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions;

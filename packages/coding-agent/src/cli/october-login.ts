@@ -4,9 +4,10 @@ import { AuthStorage } from "../core/auth-storage.ts";
 import { logoutOctober } from "../extensions/october/auth.ts";
 import { printOctoberDeviceCode, runOctoberDeviceCodeLogin } from "../extensions/october/device-code.ts";
 import { loginOctoberWithStore, recoverOctoberTokenFile } from "../extensions/october/token-lifecycle.ts";
+import { runOctoberLoginUi } from "./october-login-ui.ts";
 
 export function isOctoberLoginCommand(args: string[]): boolean {
-	return args[0] === "login" && (args[1] === undefined || args[1] === "october" || args[1].startsWith("-"));
+	return args[0] === "login";
 }
 
 export function isOctoberLogoutCommand(args: string[]): boolean {
@@ -15,11 +16,13 @@ export function isOctoberLogoutCommand(args: string[]): boolean {
 
 export function printOctoberLoginHelp(): void {
 	console.log(`${chalk.bold("Usage:")}
-  ${APP_NAME} login [october] [--no-browser]
+  ${APP_NAME} login [provider]
+  ${APP_NAME} login [october] --no-browser
   ${APP_NAME} logout [october]
   ${APP_NAME} logout --recovery-file <path>
 
-Open october.dev, sign in to your October account, and approve the code shown in your terminal.
+Choose an October account, another provider account, or an API key, just like /login inside the harness.
+October account login opens october.dev and waits for you to approve the terminal's code.
 Use --no-browser to open the printed link yourself (for example, over SSH).
 Logout revokes the CLI token before removing the stored credential.
 Failed cleanup retains credentials and a private recovery journal for retry.
@@ -64,6 +67,19 @@ export async function handleOctoberLoginCommand(args: string[]): Promise<boolean
 	const cancel = () => controller.abort();
 	process.once("SIGINT", cancel);
 	try {
+		const unknownFlag = args.slice(1).find((arg) => arg.startsWith("-") && arg !== "--no-browser");
+		if (unknownFlag) throw new Error(`Unknown login option: ${unknownFlag}`);
+		const providerArgs = args.slice(1).filter((arg) => !arg.startsWith("-"));
+		if (providerArgs.length > 1) throw new Error(`Usage: ${APP_NAME} login [provider] [--no-browser]`);
+		if (!args.includes("--no-browser")) {
+			const providerName = await runOctoberLoginUi(controller.signal, providerArgs[0]);
+			if (!providerName) throw new Error("Login cancelled");
+			console.log(chalk.green(`Signed in to ${providerName}. Run ${APP_NAME} to start.`));
+			return true;
+		}
+		if (providerArgs[0] && providerArgs[0].toLowerCase() !== "october") {
+			throw new Error("--no-browser is only supported for October account login.");
+		}
 		await loginOctoberWithStore(
 			AuthStorage.create(getAuthPath()),
 			async () => ({

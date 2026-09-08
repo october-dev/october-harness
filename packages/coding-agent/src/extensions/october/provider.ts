@@ -15,6 +15,17 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 // small cap yields empty content — pi's own internal requests must keep a floor well above this.
 const DEFAULT_MAX_TOKENS = 32000;
 
+// The gateway hides the upstream provider and URL from Pi's auto-detection.
+// Keep these settings aligned with Pi's direct NVIDIA handling.
+export const OCTOBER_NVIDIA_COMPAT = {
+	supportsStrictMode: false,
+	supportsStore: false,
+	supportsDeveloperRole: false,
+	supportsReasoningEffort: false,
+	supportsLongCacheRetention: false,
+	maxTokensField: "max_tokens",
+} as const;
+
 interface OctoberModelMeta {
 	name: string;
 	input: ("text" | "image")[];
@@ -87,6 +98,7 @@ function modelFor(id: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW): P
 		cost: ZERO_COST,
 		contextWindow,
 		maxTokens: DEFAULT_MAX_TOKENS,
+		...(id.startsWith("nvidia/") ? { compat: OCTOBER_NVIDIA_COMPAT } : {}),
 	};
 }
 

@@ -1,8 +1,9 @@
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { Context, Model, RefreshModelsContext } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
@@ -338,4 +339,136 @@ describe("october inference provider", () => {
 		expect(message.stopReason).toBe("stop");
 		expect(message.content).toEqual([{ type: "text", text: "ok" }]);
 	});
+
+	it.each([
+		{ id: "nvidia/mistralai/mistral-nemotron", preferStrict: false, discovered: true },
+		{ id: "nvidia/mistralai/mistral-nemotron", preferStrict: true, discovered: true },
+		{ id: "nvidia/mistralai/mistral-nemotron", preferStrict: false, discovered: false },
+		{ id: OCTOBER_DEFAULT_MODEL_ID, preferStrict: false, discovered: true },
+	])(
+		"keeps tool requests compatible for $id (preferStrict=$preferStrict, discovered=$discovered)",
+		async ({ id, preferStrict, discovered }) => {
+			const requests: Record<string, unknown>[] = [];
+			const authorizations: string[] = [];
+			const nvidia = id.startsWith("nvidia/");
+			const { url } = await listen((request, response) => {
+				authorizations.push(String(request.headers.authorization ?? ""));
+				if (request.url === "/v1/models") {
+					json(response, { data: [{ id }] });
+					return;
+				}
+				if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+					response.writeHead(404).end();
+					return;
+				}
+				let body = "";
+				request.setEncoding("utf8");
+				request.on("data", (chunk: string) => {
+					body += chunk;
+				});
+				request.on("end", () => {
+					const payload = JSON.parse(body) as Record<string, unknown>;
+					requests.push(payload);
+					const tools = payload.tools as { function: Record<string, unknown> }[];
+					if (nvidia && tools.some((tool) => "strict" in tool.function)) {
+						response.writeHead(400, { "Content-Type": "application/json" });
+						response.end(
+							JSON.stringify({ error: { message: "tools.0.function.strict: Extra inputs are not permitted" } }),
+						);
+						return;
+					}
+					response.writeHead(200, { "Content-Type": "text/event-stream" });
+					response.write(
+						`data: ${JSON.stringify({
+							id: "fixture-completion",
+							object: "chat.completion.chunk",
+							model: id,
+							choices: [
+								{
+									index: 0,
+									delta: {
+										role: "assistant",
+										tool_calls: [
+											{
+												index: 0,
+												id: "fixture-call",
+												type: "function",
+												function: { name: "read", arguments: '{"value":"README.md"}' },
+											},
+										],
+									},
+									finish_reason: null,
+								},
+							],
+						})}\n\n`,
+					);
+					response.end(
+						`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\ndata: [DONE]\n\n`,
+					);
+				});
+			});
+			process.env.OCTOBER_INFERENCE_BASE_URL = `${url}/v1`;
+			const runtime = await ModelRuntime.create({
+				credentials: AuthStorage.inMemory({ october: { type: "api_key", key: "fixture-token" } }),
+				modelsPath: null,
+				refreshOnCreate: false,
+			});
+			runtime.registerProvider("october", createOctoberProviderConfig());
+			await runtime.refresh({ providers: ["october"], allowNetwork: discovered });
+			const model = resolveCliModel({ cliProvider: "october", cliModel: id, modelRuntime: runtime }).model!;
+			expect(model?.id).toBe(id);
+			const context: Context = {
+				systemPrompt: "You are a test assistant.",
+				messages: [{ role: "user", content: "Read README.md", timestamp: 0 }],
+				tools: ["read", "bash", "edit", "write"].map((name) => ({
+					name,
+					description: name,
+					parameters: Type.Object({ value: Type.String() }),
+					...(preferStrict
+						? { constrainedSampling: { type: "json_schema" as const, strict: "prefer" as const } }
+						: {}),
+				})),
+			};
+			const options = {
+				maxTokens: 128,
+				reasoning: "low" as const,
+				cacheRetention: "long" as const,
+				sessionId: "fixture-session",
+			};
+			const message = await runtime.completeSimple(model, context, options);
+			expect(message.errorMessage).toBeUndefined();
+			expect(message.stopReason).toBe("toolUse");
+			expect(message.content).toEqual([
+				{ type: "toolCall", id: "fixture-call", name: "read", arguments: { value: "README.md" } },
+			]);
+			const payload = requests[0]!;
+			expect(payload.model).toBe(id);
+			const tools = payload.tools as { function: Record<string, unknown> }[];
+			expect(tools.map((tool) => tool.function.name)).toEqual(["read", "bash", "edit", "write"]);
+			for (const tool of tools) {
+				expect(tool.function.parameters).toEqual({
+					type: "object",
+					properties: { value: { type: "string" } },
+					required: ["value"],
+				});
+				if (nvidia) expect(tool.function).not.toHaveProperty("strict");
+				else expect(tool.function.strict).toBe(false);
+			}
+			if (nvidia) {
+				// Keep October's route settings aligned with upstream Pi's direct NVIDIA handling.
+				await streamSimple(
+					{ ...model, provider: "nvidia", compat: undefined } as Model<"openai-completions">,
+					context,
+					{ ...options, apiKey: "fixture-token" },
+				).result();
+				expect(requests[1]).toEqual(payload);
+				expect(payload.max_tokens).toBe(128);
+				expect(payload).not.toHaveProperty("store");
+				expect(payload).not.toHaveProperty("reasoning_effort");
+				expect(payload).not.toHaveProperty("max_completion_tokens");
+				expect(payload).not.toHaveProperty("prompt_cache_retention");
+			}
+			expect(authorizations.every((value) => value === "Bearer fixture-token")).toBe(true);
+		},
+	);
 });

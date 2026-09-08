@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Unified `october login` and `/login` with October account, other provider account, and API key choices, retaining provider-owned authentication and automatic Desktop credentials.
+- Show neutral first-time connection guidance and distinguish configured credentials or model-loading errors from missing setup.
+
+### Fixed
+
+- Apply upstream Pi's NVIDIA request compatibility settings to NVIDIA-routed October models, including custom `--model` IDs before catalog refresh, fixing Nemotron requests rejected for unsupported `function.strict` fields and developer-role messages. Other October models retain their existing request settings.
+
 ## [0.85.1-october.3] - 2026-09-08
 
 ### New Features

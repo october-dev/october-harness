@@ -39,13 +39,15 @@ october
 
 ## Authenticate
 
+Run `october login` in your shell, or `/login` inside the harness. Both offer the same choices: **October account**, **Another provider account**, and **API key**. You can also use `october login <provider>` or `/login <provider>` to go directly to a provider's authentication methods.
+
 ### Option 1: October account (recommended)
 
 ```bash
 october login
 ```
 
-This opens the October website. Sign in to your October account, confirm that the code matches your terminal, and click **Approve CLI**. The CLI stores an inference-only token in `~/.october/agent/auth.json`; it does not receive your browser session or password. Inside the October app you can skip this — Desktop injects the session.
+Select **October account** to open the October website. Sign in to your October account, confirm that the code matches your terminal, and click **Approve CLI**. The CLI stores an inference-only token in `~/.october/agent/auth.json`; it does not receive your browser session or password. Inside the October app you can skip this — Desktop injects the session.
 
 For SSH or a terminal without a browser, run `october login --no-browser` and open the printed link on another device. Codes expire after ten minutes; run the command again if needed. Only approve a code from a login you started yourself.
 
@@ -57,7 +59,7 @@ If local persistence and remote revocation both fail, October prints the path to
 
 These lifecycle protections also apply to interactive `/login` and `/logout` with the built-in credential store. SDK in-memory `AuthStorage` retains pending cleanup only for that store's lifetime; custom credential-store implementations remain responsible for their own token lifecycle. Desktop's current JWT continues to take precedence for discovery and inference without replacing a saved standalone credential.
 
-### Option 2: another provider via `/login`
+### Option 2: another provider account
 
 Start October and run:
 
@@ -65,7 +67,7 @@ Start October and run:
 /login
 ```
 
-Then select a provider. Built-in subscription logins include Claude Pro/Max, ChatGPT Plus/Pro (Codex), and GitHub Copilot.
+Select **Another provider account**, then a provider. The same picker is available from `october login` in your shell. Built-in subscription logins include Claude Pro/Max, ChatGPT Plus/Pro (Codex), and GitHub Copilot.
 
 ### Option 3: API key
 
@@ -76,7 +78,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 october
 ```
 
-You can also run `/login` and select an API-key provider to store the key in `~/.october/agent/auth.json`.
+You can also run `october login` or `/login`, select **API key**, and choose a provider to store the key in `~/.october/agent/auth.json`.
 
 See [Providers](providers.md) for all supported providers, environment variables, and cloud-provider setup.
 

@@ -57,6 +57,7 @@ import {
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
+import { formatNoModelsAvailableMessage, getNoModelsGuidance } from "../../core/auth-guidance.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
@@ -106,6 +107,7 @@ import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { logoutOctober } from "../../extensions/october/auth.ts";
+import { getLoginProviderOptions, LOGIN_MENU_OPTIONS, LOGIN_MENU_TITLE } from "../../extensions/october/login-menu.ts";
 import { getChangelogPath, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -1112,7 +1114,7 @@ export class InteractiveMode {
 		}
 
 		if (modelFallbackMessage) {
-			this.showWarning(modelFallbackMessage);
+			this.showModelFallbackMessage(modelFallbackMessage);
 		}
 
 		if (this.pendingTelemetryConsent) {
@@ -1151,6 +1153,23 @@ export class InteractiveMode {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
 			}
+		}
+	}
+
+	private showModelFallbackMessage(message: string): void {
+		if (message !== formatNoModelsAvailableMessage()) {
+			this.showWarning(message);
+			return;
+		}
+		const guidance = getNoModelsGuidance(this.session.modelRuntime, "interactive");
+		if (guidance.level === "info") {
+			// Keep onboarding visible when later startup status messages are coalesced.
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(theme.fg("dim", guidance.message), 1, 0));
+			this.ui.requestRender();
+		} else if (!this.session.modelRuntime.getError()) {
+			// Model-loading errors are already displayed separately during startup.
+			this.showWarning(guidance.message);
 		}
 	}
 
@@ -5441,35 +5460,7 @@ export class InteractiveMode {
 	}
 
 	private getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[] {
-		const options: AuthSelectorProvider[] = [];
-		for (const provider of this.session.modelRuntime.getProviders()) {
-			const authStatus = this.session.modelRuntime.getProviderAuthStatus(provider.id);
-			const status = authStatus.configured
-				? {
-						type: this.session.modelRuntime.isUsingOAuth(provider.id) ? ("oauth" as const) : ("api_key" as const),
-						source: authStatus.label ?? authStatus.source,
-					}
-				: undefined;
-			if ((!authType || authType === "oauth") && provider.auth.oauth) {
-				options.push({
-					id: provider.id,
-					name: provider.name,
-					authType: "oauth",
-					method: provider.auth.oauth,
-					status,
-				});
-			}
-			if ((!authType || authType === "api_key") && provider.auth.apiKey) {
-				options.push({
-					id: provider.id,
-					name: provider.name,
-					authType: "api_key",
-					method: provider.auth.apiKey,
-					status,
-				});
-			}
-		}
-		return options.sort((a, b) => a.name.localeCompare(b.name));
+		return getLoginProviderOptions(this.session.modelRuntime, authType);
 	}
 
 	private async getLogoutProviderOptions(): Promise<AuthSelectorProvider[]> {
@@ -5530,6 +5521,28 @@ export class InteractiveMode {
 	}
 
 	private showLoginAuthTypeSelector(providerOptions?: AuthSelectorProvider[]): void {
+		if (!providerOptions) {
+			this.showSelector((done) => {
+				const selector = new ExtensionSelectorComponent(
+					LOGIN_MENU_TITLE,
+					LOGIN_MENU_OPTIONS,
+					(option) => {
+						done();
+						if (option === LOGIN_MENU_OPTIONS[0]) {
+							void this.startProviderLogin({ id: "october", name: "October", authType: "oauth" });
+						} else {
+							this.showLoginProviderSelector(option === LOGIN_MENU_OPTIONS[1] ? "oauth" : "api_key");
+						}
+					},
+					() => {
+						done();
+						this.ui.requestRender();
+					},
+				);
+				return { component: selector, focus: selector };
+			});
+			return;
+		}
 		const oauthProvider = providerOptions?.find((provider) => provider.authType === "oauth");
 		const oauthLoginLabel =
 			oauthProvider?.method && "loginLabel" in oauthProvider.method ? oauthProvider.method.loginLabel : undefined;
@@ -5588,7 +5601,9 @@ export class InteractiveMode {
 	}
 
 	private showLoginProviderSelector(authType?: AuthSelectorProvider["authType"], initialSearchInput?: string): void {
-		const providerOptions = this.getLoginProviderOptions(authType);
+		const providerOptions = this.getLoginProviderOptions(authType).filter(
+			(provider) => authType !== "oauth" || provider.id !== "october",
+		);
 		if (providerOptions.length === 0) {
 			const message =
 				authType === "oauth"
