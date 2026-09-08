@@ -3,16 +3,17 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
-import { resolveCliModel } from "../src/core/model-resolver.ts";
+import { findInitialModel, resolveCliModel } from "../src/core/model-resolver.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
 import {
 	createOctoberProviderConfig,
 	describeOctoberBearer,
+	OCTOBER_DEFAULT_MODEL_ID,
 	OCTOBER_PROVIDER_ID,
 	OCTOBER_SEED_MODELS,
 	refreshOctoberModels,
@@ -52,6 +53,7 @@ function refreshContext(overrides: Partial<RefreshModelsContext> = {}): RefreshM
 }
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	delete process.env.OCTOBER_INFERENCE_TOKEN;
 	delete process.env.OCTOBER_INFERENCE_BASE_URL;
 	await Promise.all(
@@ -72,20 +74,63 @@ describe("october inference provider", () => {
 		expect(runtime.pendingProviderRegistrations.map((entry) => entry.name)).toEqual([OCTOBER_PROVIDER_ID]);
 	});
 
-	it("seeds a baseline with Kimi first and the handover metadata", () => {
-		expect(OCTOBER_SEED_MODELS[0]?.id).toBe("october/Kimi-K2.7-Code");
-		expect(createOctoberProviderConfig().models?.[0]?.id).toBe("october/Kimi-K2.7-Code");
+	it("defaults to production Qwen3.6 while preserving Kimi metadata for explicit selection", () => {
+		expect(OCTOBER_DEFAULT_MODEL_ID).toBe("october/Qwen/Qwen3.6-35B-A3B-FP8");
+		expect(createOctoberProviderConfig().models?.[0]?.id).toBe(OCTOBER_DEFAULT_MODEL_ID);
 		expect(OCTOBER_SEED_MODELS.map((model) => model.id)).toEqual([
-			"october/Kimi-K2.7-Code",
 			"october/Qwen/Qwen3.6-35B-A3B-FP8",
+			"october/Kimi-K2.7-Code",
 		]);
-		const kimi = OCTOBER_SEED_MODELS[0];
+		const kimi = OCTOBER_SEED_MODELS[1];
+		expect(kimi?.name).not.toContain("recommended");
 		expect(kimi?.input).toEqual(["text", "image"]);
 		expect(kimi?.contextWindow).toBe(128000);
 		expect(kimi?.maxTokens).toBe(32000);
-		const qwen = OCTOBER_SEED_MODELS[1];
+		const qwen = OCTOBER_SEED_MODELS[0];
+		expect(qwen?.name).toContain("recommended");
 		expect(qwen?.reasoning).toBe(true);
 		expect(qwen?.input).toEqual(["text"]);
+	});
+
+	it("selects Qwen for a fresh October runtime without overriding an explicit model", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			refreshOnCreate: false,
+		});
+		runtime.registerProvider(OCTOBER_PROVIDER_ID, createOctoberProviderConfig());
+		await runtime.refresh({ allowNetwork: false });
+		// Isolate initial selection from other providers configured in the test runner's environment.
+		vi.spyOn(runtime, "getAvailableSnapshot").mockReturnValue(runtime.getModels("october"));
+		const selected = await findInitialModel({ scopedModels: [], isContinuing: false, modelRuntime: runtime });
+		expect(selected.model?.id).toBe("october/Qwen/Qwen3.6-35B-A3B-FP8");
+		const explicit = await findInitialModel({
+			cliProvider: "october",
+			cliModel: "october/Kimi-K2.7-Code",
+			scopedModels: [],
+			isContinuing: false,
+			modelRuntime: runtime,
+		});
+		expect(explicit.model?.id).toBe("october/Kimi-K2.7-Code");
+	});
+
+	it("prioritizes Qwen in a live catalog regardless of gateway order", async () => {
+		const { url } = await listen((_request, response) =>
+			json(response, {
+				data: [
+					{ id: "october/Kimi-K2.7-Code" },
+					{ id: "october/Qwen3.8-27B" },
+					{ id: "october/Qwen/Qwen3.6-35B-A3B-FP8" },
+				],
+			}),
+		);
+		process.env.OCTOBER_INFERENCE_BASE_URL = `${url}/v1`;
+		const models = await refreshOctoberModels(refreshContext({ credential: { type: "api_key", key: "test-token" } }));
+		expect(models.map((model) => model.id)).toEqual([
+			"october/Qwen/Qwen3.6-35B-A3B-FP8",
+			"october/Kimi-K2.7-Code",
+			"october/Qwen3.8-27B",
+		]);
 	});
 
 	it("classifies bearers without exposing the secret", () => {
@@ -181,7 +226,7 @@ describe("october inference provider", () => {
 		const models = await refreshOctoberModels(refreshContext());
 		expect(seenAuth).toEqual(["Bearer test-token"]);
 		expect(models.map((model) => model.id)).toEqual(["october/Kimi-K2.7-Code", "october/Some_Custom-Model"]);
-		expect(models[0]?.name).toContain("recommended");
+		expect(models[0]?.name).toBe("Kimi K2.7 Code");
 		expect(models[0]?.contextWindow).toBe(262144);
 		// An id not in the metadata table is still exposed with conservative defaults.
 		expect(models[1]?.id).toBe("october/Some_Custom-Model");
@@ -254,7 +299,7 @@ describe("october inference provider", () => {
 					id: "chatcmpl-october",
 					object: "chat.completion.chunk",
 					created: 0,
-					model: "october/Kimi-K2.7-Code",
+					model: OCTOBER_DEFAULT_MODEL_ID,
 					choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }],
 				})}\n\n`,
 			);
@@ -263,7 +308,7 @@ describe("october inference provider", () => {
 					id: "chatcmpl-october",
 					object: "chat.completion.chunk",
 					created: 0,
-					model: "october/Kimi-K2.7-Code",
+					model: OCTOBER_DEFAULT_MODEL_ID,
 					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
 					usage: { prompt_tokens: 1, completion_tokens: 1 },
 				})}\n\n`,

@@ -109,8 +109,10 @@ Standalone login uses a device-code flow and stores a revocable credential under
 
 The built-in October provider refreshes its model catalog from the October inference gateway. Its offline seed catalog includes:
 
-- `october/Kimi-K2.7-Code`: the recommended default, with text and image input;
-- `october/Qwen/Qwen3.6-35B-A3B-FP8`: a reasoning model.
+- `october/Qwen/Qwen3.6-35B-A3B-FP8`: the recommended default, with text input and reasoning;
+- `october/Kimi-K2.7-Code`: a text-and-image model retained for deployments that provide access.
+
+Existing saved model choices are preserved. If a session still selects Kimi and receives `model use not permitted`, use `/model` to select Qwen3.6 or pass `--provider october --model october/Qwen/Qwen3.6-35B-A3B-FP8`.
 
 Use `/model` in the TUI or inspect available models from the shell:
 

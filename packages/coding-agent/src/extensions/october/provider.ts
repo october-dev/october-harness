@@ -28,13 +28,13 @@ interface OctoberModelMeta {
  */
 const DEFAULT_META: OctoberModelMeta = { name: "", input: ["text"], reasoning: false };
 const MODEL_META: Record<string, OctoberModelMeta> = {
-	"october/Kimi-K2.7-Code": { name: "Kimi K2.7 Code (recommended)", input: ["text", "image"], reasoning: false },
-	"october/Qwen/Qwen3.6-35B-A3B-FP8": { name: "Qwen3.6 35B A3B", input: ["text"], reasoning: true },
+	"october/Kimi-K2.7-Code": { name: "Kimi K2.7 Code", input: ["text", "image"], reasoning: false },
+	"october/Qwen/Qwen3.6-35B-A3B-FP8": { name: "Qwen3.6 35B A3B (recommended)", input: ["text"], reasoning: true },
 };
 
 /** The first entry is what bare `--provider october` selects. */
-export const OCTOBER_DEFAULT_MODEL_ID = "october/Kimi-K2.7-Code";
-const SEED_ORDER: readonly string[] = [OCTOBER_DEFAULT_MODEL_ID, "october/Qwen/Qwen3.6-35B-A3B-FP8"];
+export const OCTOBER_DEFAULT_MODEL_ID = "october/Qwen/Qwen3.6-35B-A3B-FP8";
+const SEED_ORDER: readonly string[] = [OCTOBER_DEFAULT_MODEL_ID, "october/Kimi-K2.7-Code"];
 
 function isLoopbackUrl(raw: string): boolean {
 	try {
@@ -90,7 +90,7 @@ function modelFor(id: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW): P
 	};
 }
 
-/** Static baseline so `--provider october` works before the first /models refresh. Kimi is first. */
+/** Static baseline so `--provider october` works before the first /models refresh. Qwen is first. */
 export const OCTOBER_SEED_MODELS: ProviderModelConfig[] = SEED_ORDER.map((id) => modelFor(id));
 
 function tokenFromRefreshContext(context: RefreshModelsContext): string | undefined {

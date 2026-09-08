@@ -8,6 +8,7 @@
 - Open the October website during CLI and interactive account login, validate verification links, and bound login requests and polling. Added `october login --no-browser` for remote terminals.
 - Use the CLI token self-revocation endpoint on logout; report failures and retain local credentials and cleanup state for retry.
 - Revoke superseded October login tokens after saving the replacement, serialize login/logout under the credential-store lock, and retain private recovery state when persistence or revocation fails. Cover CLI and interactive login without changing Desktop JWT precedence.
+- Default new October sessions to Qwen3.6, which is available on the production gateway, instead of Kimi. Preserve explicit and saved model choices.
 
 ## [0.85.1-october.2] - 2026-09-06
 
