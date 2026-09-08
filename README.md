@@ -50,6 +50,7 @@ Pi optimizes for a small, extensible core. October Harness keeps that foundation
 ## Contents
 
 - [Five-minute quickstart](#five-minute-quickstart)
+- [Update October Harness](#update-october-harness)
 - [Authentication, models, and providers](#authentication-models-and-providers)
 - [Standalone usage](#standalone-usage)
 - [Two harnesses, one Bus](#two-harnesses-one-bus)
@@ -84,6 +85,17 @@ Summarize this repository, explain how to run its checks, and suggest the highes
 October can read, write, and edit files, run shell commands, inspect the repository, and retain the session so you can continue later.
 
 Already have another provider account? Start `october`, run `/login`, select the provider, then use `/model` to choose a model.
+
+## Update October Harness
+
+For a global npm installation, install the latest release and verify the version:
+
+```bash
+npm install -g --ignore-scripts @october-dev/october@latest
+october --version
+```
+
+Restart running harness sessions to use the update. Your saved credentials, settings, and sessions are preserved. October Desktop manages its own harness version; this command updates only the standalone npm installation.
 
 ## Authentication, models, and providers
 
