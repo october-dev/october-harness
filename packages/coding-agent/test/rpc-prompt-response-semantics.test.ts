@@ -218,7 +218,7 @@ describe("RPC prompt response semantics", () => {
 					command: "prompt",
 					success: false,
 					error: expect.stringContaining(
-						"No API key found for fake-provider.\n\nRun `october login` to sign in with your October account, or /login for another provider. See:",
+						"No API key found for fake-provider.\n\nRun `october login` to connect an October account, another provider account, or an API key. See:",
 					),
 				});
 			});

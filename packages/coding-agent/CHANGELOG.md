@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.85.1-october.4] - 2026-09-09
+
+### New Features
+
+- Unified provider login — `october login` and `/login` share October account, other provider account, and API key choices. See [Authentication](docs/quickstart.md#authenticate).
+
 ### Changed
 
 - Unified `october login` and `/login` with October account, other provider account, and API key choices, retaining provider-owned authentication and automatic Desktop credentials.
@@ -9,7 +15,7 @@
 
 ### Fixed
 
-- Apply upstream Pi's NVIDIA request compatibility settings to NVIDIA-routed October models, including custom `--model` IDs before catalog refresh, fixing Nemotron requests rejected for unsupported `function.strict` fields and developer-role messages. Other October models retain their existing request settings.
+- Apply upstream Pi's NVIDIA request compatibility settings to NVIDIA-routed October models, including custom `--model` IDs before catalog refresh, fixing Nemotron requests rejected for unsupported `function.strict` fields and developer-role messages. Other October models retain their existing request settings. Live NVIDIA requests still timed out during release verification; this client fix does not resolve service availability.
 
 ## [0.85.1-october.3] - 2026-09-08
 
