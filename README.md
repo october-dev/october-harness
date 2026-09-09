@@ -1,14 +1,6 @@
 <div align="center">
 
-<pre aria-label="OCTOBER">
- ██████╗  ██████╗ ████████╗ ██████╗ ██████╗  ███████╗ ██████╗
-██╔═══██╗██╔════╝ ╚══██╔══╝██╔═══██╗██╔══██╗ ██╔════╝ ██╔══██╗
-██║   ██║██║         ██║   ██║   ██║██████╔╝ █████╗   ██████╔╝
-██║   ██║██║         ██║   ██║   ██║██╔══██╗ ██╔══╝   ██╔══██╗
-╚██████╔╝╚██████╗    ██║   ╚██████╔╝██████╔╝ ███████╗ ██║  ██║
- ╚═════╝  ╚═════╝    ╚═╝    ╚═════╝ ╚═════╝  ╚══════╝ ╚═╝  ╚═╝
-────○────────○────────○────────○────────○────────○────────○────
-</pre>
+<img src="assets/october-banner.svg" alt="OCTOBER" width="880">
 
 <h1>October Harness</h1>
 
@@ -47,8 +39,22 @@ It exists to be the open reference harness for **multiplayer-native development*
 
 Pi optimizes for a small, extensible core. October Harness keeps that foundation and makes a different product choice: multiplayer behavior is part of the first-party runtime, not an afterthought bolted onto a `send_message()` function.
 
+## Compared with OpenCode and Cline
+
+October's focus is built-in October Bus support: discovering other agents, exchanging durable messages, and coordinating shared tasks. OpenCode and Cline also support working with multiple agents; the difference is how they connect and coordinate.
+
+| Area | October Harness | OpenCode | Cline |
+| --- | --- | --- | --- |
+| Interfaces | [Terminal, print/JSON, RPC, embedded SDK](#standalone-usage) | [Terminal, desktop, IDE](https://opencode.ai/docs/); [headless CLI](https://opencode.ai/docs/cli/), [HTTP server/client SDK](https://opencode.ai/docs/sdk/) | [IDE extensions, CLI, desktop, embedded SDK](https://github.com/cline/cline#readme) |
+| Collaboration | [Bus peers, durable messages, shared tasks](#two-harnesses-one-bus) | [Primary agents and subagents](https://opencode.ai/docs/agents/) | [Persistent teams with a task board and mailbox](https://docs.cline.bot/cli/agent-teams) in CLI, SDK, and Kanban; not yet in IDE extensions |
+| Customization | [TypeScript extensions, skills, prompts, themes, packages](#extensions-and-customization) | [Plugins](https://opencode.ai/docs/plugins/), [skills](https://opencode.ai/docs/skills/), [MCP servers](https://opencode.ai/docs/mcp-servers/) | [Skills](https://docs.cline.bot/customization/skills), [MCP servers](https://github.com/cline/cline#readme); [plugins](https://docs.cline.bot/customization/plugins) in CLI, SDK, and Kanban |
+| Permissions | [`ask`, `accept-edits`, `bypass`](#tool-permissions); default is `bypass` | [Per-tool `allow`, `ask`, `deny` rules](https://opencode.ai/docs/permissions/) | [Tool approvals and configurable auto-approve](https://docs.cline.bot/features/auto-approve) |
+
+This is not a complete feature list. Documentation checked September 10, 2026; availability varies by version and interface. October's approval controls are not an OS sandbox; see [Security](#security).
+
 ## Contents
 
+- [Compared with OpenCode and Cline](#compared-with-opencode-and-cline)
 - [Five-minute quickstart](#five-minute-quickstart)
 - [Update October Harness](#update-october-harness)
 - [Authentication, models, and providers](#authentication-models-and-providers)

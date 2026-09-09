@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="256" viewBox="0 0 880 256" role="img" aria-labelledby="title desc">
+  <title id="title">October Harness</title>
+  <desc id="desc">The October CLI wordmark in its gold-to-rust autumn palette, with seven connected Bus stops.</desc>
+  <!-- Lettering and colors mirror packages/coding-agent/src/extensions/october/header.ts. -->
+  <rect width="880" height="256" rx="16" fill="#101820"/>
+  <g font-family="Menlo, Consolas, Liberation Mono, monospace" font-size="20" xml:space="preserve">
+    <g transform="translate(62 0)" fill="#ffc452">
+      <text x="0" y="56" textLength="108" lengthAdjust="spacingAndGlyphs"> ██████╗ </text>
+      <text x="0" y="80" textLength="108" lengthAdjust="spacingAndGlyphs">██╔═══██╗</text>
+      <text x="0" y="104" textLength="108" lengthAdjust="spacingAndGlyphs">██║   ██║</text>
+      <text x="0" y="128" textLength="108" lengthAdjust="spacingAndGlyphs">██║   ██║</text>
+      <text x="0" y="152" textLength="108" lengthAdjust="spacingAndGlyphs">╚██████╔╝</text>
+      <text x="0" y="176" textLength="108" lengthAdjust="spacingAndGlyphs"> ╚═════╝ </text>
+      <text x="0" y="216" textLength="108" lengthAdjust="spacingAndGlyphs">────○────</text>
+    </g>
+    <g transform="translate(170 0)" fill="#ffb03b">
+      <text x="0" y="56" textLength="108" lengthAdjust="spacingAndGlyphs"> ██████╗ </text>
+      <text x="0" y="80" textLength="108" lengthAdjust="spacingAndGlyphs">██╔════╝ </text>
+      <text x="0" y="104" textLength="108" lengthAdjust="spacingAndGlyphs">██║      </text>
+      <text x="0" y="128" textLength="108" lengthAdjust="spacingAndGlyphs">██║      </text>
+      <text x="0" y="152" textLength="108" lengthAdjust="spacingAndGlyphs">╚██████╗ </text>
+      <text x="0" y="176" textLength="108" lengthAdjust="spacingAndGlyphs"> ╚═════╝ </text>
+      <text x="0" y="216" textLength="108" lengthAdjust="spacingAndGlyphs">────○────</text>
+    </g>
+    <g transform="translate(278 0)" fill="#ff9a22">
+      <text x="0" y="56" textLength="108" lengthAdjust="spacingAndGlyphs">████████╗</text>
+      <text x="0" y="80" textLength="108" lengthAdjust="spacingAndGlyphs">╚══██╔══╝</text>
+      <text x="0" y="104" textLength="108" lengthAdjust="spacingAndGlyphs">   ██║   </text>
+      <text x="0" y="128" textLength="108" lengthAdjust="spacingAndGlyphs">   ██║   </text>
+      <text x="0" y="152" textLength="108" lengthAdjust="spacingAndGlyphs">   ██║   </text>
+      <text x="0" y="176" textLength="108" lengthAdjust="spacingAndGlyphs">   ╚═╝   </text>
+      <text x="0" y="216" textLength="108" lengthAdjust="spacingAndGlyphs">────○────</text>
+    </g>
+    <g transform="translate(386 0)" fill="#f7820e">
+      <text x="0" y="56" textLength="108" lengthAdjust="spacingAndGlyphs"> ██████╗ </text>
+      <text x="0" y="80" textLength="108" lengthAdjust="spacingAndGlyphs">██╔═══██╗</text>
+      <text x="0" y="104" textLength="108" lengthAdjust="spacingAndGlyphs">██║   ██║</text>
+      <text x="0" y="128" textLength="108" lengthAdjust="spacingAndGlyphs">██║   ██║</text>
+      <text x="0" y="152" textLength="108" lengthAdjust="spacingAndGlyphs">╚██████╔╝</text>
+      <text x="0" y="176" textLength="108" lengthAdjust="spacingAndGlyphs"> ╚═════╝ </text>
+      <text x="0" y="216" textLength="108" lengthAdjust="spacingAndGlyphs">────○────</text>
+    </g>
+    <g transform="translate(494 0)" fill="#e96904">
+      <text x="0" y="56" textLength="108" lengthAdjust="spacingAndGlyphs">██████╗  </text>
+      <text x="0" y="80" textLength="108" lengthAdjust="spacingAndGlyphs">██╔══██╗ </text>
+      <text x="0" y="104" textLength="108" lengthAdjust="spacingAndGlyphs">██████╔╝ </text>
+      <text x="0" y="128" textLength="108" lengthAdjust="spacingAndGlyphs">██╔══██╗ </text>
+      <text x="0" y="152" textLength="108" lengthAdjust="spacingAndGlyphs">██████╔╝ </text>
+      <text x="0" y="176" textLength="108" lengthAdjust="spacingAndGlyphs">╚═════╝  </text>
+      <text x="0" y="216" textLength="108" lengthAdjust="spacingAndGlyphs">────○────</text>
+    </g>
+    <g transform="translate(602 0)" fill="#d75208">
+      <text x="0" y="56" textLength="108" lengthAdjust="spacingAndGlyphs">███████╗ </text>
+      <text x="0" y="80" textLength="108" lengthAdjust="spacingAndGlyphs">██╔════╝ </text>
+      <text x="0" y="104" textLength="108" lengthAdjust="spacingAndGlyphs">█████╗   </text>
+      <text x="0" y="128" textLength="108" lengthAdjust="spacingAndGlyphs">██╔══╝   </text>
+      <text x="0" y="152" textLength="108" lengthAdjust="spacingAndGlyphs">███████╗ </text>
+      <text x="0" y="176" textLength="108" lengthAdjust="spacingAndGlyphs">╚══════╝ </text>
+      <text x="0" y="216" textLength="108" lengthAdjust="spacingAndGlyphs">────○────</text>
+    </g>
+    <g transform="translate(710 0)" fill="#be400c">
+      <text x="0" y="56" textLength="108" lengthAdjust="spacingAndGlyphs">██████╗  </text>
+      <text x="0" y="80" textLength="108" lengthAdjust="spacingAndGlyphs">██╔══██╗ </text>
+      <text x="0" y="104" textLength="108" lengthAdjust="spacingAndGlyphs">██████╔╝ </text>
+      <text x="0" y="128" textLength="108" lengthAdjust="spacingAndGlyphs">██╔══██╗ </text>
+      <text x="0" y="152" textLength="108" lengthAdjust="spacingAndGlyphs">██║  ██║ </text>
+      <text x="0" y="176" textLength="108" lengthAdjust="spacingAndGlyphs">╚═╝  ╚═╝ </text>
+      <text x="0" y="216" textLength="108" lengthAdjust="spacingAndGlyphs">────○────</text>
+    </g>
+  </g>
+</svg>
