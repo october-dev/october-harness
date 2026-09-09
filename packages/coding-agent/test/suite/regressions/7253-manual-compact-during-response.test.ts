@@ -39,6 +39,8 @@ describe("issue #7253: manual compaction during an active response", () => {
 			tools: [createNoopTool()],
 			extensionFactories: [
 				(pi) => {
+					// #7253: keep the tiny-context fixture independent of branding and temporary-path length.
+					pi.on("before_agent_start", () => ({ systemPrompt: "You are a test assistant." }));
 					pi.on("session_before_compact", async (event) => ({
 						compaction: {
 							summary: `${event.reason} summary`,

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.85.1-october.6] - 2026-09-09
+
 ### Changed
 
 - Made the default identity answer October-first without unsolicited upstream ancestry, and added direct, recommendation-led working guidance. Origin and licensing questions remain factual, and upstream attribution stays in the documentation.
