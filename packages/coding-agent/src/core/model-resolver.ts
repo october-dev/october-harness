@@ -13,11 +13,12 @@ import {
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
+import { OCTOBER_DEFAULT_MODEL_ID, OCTOBER_PROVIDER_ID } from "../extensions/october/provider.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 
-/** Default model IDs for each known provider */
-export const defaultModelPerProvider: Record<KnownProvider, string> = {
+/** Upstream provider defaults plus October's own recommended model. */
+export const defaultModelPerProvider: Record<KnownProvider | typeof OCTOBER_PROVIDER_ID, string> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
 	"ant-ling": "Ring-2.6-1T",
 	anthropic: "claude-opus-4-8",
@@ -58,6 +59,7 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"xiaomi-token-plan-cn": "mimo-v2.5-pro",
 	"xiaomi-token-plan-ams": "mimo-v2.5-pro",
 	"xiaomi-token-plan-sgp": "mimo-v2.5-pro",
+	[OCTOBER_PROVIDER_ID]: OCTOBER_DEFAULT_MODEL_ID,
 };
 
 export interface ScopedModel {
@@ -175,7 +177,7 @@ function buildFallbackModel(provider: string, modelId: string, availableModels: 
 	const providerModels = availableModels.filter((m) => m.provider === provider);
 	if (providerModels.length === 0) return undefined;
 
-	const defaultId = defaultModelPerProvider[provider as KnownProvider];
+	const defaultId = defaultModelPerProvider[provider as keyof typeof defaultModelPerProvider];
 	const baseModel = defaultId
 		? (providerModels.find((m) => m.id === defaultId) ?? providerModels[0])
 		: providerModels[0];
@@ -691,7 +693,7 @@ export async function findInitialModel(options: {
 
 	if (availableModels.length > 0) {
 		// Try to find a default model from known providers
-		for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
+		for (const provider of Object.keys(defaultModelPerProvider) as (keyof typeof defaultModelPerProvider)[]) {
 			const defaultId = defaultModelPerProvider[provider];
 			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
 			if (match) {
@@ -753,7 +755,7 @@ export async function restoreModelFromSession(
 	if (availableModels.length > 0) {
 		// Try to find a default model from known providers
 		let fallbackModel: Model<Api> | undefined;
-		for (const provider of Object.keys(defaultModelPerProvider) as KnownProvider[]) {
+		for (const provider of Object.keys(defaultModelPerProvider) as (keyof typeof defaultModelPerProvider)[]) {
 			const defaultId = defaultModelPerProvider[provider];
 			const match = availableModels.find((m) => m.provider === provider && m.id === defaultId);
 			if (match) {

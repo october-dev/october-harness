@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Made the default identity answer October-first without unsolicited upstream ancestry, and added direct, recommendation-led working guidance. Origin and licensing questions remain factual, and upstream attribution stays in the documentation.
+
+### Fixed
+
+- Registered October's recommended Qwen3.6 model in the shared provider-default table so first interactive login selects and persists it automatically. Existing model choices are preserved, and standalone startup uses the same default.
+
 ## [0.85.1-october.5] - 2026-09-09
 
 ### Fixed

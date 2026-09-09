@@ -11,7 +11,7 @@ const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../packag
 
 describe("October package branding", () => {
 	it.each([{ selectedTools: [] }, { selectedTools: ["read", "bash", "edit", "write"] }])(
-		"separates runtime identity from Pi ancestry and project context with tools $selectedTools",
+		"keeps the default identity October-first despite project context with tools $selectedTools",
 		({ selectedTools }) => {
 			const prompt = buildSystemPrompt({
 				cwd: "/projects/moirai",
@@ -24,18 +24,33 @@ describe("October package branding", () => {
 				],
 			});
 			expect(prompt).toContain("running in October Harness, October's coding agent");
-			expect(prompt).toContain("Pi is the upstream project, not the name of this running harness");
-			expect(prompt).toContain("I'm October Harness, October's coding agent, built on upstream Pi.");
+			expect(prompt).toContain("answer directly: \"I'm October Harness, October's coding agent.\"");
+			expect(prompt).toContain(
+				"Do not volunteer implementation ancestry in introductions or routine identity answers",
+			);
+			expect(prompt).toContain(
+				"When asked about origins, licensing, or architecture, answer accurately using the documentation",
+			);
+			expect(prompt).not.toContain("built on upstream Pi");
 			expect(prompt).toContain("No file reads or shell commands are needed to identify the harness");
 			expect(prompt).toContain("The harness, the underlying model/provider, and the current project are distinct");
 			expect(prompt).toContain("they do not determine this runtime's identity");
 			expect(prompt).toContain("Do not infer the model/provider name from the harness name");
-			expect(prompt).toContain("October Harness documentation (including inherited Pi features");
+			expect(prompt).toContain("October Harness documentation (read when");
+			expect(prompt).not.toContain("including inherited Pi features");
 			expect(prompt).not.toContain("Pi documentation (read only");
 			expect(prompt).toContain("Moirai moves sessions between Pi, Codex, and Claude Code.");
 			expect(prompt.indexOf("Harness identity:")).toBeLessThan(prompt.indexOf("<project_context>"));
 		},
 	);
+
+	it("sets a practical October working style without inventing capabilities", () => {
+		const prompt = buildSystemPrompt({ cwd: "/projects/example" });
+		expect(prompt).toContain("Lead with the outcome. Make a clear recommendation");
+		expect(prompt).toContain("Favor small, maintainable changes that fit the project");
+		expect(prompt).toContain("Verify behavior before claiming a fix works");
+		expect(prompt).toContain("Only claim capabilities available in this session");
+	});
 
 	it("preserves explicit custom system prompt replacement", () => {
 		const prompt = buildSystemPrompt({
