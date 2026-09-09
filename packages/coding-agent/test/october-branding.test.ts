@@ -5,10 +5,51 @@ import { describe, expect, it } from "vitest";
 import { printAuthCommandHelp } from "../src/cli/auth-command.ts";
 import { APP_NAME, CONFIG_DIR_NAME, PACKAGE_NAME } from "../src/config.ts";
 import { getProviderLoginHelp } from "../src/core/auth-guidance.ts";
+import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 
 const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../package.json");
 
 describe("October package branding", () => {
+	it.each([{ selectedTools: [] }, { selectedTools: ["read", "bash", "edit", "write"] }])(
+		"separates runtime identity from Pi ancestry and project context with tools $selectedTools",
+		({ selectedTools }) => {
+			const prompt = buildSystemPrompt({
+				cwd: "/projects/moirai",
+				selectedTools,
+				contextFiles: [
+					{
+						path: "/projects/moirai/AGENTS.md",
+						content: "Moirai moves sessions between Pi, Codex, and Claude Code.",
+					},
+				],
+			});
+			expect(prompt).toContain("running in October Harness, October's coding agent");
+			expect(prompt).toContain("Pi is the upstream project, not the name of this running harness");
+			expect(prompt).toContain("I'm October Harness, October's coding agent, built on upstream Pi.");
+			expect(prompt).toContain("No file reads or shell commands are needed to identify the harness");
+			expect(prompt).toContain("The harness, the underlying model/provider, and the current project are distinct");
+			expect(prompt).toContain("they do not determine this runtime's identity");
+			expect(prompt).toContain("Do not infer the model/provider name from the harness name");
+			expect(prompt).toContain("October Harness documentation (including inherited Pi features");
+			expect(prompt).not.toContain("Pi documentation (read only");
+			expect(prompt).toContain("Moirai moves sessions between Pi, Codex, and Claude Code.");
+			expect(prompt.indexOf("Harness identity:")).toBeLessThan(prompt.indexOf("<project_context>"));
+		},
+	);
+
+	it("preserves explicit custom system prompt replacement", () => {
+		const prompt = buildSystemPrompt({
+			cwd: "/projects/custom",
+			customPrompt: "Custom application assistant.",
+			appendSystemPrompt: "Additional application instructions.",
+			contextFiles: [{ path: "/projects/custom/AGENTS.md", content: "Project instructions." }],
+		});
+		expect(prompt).toContain("Custom application assistant.");
+		expect(prompt).toContain("Additional application instructions.");
+		expect(prompt).toContain("Project instructions.");
+		expect(prompt).not.toContain("Harness identity:");
+	});
+
 	it("owns package metadata and runtime identity", () => {
 		const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
 			name: string;

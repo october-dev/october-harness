@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.85.1-october.5] - 2026-09-09
+
+### Fixed
+
+- Clarified the default prompt's October Harness identity, distinguishing upstream Pi, the underlying model/provider, and the current project. The prompt directs identity questions to be answered without repository inspection and identifies bundled documentation as October Harness documentation while preserving Pi attribution. Explicit custom system prompts still replace the default.
+
 ## [0.85.1-october.4] - 2026-09-09
 
 ### New Features
