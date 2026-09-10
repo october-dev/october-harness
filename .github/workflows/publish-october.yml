@@ -41,7 +41,7 @@ jobs:
         env:
           PI_OFFLINE: '1'
           PI_TELEMETRY: '0'
-        run: node ../../node_modules/vitest/dist/cli.js --run test/october-auth.test.ts test/october-desktop-precedence.test.ts test/october-token-lifecycle.test.ts test/october-login-menu.test.ts test/october-login-model-selection.test.ts test/oauth-selector.test.ts test/rpc-prompt-response-semantics.test.ts test/october-permissions.test.ts test/october-bus-mcp.test.ts test/october-team-launcher.test.ts test/october-hooks.test.ts test/october-startup-changelog.test.ts test/october-header.test.ts test/october-branding.test.ts test/october-provider.test.ts test/october-device-code.test.ts test/october-phone-home.test.ts test/cli-node-version.test.ts
+        run: node ../../node_modules/vitest/dist/cli.js --run test/october-auth.test.ts test/october-desktop-precedence.test.ts test/october-token-lifecycle.test.ts test/october-login-menu.test.ts test/october-login-model-selection.test.ts test/oauth-selector.test.ts test/rpc-prompt-response-semantics.test.ts test/october-permissions.test.ts test/october-bus-mcp.test.ts test/october-bus-question.test.ts test/october-native-inbox.test.ts test/october-team-launcher.test.ts test/october-hooks.test.ts test/october-startup-changelog.test.ts test/october-header.test.ts test/october-branding.test.ts test/october-provider.test.ts test/october-device-code.test.ts test/october-phone-home.test.ts test/cli-node-version.test.ts
       - name: Pack and verify isolated npm and Bun installs
         run: node scripts/october-release.mjs pack "${RUNNER_TEMP}/october-release"
       - name: Build pinned public Bus for interoperability tests

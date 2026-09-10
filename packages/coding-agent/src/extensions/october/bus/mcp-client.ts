@@ -39,7 +39,8 @@ interface JsonRpcSuccess {
 	error?: { code?: number; message?: string };
 }
 
-function combineSignals(timeoutMs: number, external?: AbortSignal): AbortSignal {
+function combineSignals(timeoutMs: number | undefined, external?: AbortSignal): AbortSignal | undefined {
+	if (timeoutMs === undefined) return external;
 	const timeout = AbortSignal.timeout(timeoutMs);
 	return external ? AbortSignal.any([timeout, external]) : timeout;
 }
@@ -161,7 +162,7 @@ export class OctoberMcpClient {
 		const result = await this.rpc<{ content?: unknown; isError?: unknown; structuredContent?: unknown }>(
 			"tools/call",
 			{ name, arguments: args },
-			CALL_TIMEOUT_MS,
+			name === "ask_user" ? undefined : CALL_TIMEOUT_MS,
 			signal,
 		);
 		if (!result.ok) return result;
@@ -278,7 +279,7 @@ export class OctoberMcpClient {
 	private async rpc<T>(
 		method: string,
 		params: unknown,
-		timeoutMs: number,
+		timeoutMs: number | undefined,
 		signal?: AbortSignal,
 	): Promise<McpResult<T>> {
 		const id = this.nextId++;
@@ -312,7 +313,7 @@ export class OctoberMcpClient {
 
 	private async post(
 		payload: unknown,
-		timeoutMs: number,
+		timeoutMs: number | undefined,
 		signal?: AbortSignal,
 		id?: number,
 	): Promise<McpResult<{ messages: JsonRpcSuccess[] }>> {

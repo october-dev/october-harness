@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Receive October bus messages through the native interactive agent queue without editing an unsent draft. Acknowledge the matching accepted message, preserve uncertain deliveries, and defer while the active session is busy or waiting for input.
+
+### Fixed
+
+- Keep October bus human questions open until an answer or cancellation, including across long waits with server keepalives.
+- Acknowledge bus inbox context only at native handoff and reject oversized context without consuming unseen messages.
+- Publish ordered bus lifecycle events with a distinct turn identity, and report completion only after automatic retries and continuations have settled.
+
 ## [0.85.1-october.6] - 2026-09-09
 
 ### Changed

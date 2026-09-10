@@ -2,7 +2,9 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionUIContext } from "../src/core/extensions/types.ts";
+import { registerOctoberHooks } from "../src/extensions/october/bus/hooks.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
@@ -37,9 +39,13 @@ async function startHookServer(options?: {
 	prePrompt?: string;
 	prePromptStatus?: number;
 	prePromptDelayMs?: number;
+	receipt?: string;
+	sessionDelayMs?: number;
+	wake?: { text: string; receipt: string };
 }): Promise<{ port: number; hooks: HookRecord[]; hits: { count: number } }> {
 	const hooks: HookRecord[] = [];
 	const hits = { count: 0 };
+	let wakeAvailable = true;
 	const server = createServer((request, response) => {
 		hits.count += 1;
 		void (async () => {
@@ -51,6 +57,9 @@ async function startHookServer(options?: {
 			}
 			if (options?.prePromptDelayMs && url.startsWith("/hook/pre-prompt")) {
 				await new Promise((resolve) => setTimeout(resolve, options.prePromptDelayMs));
+			}
+			if (options?.sessionDelayMs && url === "/hook/session") {
+				await new Promise((resolve) => setTimeout(resolve, options.sessionDelayMs));
 			}
 			let body: Record<string, unknown> = {};
 			if (method === "POST") {
@@ -66,9 +75,18 @@ async function startHookServer(options?: {
 				token: headerValue(request.headers["x-october-bus-token"]),
 				body,
 			});
+			if (url === "/hook/wake") {
+				const result = wakeAvailable && options?.wake ? options.wake : { status: "empty" };
+				wakeAvailable = false;
+				response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(result));
+				return;
+			}
 			if (url.startsWith("/hook/pre-prompt")) {
 				const status = options?.prePromptStatus ?? 200;
-				response.writeHead(status, { "Content-Type": "text/plain" });
+				response.writeHead(status, {
+					"Content-Type": "text/plain",
+					...(options?.receipt ? { "x-october-inbox-receipt": options.receipt } : {}),
+				});
 				response.end(options?.prePrompt ?? "");
 				return;
 			}
@@ -127,6 +145,197 @@ afterEach(async () => {
 });
 
 describe("october lifecycle hooks", () => {
+	it("starts a native bus turn through the actual agent loop, keeps the draft, and acknowledges its handoff", async () => {
+		const stub = await startHookServer({ wake: { text: "NATIVE-PEER-REQUEST", receipt: "native-receipt" } });
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) =>
+					registerOctoberHooks(pi, {
+						transport: "desktop",
+						port: stub.port,
+						canvas: "canvas-1",
+						node: "node-1",
+						launch: "launch-1",
+						token: "hook-token",
+						capability: "mcp-capability",
+					}),
+			],
+		});
+		harnesses.push(harness);
+		const setEditorText = vi.fn();
+		// The bus adapter must never call editor mutation or UI APIs. The real agent/session message
+		// path runs below; a partial UI supplies only the stationary draft and makes other use fail.
+		const uiContext = {
+			getEditorText: () => "stationary unsent draft",
+			setEditorText,
+		} as unknown as ExtensionUIContext;
+		let sawContext = false;
+		harness.setResponses([
+			(context) => {
+				sawContext = JSON.stringify(context.messages).includes("NATIVE-PEER-REQUEST");
+				return fauxAssistantMessage("Native response");
+			},
+		]);
+		try {
+			await harness.session.bindExtensions({ mode: "tui", uiContext });
+			await waitFor(() => stub.hooks.some((hook) => hook.url === "/hook/inbox-ack"), 4000);
+			expect(sawContext).toBe(true);
+			expect(harness.eventsOfType("agent_start")).toHaveLength(1);
+			expect(
+				harness
+					.eventsOfType("message_start")
+					.some((event) => event.message.role === "custom" && event.message.customType === "october-bus-wake"),
+			).toBe(true);
+			expect(stub.hooks.some((hook) => hook.url.startsWith("/hook/pre-prompt"))).toBe(false);
+			const start = stub.hooks.find((hook) => hook.url === "/hook/notify");
+			expect(start?.body).toMatchObject({
+				turnBoundary: true,
+				notificationType: "working",
+				providerTurnId: expect.any(String),
+			});
+			expect(stub.hooks.find((hook) => hook.url === "/hook/stop")?.body).toMatchObject({
+				providerTurnId: start?.body.providerTurnId,
+				outcome: "completed",
+				excerpt: { assistantText: "Native response" },
+			});
+			expect(stub.hooks.find((hook) => hook.url === "/hook/inbox-ack")?.body.receipt).toBe("native-receipt");
+			expect(setEditorText).not.toHaveBeenCalled();
+			expect(uiContext.getEditorText()).toBe("stationary unsent draft");
+		} finally {
+			await harness.session.bindExtensions({ mode: "print" });
+		}
+	});
+
+	it("orders delayed presence, acknowledges the full native handoff, and correlates distinct turns", async () => {
+		const stub = await startHookServer({ prePrompt: "PEER-CONTEXT", receipt: "receipt-1", sessionDelayMs: 80 });
+		setBusEnv(stub.port);
+		const harness = await createHarness({ extensionFactories: [octoberExtension] });
+		harnesses.push(harness);
+		await harness.session.bindExtensions({});
+		harness.setResponses([
+			() => {
+				expect(stub.hooks.some((hook) => hook.url === "/hook/inbox-ack" && hook.body.receipt === "receipt-1")).toBe(
+					true,
+				);
+				return fauxAssistantMessage("first");
+			},
+			fauxAssistantMessage("second"),
+		]);
+		await harness.session.prompt("same prompt");
+		await harness.session.prompt("same prompt");
+		expect(stub.hooks[0].body.status).toBe("live");
+		const starts = stub.hooks.filter((hook) => hook.url.startsWith("/hook/pre-prompt"));
+		const stops = stub.hooks.filter((hook) => hook.url === "/hook/stop");
+		expect(stops).toHaveLength(2);
+		const ids = starts.map((hook) => new URL(hook.url, "http://fixture").searchParams.get("providerTurnId"));
+		expect(ids.every(Boolean)).toBe(true);
+		expect(new Set(ids).size).toBe(2);
+		expect(stops.map((hook) => hook.body.providerTurnId)).toEqual(ids);
+	});
+
+	it("keeps a prepared inbox receipt unacknowledged until the actual agent accepts its message", async () => {
+		const stub = await startHookServer({ prePrompt: "PREPARED-CONTEXT", receipt: "prepared-receipt" });
+		setBusEnv(stub.port);
+		let preparing = false;
+		let release!: () => void;
+		const preparation = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const harness = await createHarness({
+			extensionFactories: [
+				octoberExtension,
+				(pi) => {
+					pi.on("before_agent_start", async () => {
+						preparing = true;
+						await preparation;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			(context) => {
+				expect(JSON.stringify(context.messages)).toContain("PREPARED-CONTEXT");
+				expect(stub.hooks.filter((hook) => hook.url === "/hook/inbox-ack")).toHaveLength(1);
+				return fauxAssistantMessage("accepted");
+			},
+		]);
+		const prompt = harness.session.prompt("continue after preparation");
+		try {
+			await waitFor(() => preparing);
+			expect(stub.hooks.filter((hook) => hook.url === "/hook/inbox-ack")).toHaveLength(0);
+			expect(harness.eventsOfType("agent_start")).toHaveLength(0);
+		} finally {
+			release();
+			await prompt;
+		}
+		expect(stub.hooks.filter((hook) => hook.url === "/hook/inbox-ack").map((hook) => hook.body.receipt)).toEqual([
+			"prepared-receipt",
+		]);
+		expect(harness.eventsOfType("message_start")).toContainEqual(
+			expect.objectContaining({
+				message: expect.objectContaining({
+					customType: "october-bus",
+					details: { receipt: "prepared-receipt", providerTurnId: expect.any(String) },
+				}),
+			}),
+		);
+	});
+
+	it("publishes only the settled final result after a retry, without intermediate assistant text", async () => {
+		const stub = await startHookServer();
+		setBusEnv(stub.port);
+		const harness = await createHarness({
+			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },
+			extensionFactories: [octoberExtension],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("intermediate text", { stopReason: "error", errorMessage: "overloaded_error" }),
+			() => {
+				expect(stub.hooks.filter((hook) => hook.url === "/hook/stop")).toHaveLength(0);
+				return fauxAssistantMessage("recovered");
+			},
+		]);
+		await harness.session.prompt("retry this");
+		expect(harness.eventsOfType("agent_end")).toHaveLength(2);
+		const stops = stub.hooks.filter((hook) => hook.url === "/hook/stop");
+		expect(stops).toHaveLength(1);
+		expect(stops[0].body).toMatchObject({ outcome: "completed", excerpt: { assistantText: "recovered" } });
+	});
+
+	it.each([
+		["stop", "completed"],
+		["aborted", "cancelled"],
+		["error", "failed"],
+	] as const)("preserves a known empty result and its %s outcome", async (stopReason, outcome) => {
+		const stub = await startHookServer();
+		setBusEnv(stub.port);
+		const harness = await createHarness({
+			settings: { retry: { enabled: false } },
+			extensionFactories: [octoberExtension],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("", { stopReason })]);
+		await harness.session.prompt("empty outcome");
+		expect(stub.hooks.filter((hook) => hook.url === "/hook/stop").map((hook) => hook.body)).toEqual([
+			expect.objectContaining({ outcome, excerpt: expect.objectContaining({ assistantText: "" }) }),
+		]);
+	});
+
+	it("does not acknowledge or inject a batch that would be truncated", async () => {
+		const stub = await startHookServer({ prePrompt: "x".repeat(100_001), receipt: "too-long" });
+		setBusEnv(stub.port);
+		const harness = await createHarness({ extensionFactories: [octoberExtension] });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok")]);
+		await harness.session.prompt("go");
+		expect(stub.hooks.some((hook) => hook.url === "/hook/inbox-ack")).toBe(false);
+		expect(
+			harness.session.messages.some((message) => message.role === "custom" && message.customType === "october-bus"),
+		).toBe(false);
+	});
+
 	it("fires session live/offline with canvas, node, launch, and the bus token", async () => {
 		const stub = await startHookServer();
 		setBusEnv(stub.port);

@@ -1,12 +1,12 @@
 {
 	"name": "@october-dev/october",
-	"version": "0.85.1-october.6",
+	"version": "0.85.1-october.7",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "@october-dev/october",
-			"version": "0.85.1-october.6",
+			"version": "0.85.1-october.7",
 			"license": "MIT",
 			"dependencies": {
 				"@earendil-works/chord": "^0.85.1",
