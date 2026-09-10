@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.85.1-october.7] - 2026-09-10
+
 ### Added
 
 - Receive October bus messages through the native interactive agent queue without editing an unsent draft. Acknowledge the matching accepted message, preserve uncertain deliveries, and defer while the active session is busy or waiting for input.
