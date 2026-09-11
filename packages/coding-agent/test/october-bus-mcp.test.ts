@@ -2,10 +2,10 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
-import { parseOctoberBusEnv } from "../src/extensions/october/bus/env.ts";
+import { type OctoberBusEnv, parseOctoberBusEnv } from "../src/extensions/october/bus/env.ts";
 import { MCP_TOOL_PREFIX, OctoberMcpClient } from "../src/extensions/october/bus/mcp-client.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -162,6 +162,7 @@ function startStubBus(options?: { sseCall?: boolean; callError?: boolean; dropCa
 }
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	clearBusEnv();
 	while (harnesses.length > 0) {
 		harnesses.pop()?.cleanup();
@@ -233,6 +234,227 @@ describe("october bus inertness", () => {
 });
 
 describe("october bus MCP client", () => {
+	// Issue #3: tools/list must aggregate pages and forward the server cursor.
+	it("aggregates tools/list pages, forwards the cursor, and stops at an empty cursor", async () => {
+		const requests: RecordedRequest[] = [];
+		const { port } = await listen(async (request, response) => {
+			const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (body.method === "initialize") {
+				writeJson(
+					response,
+					{ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } },
+					{ "mcp-session-id": "sess-1" },
+				);
+				return;
+			}
+			if (body.method === "notifications/initialized") {
+				response.writeHead(202).end();
+				return;
+			}
+			if (body.method === "tools/list") {
+				requests.push({ method: body.method, headers: request.headers, body });
+				const params = body.params as { cursor?: string };
+				const result =
+					params.cursor === undefined
+						? { tools: [{ name: "alpha" }], nextCursor: "c2" }
+						: params.cursor === "c2"
+							? { tools: [{ name: "beta" }], nextCursor: "" }
+							: { tools: [] };
+				writeJson(response, { jsonrpc: "2.0", id: body.id, result });
+				return;
+			}
+			response.writeHead(404).end();
+		});
+		const env: OctoberBusEnv = {
+			transport: "desktop",
+			port,
+			canvas: "canvas-1",
+			node: "node-1",
+			capability: "cap-1",
+		};
+		const listed = await new OctoberMcpClient(env).listTools();
+
+		expect(listed.ok).toBe(true);
+		if (!listed.ok) return;
+		expect(listed.value.map((tool) => tool.name)).toEqual(["alpha", "beta"]);
+		expect(requests).toHaveLength(2);
+		expect(requests[0].body.params).toEqual({});
+		expect(requests[1].body.params).toEqual({ cursor: "c2" });
+	});
+
+	// Issue #3: unbounded discovery must stop at the client page limit.
+	it("rejects tools/list pagination after exactly 100 requests", async () => {
+		let listRequests = 0;
+		const { port } = await listen(async (request, response) => {
+			const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			if (body.method === "initialize") {
+				writeJson(
+					response,
+					{ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } },
+					{ "mcp-session-id": "sess-1" },
+				);
+				return;
+			}
+			if (body.method === "notifications/initialized") {
+				response.writeHead(202).end();
+				return;
+			}
+			if (body.method === "tools/list") {
+				listRequests += 1;
+				writeJson(response, { jsonrpc: "2.0", id: body.id, result: { tools: [], nextCursor: "more" } });
+				return;
+			}
+			response.writeHead(404).end();
+		});
+		const env: OctoberBusEnv = {
+			transport: "desktop",
+			port,
+			canvas: "canvas-1",
+			node: "node-1",
+			capability: "cap-1",
+		};
+
+		expect(await new OctoberMcpClient(env).listTools()).toEqual({
+			ok: false,
+			error: "MCP tools/list exceeded 100 pages",
+		});
+		expect(listRequests).toBe(100);
+	});
+
+	// Issue #3: each RPC must wire its own internal deadline and preserve the abort reason.
+	it.each(["tools/list", "tools/call"] as const)(
+		"wires a fresh internal deadline for %s and preserves its timeout error",
+		async (method) => {
+			const requests: unknown[] = [];
+			const deadlines: { method: string; controller: AbortController }[] = [];
+			let deadlineMethod = "initialize";
+			let recordArrival!: () => void;
+			const arrived = new Promise<void>((resolve) => {
+				recordArrival = resolve;
+			});
+			const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+				const controller = new AbortController();
+				deadlines.push({ method: deadlineMethod, controller });
+				return controller.signal;
+			});
+			try {
+				const { port } = await listen(async (request, response) => {
+					const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+					requests.push(body.method);
+					if (body.method === "initialize") {
+						deadlineMethod = "notifications/initialized";
+						writeJson(
+							response,
+							{ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } },
+							{ "mcp-session-id": "sess-1" },
+						);
+						return;
+					}
+					if (body.method === "notifications/initialized") {
+						deadlineMethod = method;
+						response.writeHead(202).end();
+						return;
+					}
+					if (body.method === method) {
+						recordArrival();
+						return;
+					}
+					response.writeHead(404).end();
+				});
+				const env: OctoberBusEnv = {
+					transport: "desktop",
+					port,
+					canvas: "canvas-1",
+					node: "node-1",
+					capability: "cap-1",
+				};
+				const client = new OctoberMcpClient(env);
+				const result = method === "tools/list" ? client.listTools() : client.callTool("echo", { message: "hi" });
+				await arrived;
+
+				expect(requests).toEqual(["initialize", "notifications/initialized", method]);
+				// Fail before awaiting the hung RPC if it reused an initialization deadline or omitted its own.
+				expect(deadlines.map((deadline) => deadline.method)).toEqual(requests);
+				deadlines[2].controller.abort(new DOMException("The operation timed out", "TimeoutError"));
+				expect(await result).toEqual({ ok: false, error: "The operation timed out" });
+			} finally {
+				timeout.mockRestore();
+			}
+		},
+	);
+
+	// Issue #3: an expired session must be cleared before the next call initializes again.
+	it("reinitializes after a session HTTP 404 on the next call without retrying the failed call", async () => {
+		const requests: RecordedRequest[] = [];
+		let initializations = 0;
+		let calls = 0;
+		const { port } = await listen(async (request, response) => {
+			const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+			requests.push({ method: body.method, headers: request.headers, body });
+			if (body.method === "initialize") {
+				initializations += 1;
+				writeJson(
+					response,
+					{ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } },
+					{ "mcp-session-id": `s${initializations}` },
+				);
+				return;
+			}
+			if (body.method === "notifications/initialized") {
+				response.writeHead(202).end();
+				return;
+			}
+			if (body.method === "tools/call") {
+				calls += 1;
+				if (calls === 1) {
+					response.writeHead(404).end();
+					return;
+				}
+				writeJson(response, {
+					jsonrpc: "2.0",
+					id: body.id,
+					result: { content: [{ type: "text", text: "recovered" }], isError: false },
+				});
+				return;
+			}
+			response.writeHead(404).end();
+		});
+		const env: OctoberBusEnv = {
+			transport: "desktop",
+			port,
+			canvas: "canvas-1",
+			node: "node-1",
+			capability: "cap-1",
+		};
+		const client = new OctoberMcpClient(env);
+
+		expect(await client.callTool("echo", { message: "first" })).toEqual({ ok: false, error: "MCP HTTP 404" });
+		expect(calls).toBe(1);
+		expect(requests.map((request) => request.method)).toEqual([
+			"initialize",
+			"notifications/initialized",
+			"tools/call",
+		]);
+		expect(requests[2].headers["mcp-session-id"]).toBe("s1");
+
+		expect(await client.callTool("echo", { message: "second" })).toEqual({
+			ok: true,
+			value: { content: [{ type: "text", text: "recovered" }], isError: false },
+		});
+		expect(requests.map((request) => request.method)).toEqual([
+			"initialize",
+			"notifications/initialized",
+			"tools/call",
+			"initialize",
+			"notifications/initialized",
+			"tools/call",
+		]);
+		expect(requests[3].headers["mcp-session-id"]).toBeUndefined();
+		expect(requests[3].headers["mcp-protocol-version"]).toBeUndefined();
+		expect(requests[5].headers["mcp-session-id"]).toBe("s2");
+		expect(requests[5].headers["mcp-protocol-version"]).toBe("2025-03-26");
+	});
+
 	it.each([null, 1, {}, { jsonrpc: "2.0", id: 999999, result: {} }, { jsonrpc: "1.0", id: 1, result: {} }])(
 		"rejects invalid or mismatched responses: %j",
 		async (payload) => {
