@@ -7,7 +7,7 @@ body:
       value: |
         **Before you start:** Read [CONTRIBUTING.md](https://github.com/october-dev/october-harness/blob/main/CONTRIBUTING.md).
 
-        New issues from new contributors are auto-closed by default. Maintainers review auto-closed issues and reopen worthwhile ones. Issues that do not meet the quality bar in the contribution guide may not receive a reply.
+        Issues that do not meet the quality bar in the contribution guide may be closed with a short explanation.
 
         Keep this short. If it doesn't fit on one screen, it's too long. Write in your own voice.
 

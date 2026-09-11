@@ -72,7 +72,7 @@ If rebase conflicts occur:
 
 ## Issues and PRs
 
-See `CONTRIBUTING.md` for the contributor gate (auto-close workflows, `lgtm`/`lgtmi`, quality bar).
+See `CONTRIBUTING.md` for the quality bar. Anyone can open issues and PRs; there is no contributor gate or approval command.
 
 When reviewing PRs:
 

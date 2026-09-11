@@ -7,7 +7,7 @@ body:
       value: |
         Use this form for a third-party extension or package that claims compatibility with October Harness. For a Harness bug, use the bug report form. For a vulnerability in October-owned code, submit a private [security advisory](https://github.com/october-dev/october-harness/security/advisories/new).
 
-        Read [CONTRIBUTING.md](https://github.com/october-dev/october-harness/blob/main/CONTRIBUTING.md) before submitting. New issues from new contributors are auto-closed by default. Maintainers review auto-closed issues and reopen worthwhile ones.
+        Read [CONTRIBUTING.md](https://github.com/october-dev/october-harness/blob/main/CONTRIBUTING.md) before submitting.
 
         Keep this short. If it doesn't fit on one screen, it's too long. Write in your own voice.
 

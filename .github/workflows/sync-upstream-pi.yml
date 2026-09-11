@@ -54,7 +54,16 @@ jobs:
           git checkout -b "${SYNC_BRANCH}"
           git config user.name october-dev-bot
           git config user.email 204613038+october-dev-bot@users.noreply.github.com
-          if ! git merge --no-commit --no-ff upstream/main; then
+          git merge --no-commit --no-ff upstream/main || true
+          # October has no contributor gate. Upstream Pi keeps these files and
+          # commits to APPROVED_CONTRIBUTORS on every approval, so drop them
+          # here instead of conflicting on paths October deleted on purpose.
+          git rm -q --ignore-unmatch \
+            .github/APPROVED_CONTRIBUTORS \
+            .github/workflows/pr-gate.yml \
+            .github/workflows/issue-gate.yml \
+            .github/workflows/approve-contributor.yml
+          if ! git rev-parse -q --verify MERGE_HEAD >/dev/null || [ -n "$(git diff --name-only --diff-filter=U)" ]; then
             echo "::error::Upstream merge needs manual conflict resolution."
             git diff --name-only --diff-filter=U
             exit 1

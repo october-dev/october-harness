@@ -26,18 +26,11 @@ Using an AI coding tool is fine. The contributor remains responsible for reviewi
 
 If you use an agent, run it from the October Harness repository root so it loads `AGENTS.md`. The agent must follow the rules in that file.
 
-## Contribution gate
+## Opening issues and pull requests
 
-Issues and pull requests from new contributors are automatically closed by default. This gives maintainers time to review new submissions without allowing low-signal or automated traffic to overwhelm the tracker.
+Anyone can open issues and pull requests. There is no approval step and nothing is closed automatically. Maintainers review new submissions and reply when they need more information. Submissions that do not meet the quality bar below may be closed with a short explanation.
 
-Maintainers review auto-closed issues and reopen worthwhile ones. Approval happens through a maintainer reply:
-
-- `lgtmi` approves the contributor's future issues;
-- `lgtm` approves the contributor's future issues and pull requests.
-
-The command must appear at the start of the reply, optionally after one or more `@username` mentions, or at the end. `lgtmi` does not approve pull requests.
-
-Do not open a pull request until a maintainer has approved you with `lgtm`. Start with a contribution proposal if the change is substantial or changes public behavior.
+Start with a contribution proposal if the change is substantial or changes public behavior, so the ownership and approach can be agreed on before implementation.
 
 ## Opening an issue
 
