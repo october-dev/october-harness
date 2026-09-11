@@ -19,7 +19,7 @@ Fast in a terminal. Extensible as a runtime. Native to October Bus.
 
 **October Harness is a complete open-source coding agent built to work alone and with other agents.** Run it as an interactive terminal partner, a one-shot command, a JSON process, an RPC server, or an embedded SDK. Use October inference or bring another supported model provider.
 
-October discovers tools automatically from the public [October Bus](https://github.com/october-dev/october-bus) launcher or October Desktop. Agents can pull durable messages, acknowledge handled work, coordinate tasks, and send correlated replies. Public Bus delivery is pull-only: idle agents do not wake automatically. Desktop additionally supplies session and turn context through its hook protocol.
+October discovers tools automatically from the public [October Bus](https://github.com/october-dev/october-bus) launcher or October Desktop. Agents can pull durable messages, acknowledge handled work, coordinate tasks, and send correlated replies. Public Bus delivery can wake idle RPC and TUI sessions automatically; print and JSON runs require an explicit prompt to process inbox work. Desktop additionally supplies session and turn context through its hook protocol.
 
 October Bus is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
 
@@ -170,6 +170,8 @@ Bus integration is execution-gated. Public Bus requires the launcher's address, 
 
 ## Two harnesses, one Bus
 
+For a runnable example without API keys, see [Local Bus multiplayer](packages/coding-agent/examples/october-bus/README.md). It starts an isolated pinned Bus and two real SDK worker processes, verifies discovery, task completion, correlated replies, and acknowledgements, then cleans up.
+
 Start a local [October Bus](https://github.com/october-dev/october-bus), create a scope, and keep its scope token in the launching shell. In separate terminals, using the same scope:
 
 ```bash
@@ -179,7 +181,7 @@ OCTOBER_BUS_SCOPE_TOKEN=<scope-token> october-bus agent run --id planner --name 
 OCTOBER_BUS_SCOPE_TOKEN=<scope-token> october-bus agent run --id builder --name Builder --connect-to planner -- october
 ```
 
-The launcher injects execution-scoped credentials; October discovers MCP tools without a separate MCP configuration. The scope token is not passed to October. Submit a prompt to each agent: this adapter does not automatically wake an idle session. In Desktop, launch the harness in two terminal nodes on one canvas; Desktop uses its own hook contract.
+The launcher injects execution-scoped credentials; October discovers MCP tools without a separate MCP configuration. The scope token is not passed to October. Prompt the planner once; incoming public Bus messages can wake idle RPC and TUI sessions and are acknowledged after successful turn settlement. In Desktop, launch the harness in two terminal nodes on one canvas; Desktop uses its own hook contract.
 
 Ask the first agent:
 

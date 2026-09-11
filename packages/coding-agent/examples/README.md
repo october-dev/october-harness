@@ -7,6 +7,9 @@ Example code for pi-coding-agent SDK and extensions.
 ### [sdk/](sdk/)
 Programmatic usage via `createAgentSession()`. Shows how to customize models, prompts, tools, extensions, and session management.
 
+### [october-bus/](october-bus/)
+Deterministic, credential-free multiplayer exchange between two real SDK worker processes and an isolated local October Bus, with correlated replies, acknowledgement evidence, and automatic teardown.
+
 ### [extensions/](extensions/)
 Example extensions demonstrating:
 - Lifecycle event handlers (tool interception, safety gates, context modifications)
