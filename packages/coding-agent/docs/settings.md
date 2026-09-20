@@ -90,6 +90,7 @@ Set `PI_SKIP_VERSION_CHECK=1` to disable the October version update check. Use `
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `httpProxy` | string | - | HTTP proxy URL applied as `HTTP_PROXY` and `HTTPS_PROXY`. Global setting only. |
+| `mcpServers` | object | - | Optional named stdio or Streamable HTTP MCP servers. See [Third-party MCP servers](mcp.md). |
 
 ```json
 {

@@ -43,6 +43,7 @@ For the full first-run flow, see [Quickstart](quickstart.md). Product docs: [oct
 ## Customization
 
 - [Extensions](extensions.md) - TypeScript modules for tools, commands, events, and custom UI.
+- [Third-party MCP servers](mcp.md) - connect stdio and Streamable HTTP tool servers.
 - [Skills](skills.md) - Agent Skills for reusable on-demand capabilities.
 - [Prompt templates](prompt-templates.md) - reusable prompts that expand from slash commands.
 - [Themes](themes.md) - built-in and custom terminal themes.

@@ -74,6 +74,24 @@ export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
 
+export interface McpStdioServerSettings {
+	transport: "stdio";
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+	timeoutMs?: number;
+}
+
+export interface McpHttpServerSettings {
+	transport: "http";
+	url: string;
+	headers?: Record<string, string>;
+	timeoutMs?: number;
+}
+
+export type McpServerSettings = McpStdioServerSettings | McpHttpServerSettings;
+
 /**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
@@ -143,6 +161,7 @@ export interface Settings {
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
 	fullscreenCopyOnSelect?: boolean; // default: true; no effect in regular TUI mode
+	mcpServers?: Record<string, McpServerSettings>; // Optional third-party MCP servers
 }
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
@@ -488,6 +507,11 @@ export class SettingsManager {
 
 	getProjectSettings(): Settings {
 		return structuredClone(this.projectSettings);
+	}
+
+	/** Snapshot of global settings merged with trusted project overrides. */
+	getSettings(): Settings {
+		return structuredClone(this.settings);
 	}
 
 	isProjectTrusted(): boolean {
