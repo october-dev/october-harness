@@ -132,6 +132,10 @@ for platform in "${PLATFORMS[@]}"; do
     else
         bun build --compile --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile "$OUTPUT_DIR/$platform/october"
     fi
+    if [[ "$platform" == darwin-* && "$(uname -s)" == "Darwin" ]]; then
+        codesign --force --sign - "$OUTPUT_DIR/$platform/october"
+        codesign --verify --strict --verbose=2 "$OUTPUT_DIR/$platform/october"
+    fi
 done
 
 echo "==> Creating release archives..."

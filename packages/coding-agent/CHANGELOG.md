@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.87.0-october.2] - 2026-09-22
+
+### Fixed
+
+- Fixed release verification failing before npm metadata propagation completes, while continuing to reject mismatched package identities or contents.
+- Fixed publication retries rebuilding different artifacts by separating verified builds from publication and reusing the original checksummed payloads.
+- Fixed invalid macOS native executable signatures by building both architectures on macOS, signing before archiving, and verifying the extracted release binaries.
+
 ## [0.87.0-october.1] - 2026-09-22
 
 ### Added
