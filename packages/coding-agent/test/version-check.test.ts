@@ -23,6 +23,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 	if (originalSkipVersionCheck === undefined) {
 		delete process.env.PI_SKIP_VERSION_CHECK;
 	} else {
@@ -41,19 +42,24 @@ describe("version checks", () => {
 	});
 
 	it("returns only newer versions", async () => {
-		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.3" }));
+		const fetchMock = vi.fn(async () => Response.json({ name: PACKAGE_NAME, version: "1.2.3" }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
-		await expect(checkForNewPiVersion("1.2.2")).resolves.toEqual({ version: "1.2.3" });
+		await expect(checkForNewPiVersion("1.2.2")).resolves.toEqual({ packageName: PACKAGE_NAME, version: "1.2.3" });
 	});
 
-	it("uses the october.dev version check api with an October user agent", async () => {
-		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
+	it("uses npm latest metadata with an October user agent instead of the unavailable website feed", async () => {
+		const fetchMock = vi.fn(async (input: string | URL | Request) =>
+			String(input) === "https://registry.npmjs.org/@october-dev%2foctober/latest"
+				? Response.json({ name: PACKAGE_NAME, version: "1.2.4" })
+				: new Response("Not found", { status: 404 }),
+		);
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(getLatestPiVersion("1.2.3")).resolves.toBe("1.2.4");
-		expect(LATEST_VERSION_URL).toBe("https://www.october.dev/api/cli/latest-version");
+		expect(LATEST_VERSION_URL).toBe("https://registry.npmjs.org/@october-dev%2foctober/latest");
+		expect(fetchMock).toHaveBeenCalledOnce();
 		expect(fetchMock).toHaveBeenCalledWith(
 			LATEST_VERSION_URL,
 			expect.objectContaining({
@@ -68,7 +74,7 @@ describe("version checks", () => {
 	it("ignores a newer version advertised for a different package", async () => {
 		const fetchMock = vi.fn(async () =>
 			Response.json({
-				packageName: "@earendil-works/pi-coding-agent",
+				name: "@earendil-works/pi-coding-agent",
 				version: "9.9.9",
 			}),
 		);
@@ -77,10 +83,10 @@ describe("version checks", () => {
 		await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
 	});
 
-	it("surfaces a newer version when the feed names this package", async () => {
+	it("surfaces a newer version when npm names this package", async () => {
 		const fetchMock = vi.fn(async () =>
 			Response.json({
-				packageName: PACKAGE_NAME,
+				name: PACKAGE_NAME,
 				version: "1.2.4",
 			}),
 		);
@@ -151,10 +157,13 @@ describe("version checks", () => {
 			.fn()
 			.mockRejectedValueOnce(new Error("fetch failed"))
 			.mockRejectedValueOnce(new Error("fetch failed"))
-			.mockResolvedValueOnce(Response.json({ version: "1.2.4" }));
+			.mockResolvedValueOnce(Response.json({ name: PACKAGE_NAME, version: "1.2.4" }));
 		vi.stubGlobal("fetch", fetchMock);
 
-		await expect(getLatestPiRelease("1.2.3", { retry: true })).resolves.toEqual({ version: "1.2.4" });
+		await expect(getLatestPiRelease("1.2.3", { retry: true })).resolves.toEqual({
+			packageName: PACKAGE_NAME,
+			version: "1.2.4",
+		});
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 	});
 
@@ -177,26 +186,85 @@ describe("version checks", () => {
 		expect(formatVersionCheckError(error)).toBe("fetch failed (ETIMEDOUT, ENETUNREACH)");
 	});
 
-	it("returns the active package metadata from the version check api", async () => {
+	it("rejects npm metadata for another package even if it includes a conflicting packageName", async () => {
 		const fetchMock = vi.fn(async () =>
 			Response.json({
-				packageName: "@new-scope/pi",
+				name: "@new-scope/pi",
+				packageName: PACKAGE_NAME,
 				version: "1.2.4",
 			}),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 
+		await expect(getLatestPiRelease("1.2.3")).rejects.toThrow(
+			"will not uninstall October to install another package",
+		);
+	});
+
+	it("preserves optional update notes from the published manifest", async () => {
+		const fetchMock = vi.fn(async () =>
+			Response.json({ name: PACKAGE_NAME, note: " **Read this** ", version: "1.2.4" }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
 		await expect(getLatestPiRelease("1.2.3")).resolves.toEqual({
-			packageName: "@new-scope/pi",
+			packageName: PACKAGE_NAME,
+			note: "**Read this**",
 			version: "1.2.4",
 		});
 	});
 
-	it("returns update notes from the version check api", async () => {
-		const fetchMock = vi.fn(async () => Response.json({ note: " **Read this** ", version: "1.2.4" }));
-		vi.stubGlobal("fetch", fetchMock);
+	it("recognizes newer October prereleases without downgrading a source checkout", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ name: PACKAGE_NAME, version: "0.87.0-october.1" })),
+		);
+		await expect(checkForNewPiVersion("0.85.1-october.7")).resolves.toEqual({
+			packageName: PACKAGE_NAME,
+			version: "0.87.0-october.1",
+		});
+		await expect(checkForNewPiVersion("0.87.0-october.2")).resolves.toBeUndefined();
+	});
 
-		await expect(getLatestPiRelease("1.2.3")).resolves.toEqual({ note: "**Read this**", version: "1.2.4" });
+	it.each([null, [], "not a manifest", {}, { version: "" }, { version: "latest" }, { version: "^1.2.3" }])(
+		"rejects invalid npm metadata: %j",
+		async (metadata) => {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => Response.json(metadata)),
+			);
+			await expect(getLatestPiRelease("1.2.3")).rejects.toThrow("Invalid npm metadata");
+			await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
+		},
+	);
+
+	it("rejects manifests without a package identity", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Response.json({ version: "1.2.4" })),
+		);
+		await expect(getLatestPiRelease("1.2.3")).rejects.toThrow("unnamed package");
+	});
+
+	it.each([404, 503])(
+		"reports npm HTTP %i failures for manual updates but keeps background checks quiet",
+		async (status) => {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => new Response("Unavailable", { status })),
+			);
+			await expect(getLatestPiRelease("1.2.3")).rejects.toThrow(`npm registry returned HTTP ${status}`);
+			await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
+		},
+	);
+
+	it("does not query npm while offline", async () => {
+		vi.stubEnv("PI_OFFLINE", "1");
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		await expect(getLatestPiRelease("1.2.3")).resolves.toBeUndefined();
+		await expect(checkForNewPiVersion("1.2.3")).resolves.toBeUndefined();
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("skips automatic api calls when version checks are disabled", async () => {
@@ -210,7 +278,7 @@ describe("version checks", () => {
 
 	it("allows direct api calls when automatic version checks are disabled", async () => {
 		process.env.PI_SKIP_VERSION_CHECK = "1";
-		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.4" }));
+		const fetchMock = vi.fn(async () => Response.json({ name: PACKAGE_NAME, version: "1.2.4" }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		await expect(getLatestPiVersion("1.2.3")).resolves.toBe("1.2.4");

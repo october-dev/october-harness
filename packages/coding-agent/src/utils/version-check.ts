@@ -3,7 +3,7 @@ import { APP_NAME, PACKAGE_NAME } from "../config.ts";
 import { fetchWithRetry } from "./management-http.ts";
 import { getPiUserAgent } from "./pi-user-agent.ts";
 
-export const LATEST_VERSION_URL = "https://www.october.dev/api/cli/latest-version";
+export const LATEST_VERSION_URL = "https://registry.npmjs.org/@october-dev%2foctober/latest";
 export const UPDATE_CHANGELOG_URL = "https://www.october.dev/changelog";
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
 
@@ -123,21 +123,28 @@ export async function getLatestPiRelease(
 			timeoutMs: options.timeoutMs ?? DEFAULT_VERSION_CHECK_TIMEOUT_MS,
 		},
 	);
-	if (!response.ok) return undefined;
-
-	const data = (await response.json()) as {
-		packageName?: unknown;
-		version?: unknown;
-		note?: unknown;
-	};
-	if (typeof data.version !== "string" || !data.version.trim()) {
-		return undefined;
+	if (!response.ok) {
+		throw new Error(`npm registry returned HTTP ${response.status} for ${PACKAGE_NAME}.`);
 	}
-	const packageName =
-		typeof data.packageName === "string" && data.packageName.trim() ? data.packageName.trim() : undefined;
-	const note = typeof data.note === "string" && data.note.trim() ? data.note.trim() : undefined;
+
+	const data: unknown = await response.json();
+	if (typeof data !== "object" || data === null || Array.isArray(data)) {
+		throw new Error(`Invalid npm metadata for ${PACKAGE_NAME}: expected a package manifest.`);
+	}
+	const version = "version" in data && typeof data.version === "string" ? valid(data.version.trim()) : null;
+	if (!version) {
+		throw new Error(`Invalid npm metadata for ${PACKAGE_NAME}: expected an exact package version.`);
+	}
+	const packageName = "name" in data && typeof data.name === "string" ? data.name : undefined;
+	if (packageName !== PACKAGE_NAME) {
+		throw new Error(
+			`Refusing to install ${packageName ?? "an unnamed package"}: npm metadata does not match this install (${PACKAGE_NAME}). ` +
+				`${APP_NAME} update will not uninstall October to install another package.`,
+		);
+	}
+	const note = "note" in data && typeof data.note === "string" ? data.note.trim() : undefined;
 	return {
-		version: data.version.trim(),
+		version,
 		packageName,
 		...(note ? { note } : {}),
 	};

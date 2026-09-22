@@ -105,6 +105,8 @@ october --version
 
 For a global npm installation, you can also install the latest published release directly:
 
+If an older version prints `Could not determine latest october version`, use this npm command once to replace the updater that depended on the unavailable website feed. The fixed updater reads the published version directly from npm.
+
 ```bash
 npm install -g --ignore-scripts @october-dev/october@latest
 october --version

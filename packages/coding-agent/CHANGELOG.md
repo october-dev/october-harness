@@ -2,13 +2,21 @@
 
 ## [Unreleased]
 
+## [0.87.0-october.1] - 2026-09-22
+
+### Added
+
+- Added a runnable local Bus multiplayer example that verifies discovery, task completion, correlated replies, and acknowledgements without model API keys ([#21](https://github.com/october-dev/october-harness/pull/21) by [@Pushkraj-Space](https://github.com/Pushkraj-Space)).
+
 ### Changed
 
-- Synced the inherited runtime and dependencies with Pi 0.87.0 through `95fbc0499`, preserving October's authentication, Desktop integration, permissions, Bus delivery, package identity, and update policy. Kept October identity and guidance in the new structured system prompt and migrated the replacement eval harness to the October package and isolated profile.
+- Synced the inherited runtime and dependencies with Pi 0.87.0 through `d201760ff`, preserving October's authentication, Desktop integration, permissions, Bus delivery, package identity, and update policy. Kept October identity and guidance in the new structured system prompt and migrated the replacement eval harness to the October package and isolated profile. See the inherited release sections below for SDK and extension API changes.
 - Changed the default xAI model to Grok 4.7.
 
 ### Fixed
 
+- Fixed `october update` failing when the website version feed is unavailable. Read npm's published `latest` metadata, validate the October package identity and exact version, and surface registry HTTP errors without making background checks noisy. Older installations can bootstrap the fix with `npm install -g --ignore-scripts @october-dev/october@latest`.
+- Fixed image-only user messages being rejected by some OpenAI-compatible providers because they included an empty text part ([#9797](https://github.com/earendil-works/pi/issues/9797)).
 - Fixed missing or invalid `--mode` values being silently ignored instead of reporting an error and exiting with a nonzero status ([#9045](https://github.com/earendil-works/pi/issues/9045)).
 
 ## [0.87.0] - 2026-09-21
