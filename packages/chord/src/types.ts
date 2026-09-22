@@ -1,5 +1,6 @@
 import type { Op } from "./delta/index.ts";
 import type { RemoteServiceProvider } from "./services/provider.ts";
+import type { Draft } from "./state/draft.ts";
 
 export type { RemoteServiceError } from "./services/errors.ts";
 export type { RemoteServiceProvider } from "./services/provider.ts";
@@ -49,10 +50,13 @@ export interface ReplicatedState<T> {
 
 export interface MutableReplicatedState<T extends object> extends ReplicatedState<T> {
 	readonly value: T;
-	/** Mutable tracked state. All writes must go through this proxy. */
-	readonly state: T;
-	/** Publish the changes made through {@link state} since the previous publication. */
-	publish(context: Context): void;
+	/**
+	 * Atomically publish one synchronous copy-on-write mutation. Draft handles are revoked when the callback returns.
+	 * Async callbacks and non-JSON assignments, including `undefined`, throw without changing the value.
+	 */
+	change(context: Context, mutate: (draft: Draft<T>) => void): void;
+	/** Atomically replace the complete value with a detached immutable JSON snapshot. */
+	replace(context: Context, value: T): void;
 }
 
 declare const SERVICE_TYPE: unique symbol;

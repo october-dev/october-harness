@@ -6,6 +6,7 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -179,6 +180,62 @@ describe("--session-id", () => {
 		);
 		expect(reopened.getSessionFile()).toBe(created.getSessionFile());
 		expect(consoleError).not.toHaveBeenCalled();
+	});
+
+	// Regression test for #9440.
+	it("looks up exact IDs without building full session listings", async () => {
+		const tempRoot = createTempDir();
+		const projectDir = join(tempRoot, "project");
+		const sessionDir = join(tempRoot, "sessions");
+		mkdirSync(projectDir, { recursive: true });
+		const unrelated = SessionManager.create(projectDir, sessionDir, { id: "unrelated-id" });
+		persistSession(unrelated, "large transcript contents must not be loaded");
+		const list = vi.spyOn(SessionManager, "list").mockRejectedValue(new Error("unexpected full listing"));
+		vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const created = await createSessionManager(
+			args({ sessionId: "fresh-id" }),
+			projectDir,
+			sessionDir,
+			SettingsManager.inMemory(),
+		);
+
+		expect(created.getSessionId()).toBe("fresh-id");
+		expect(list).not.toHaveBeenCalled();
+	});
+
+	it("reopens an exact ID from a renamed session file", async () => {
+		const tempRoot = createTempDir();
+		const projectDir = join(tempRoot, "project");
+		const sessionDir = join(tempRoot, "sessions");
+		mkdirSync(projectDir, { recursive: true });
+		const original = SessionManager.create(projectDir, sessionDir, { id: "renamed-id" });
+		persistSession(original, "persist me");
+		const renamedPath = join(sessionDir, "imported-session.jsonl");
+		renameSync(original.getSessionFile()!, renamedPath);
+
+		const reopened = await createSessionManager(
+			args({ sessionId: "renamed-id" }),
+			projectDir,
+			sessionDir,
+			SettingsManager.inMemory(),
+		);
+
+		expect(reopened.getSessionFile()).toBe(renamedPath);
+	});
+
+	it("filters exact IDs by cwd in a custom session directory", () => {
+		const tempRoot = createTempDir();
+		const projectA = join(tempRoot, "project-a");
+		const projectB = join(tempRoot, "project-b");
+		const sessionDir = join(tempRoot, "sessions");
+		mkdirSync(projectA, { recursive: true });
+		mkdirSync(projectB, { recursive: true });
+		const foreign = SessionManager.create(projectB, sessionDir, { id: "foreign-id" });
+		persistSession(foreign, "foreign session");
+
+		expect(SessionManager.findById(projectA, "foreign-id", sessionDir)).toBeUndefined();
+		expect(SessionManager.findById(projectB, "foreign-id", sessionDir)).toBe(foreign.getSessionFile());
 	});
 
 	it("rejects an existing fork target in process", async () => {

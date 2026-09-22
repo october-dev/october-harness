@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseOctoberBusEnv } from "../src/extensions/october/bus/env.ts";
@@ -90,13 +91,24 @@ describe.skipIf(!binary)("October public Bus integration", () => {
 		return harness;
 	}
 
-	async function call<T>(harness: Harness, name: string, args: Record<string, unknown>, error = false): Promise<T> {
+	async function call<T>(harness: Harness, name: string, args: JsonObject, error = false): Promise<T> {
+		const previousMessageCount = harness.session.messages.length;
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall(`${MCP_TOOL_PREFIX}${name}`, args)], { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);
 		await harness.session.prompt(`Run ${name}`);
-		const result = [...harness.session.messages].reverse().find((message) => message.role === "toolResult");
+		await waitFor(
+			() =>
+				harness.session.isIdle &&
+				harness.session.messages
+					.slice(previousMessageCount)
+					.some((message) => message.role === "toolResult" && message.toolName === `${MCP_TOOL_PREFIX}${name}`),
+		);
+		const result = harness.session.messages
+			.slice(previousMessageCount)
+			.filter((message) => message.role === "toolResult")
+			.find((message) => message.toolName === `${MCP_TOOL_PREFIX}${name}`);
 		expect(result, `Missing ${name} tool result`).toBeDefined();
 		expect(!!result?.isError, getMessageText(result)).toBe(error);
 		return (error ? getMessageText(result) : JSON.parse(getMessageText(result))) as T;

@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { findInitialModel } from "../src/core/model-resolver.ts";
@@ -58,7 +58,7 @@ afterEach(() => vi.restoreAllMocks());
 
 function createView() {
 	return {
-		session: { modelRuntime: runtime, setModel: vi.fn(async () => {}) },
+		session: { model: unknownModel, modelRuntime: runtime, setModel: vi.fn(async () => {}) },
 		updateAvailableProviderCount: vi.fn(async () => {}),
 		footer: { invalidate: vi.fn() },
 		ui: { requestRender: vi.fn() },
@@ -69,6 +69,14 @@ function createView() {
 		maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
 		checkDaxnutsEasterEgg: vi.fn(),
 	};
+}
+
+function pendingCatalogRefresh() {
+	let resolveRefresh!: (result: ModelsRefreshResult) => void;
+	const promise = new Promise<ModelsRefreshResult>((resolve) => {
+		resolveRefresh = resolve;
+	});
+	return { promise, resolve: resolveRefresh };
 }
 
 describe("October post-login model selection", () => {
@@ -105,9 +113,11 @@ describe("October post-login model selection", () => {
 		const view = createView();
 		await completeAuthentication.call(view, "october", "October", "oauth", unknownModel);
 		expect(view.session.setModel).not.toHaveBeenCalled();
-		expect(view.showError).toHaveBeenCalledWith(
-			expect.stringContaining(`default model "${OCTOBER_DEFAULT_MODEL_ID}" is not available`),
-		);
+		await vi.waitFor(() => {
+			expect(view.showError).toHaveBeenCalledWith(
+				expect.stringContaining(`default model "${OCTOBER_DEFAULT_MODEL_ID}" is not available`),
+			);
+		});
 	});
 
 	it("reports missing available models separately from successful authentication", async () => {
@@ -115,7 +125,42 @@ describe("October post-login model selection", () => {
 		const view = createView();
 		await completeAuthentication.call(view, "october", "October", "oauth", unknownModel);
 		expect(view.session.setModel).not.toHaveBeenCalled();
-		expect(view.showError).toHaveBeenCalledWith(expect.stringContaining("no models are available for that provider"));
+		await vi.waitFor(() => {
+			expect(view.showError).toHaveBeenCalledWith(
+				expect.stringContaining("no models are available for that provider"),
+			);
+		});
+	});
+
+	it("waits for catalog discovery before selecting October's recommended model", async () => {
+		vi.mocked(runtime.getAvailableSnapshot).mockReturnValue([]);
+		const refreshed = await runtime.refresh({ providers: ["october"], allowNetwork: false });
+		const pendingRefresh = pendingCatalogRefresh();
+		vi.mocked(runtime.refresh).mockReturnValue(pendingRefresh.promise);
+		const view = createView();
+		await completeAuthentication.call(view, "october", "October", "oauth", unknownModel);
+		expect(view.showError).not.toHaveBeenCalled();
+		expect(view.session.setModel).not.toHaveBeenCalled();
+		vi.mocked(runtime.getAvailableSnapshot).mockReturnValue([alternative, recommended]);
+		pendingRefresh.resolve(refreshed);
+		await vi.waitFor(() => {
+			expect(view.session.setModel).toHaveBeenCalledExactlyOnceWith(recommended, { persist: true });
+		});
+	});
+
+	it("does not replace a model selected while October's catalog refresh is pending", async () => {
+		vi.mocked(runtime.getAvailableSnapshot).mockReturnValue([]);
+		const refreshed = await runtime.refresh({ providers: ["october"], allowNetwork: false });
+		const pendingRefresh = pendingCatalogRefresh();
+		vi.mocked(runtime.refresh).mockReturnValue(pendingRefresh.promise);
+		const view = createView();
+		await completeAuthentication.call(view, "october", "October", "oauth", unknownModel);
+		view.session.model = alternative;
+		vi.mocked(runtime.getAvailableSnapshot).mockReturnValue([alternative, recommended]);
+		pendingRefresh.resolve(refreshed);
+		await vi.waitFor(() => expect(view.ui.requestRender).toHaveBeenCalled());
+		expect(view.session.setModel).not.toHaveBeenCalled();
+		expect(view.showError).not.toHaveBeenCalled();
 	});
 
 	it("reports model-selection persistence errors honestly", async () => {

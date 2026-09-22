@@ -451,8 +451,7 @@ describe("october inference provider", () => {
 					properties: { value: { type: "string" } },
 					required: ["value"],
 				});
-				if (nvidia) expect(tool.function).not.toHaveProperty("strict");
-				else expect(tool.function.strict).toBe(false);
+				expect(tool.function).not.toHaveProperty("strict");
 			}
 			if (nvidia) {
 				// Keep October's route settings aligned with upstream Pi's direct NVIDIA handling.

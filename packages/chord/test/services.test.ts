@@ -100,9 +100,10 @@ describe("remote services", () => {
 		expect(delivered).toBe(state.value);
 		const hydrated = delivered;
 
-		state.state.selected = { provider: "test", modelId: "one" };
-		state.state.revision = 1;
-		state.publish(BACKGROUND_CONTEXT);
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.selected = { provider: "test", modelId: "one" };
+			draft.revision = 1;
+		});
 		expect(state.value).toEqual({ selected: { provider: "test", modelId: "one" }, revision: 1 });
 		expect(state.value).not.toBe(initial);
 		expect(delivered).toBe(state.value);
@@ -111,11 +112,25 @@ describe("remote services", () => {
 		unsubscribe();
 	});
 
-	test("flushes pending mutations before hydrating a new state subscriber", () => {
+	test("does not publish when a transaction restores the prior value", () => {
+		const state = replicatedState({ value: 1 });
+		const deliveries: Array<{ kind: string; sequence: number }> = [];
+		state.subscribe((_value, _context, delivery) => deliveries.push(delivery));
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.value = 2;
+			draft.value = 1;
+		});
+		expect(state.value).toEqual({ value: 1 });
+		expect(deliveries).toEqual([{ kind: "hydrate", sequence: 0 }]);
+	});
+
+	test("hydrates a new subscriber from the latest atomic revision", () => {
 		const state = replicatedState({ entries: [{ id: "one" }] });
 		const first: { entries: { id: string }[] }[] = [];
 		state.subscribe((value) => first.push(value));
-		state.state.entries.push({ id: "two" });
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.entries.push({ id: "two" });
+		});
 
 		const second: { entries: { id: string }[] }[] = [];
 		state.subscribe((value) => second.push(value));
@@ -158,9 +173,10 @@ describe("remote services", () => {
 		provider.provide(Models, {
 			state,
 			async select(model, context) {
-				state.state.selected = model;
-				state.state.revision += 1;
-				state.publish(context);
+				state.change(context, (draft) => {
+					draft.selected = model;
+					draft.revision += 1;
+				});
 				publishedState = state.value;
 			},
 		});
@@ -225,8 +241,9 @@ describe("remote services", () => {
 		await namespace.ready(BACKGROUND_CONTEXT);
 		const previous = timeline.state.value;
 		const next = { entries: [{ id: "one" }, { id: "two" }], retained: initial.retained };
-		source.state.entries.push({ id: "two" });
-		source.publish(BACKGROUND_CONTEXT);
+		source.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.entries.push({ id: "two" });
+		});
 
 		expect(updates).toContainEqual({
 			type: "state",
@@ -237,7 +254,9 @@ describe("remote services", () => {
 		expect(previous).toEqual({ entries: [{ id: "one" }], retained: { value: 1 } });
 		expect(timeline.state.value).toEqual(next);
 
-		source.state.entries.push({ id: "three" });
+		source.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.entries.push({ id: "three" });
+		});
 		const late = provider.subscribe(Timeline.id, "singleton", () => {});
 		expect(updates.at(-1)).toEqual({
 			type: "state",
@@ -339,6 +358,42 @@ describe("remote services", () => {
 		provider.dispose();
 	});
 
+	test("does not replay a queued revision already covered by a new subscription snapshot", () => {
+		const provider = new RemoteServiceProvider([Models]);
+		const state = replicatedState<ModelsState>({ selected: null, revision: 0 });
+		provider.provide(Models, { state, async select() {} });
+		const lateUpdates: number[] = [];
+		let late: ReturnType<typeof provider.subscribe> | undefined;
+		const first = provider.subscribe(Models.id, "singleton", (update) => {
+			if (update.type !== "state" || update.sequence !== 1) return;
+			state.change(BACKGROUND_CONTEXT, (draft) => {
+				draft.revision = 2;
+			});
+			late = provider.subscribe(Models.id, "singleton", (next) => {
+				if (next.type === "state") lateUpdates.push(next.sequence);
+			});
+			expect(late.snapshot.instances[0]?.members).toContainEqual({
+				name: "state",
+				kind: "state",
+				sequence: 2,
+				ops: [["r", { selected: null, revision: 2 }]],
+			});
+			late.activate();
+		});
+		first.activate();
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.revision = 1;
+		});
+		expect(lateUpdates).toEqual([]);
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.revision = 3;
+		});
+		expect(lateUpdates).toEqual([3]);
+		late?.close();
+		first.close();
+		provider.dispose();
+	});
+
 	test("replays every buffered update before reporting listener failures", () => {
 		const failure = new Error("listener failed");
 		const provider = new RemoteServiceProvider([Models]);
@@ -349,10 +404,12 @@ describe("remote services", () => {
 			delivered += 1;
 			throw failure;
 		});
-		state.state.revision = 1;
-		state.publish(BACKGROUND_CONTEXT);
-		state.state.revision = 2;
-		state.publish(BACKGROUND_CONTEXT);
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.revision = 1;
+		});
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.revision = 2;
+		});
 
 		expect(() => subscription.activate()).toThrow("Failed to activate remote service subscription");
 		expect(delivered).toBe(2);
@@ -477,8 +534,9 @@ describe("remote services", () => {
 			invoke: (call, context) => provider.invoke(call, context),
 			subscribe: async (serviceId, mode, listener) => {
 				const subscription = provider.subscribe(serviceId, mode, listener);
-				state.state.revision = 1;
-				state.publish(BACKGROUND_CONTEXT);
+				state.change(BACKGROUND_CONTEXT, (draft) => {
+					draft.revision = 1;
+				});
 				return {
 					snapshot: subscription.snapshot,
 					activate: () => subscription.activate(),
@@ -568,19 +626,22 @@ describe("remote services", () => {
 		expect(models.state.value).toBeUndefined();
 		expect(revisions).toEqual([]);
 
-		state.state.revision = 1;
-		state.publish(BACKGROUND_CONTEXT);
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.revision = 1;
+		});
 		await namespace.rebind(true, BACKGROUND_CONTEXT);
 		expect(models.state.value?.revision).toBe(1);
 		expect(revisions).toEqual([1]);
-		state.state.revision = 2;
-		state.publish(BACKGROUND_CONTEXT);
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.revision = 2;
+		});
 		expect(revisions).toEqual([1, 2]);
 
 		await namespace.rebind(false, BACKGROUND_CONTEXT);
 		expect(models.state.value).toBeUndefined();
-		state.state.revision = 3;
-		state.publish(BACKGROUND_CONTEXT);
+		state.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.revision = 3;
+		});
 		expect(revisions).toEqual([1, 2]);
 		await namespace.rebind(true, BACKGROUND_CONTEXT);
 		expect(models.state.value?.revision).toBe(3);
@@ -624,8 +685,9 @@ describe("remote services", () => {
 		expect(observed[0]).toMatchObject({ question: { question: "First?" } });
 
 		const firstService = observed[0]!.service;
-		firstRequest.state.question = "Updated?";
-		firstRequest.publish(BACKGROUND_CONTEXT);
+		firstRequest.change(BACKGROUND_CONTEXT, (draft) => {
+			draft.question = "Updated?";
+		});
 		expect(firstService.request.value).toEqual({ question: "Updated?" });
 		await expect(firstService.submit("yes", BACKGROUND_CONTEXT)).resolves.toEqual({ accepted: true });
 		expect(firstSubmit).toHaveBeenCalledWith("yes", expect.objectContaining({ abortSignal: undefined }));

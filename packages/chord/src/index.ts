@@ -46,6 +46,7 @@ export {
 	type WireServiceProviderUpdate,
 	type WireServiceSubscriptionSnapshot,
 } from "./services/wire.ts";
+export type { Draft } from "./state/draft.ts";
 export type {
 	Context,
 	ContextKey,

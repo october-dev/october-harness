@@ -7,6 +7,7 @@ import {
 	fauxProvider,
 	fauxToolCall,
 	InMemoryCredentialStore,
+	type JsonObject,
 } from "@earendil-works/pi-ai";
 import type { AgentSession } from "../../src/core/agent-session.ts";
 import { createEventBus } from "../../src/core/event-bus.ts";
@@ -45,7 +46,7 @@ function identifier(value: unknown): string {
 	return value;
 }
 
-function tool(name: string, args: Record<string, unknown>) {
+function tool(name: string, args: JsonObject) {
 	return fauxAssistantMessage([fauxToolCall(`${MCP_TOOL_PREFIX}${name}`, args)], { stopReason: "toolUse" });
 }
 
