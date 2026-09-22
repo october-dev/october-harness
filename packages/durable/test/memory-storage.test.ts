@@ -1,13 +1,16 @@
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Op } from "@earendil-works/chord/delta";
 import { describe, expect, it } from "vitest";
 import { MemoryStorage } from "../src/memory-storage.ts";
 import {
+	type DocumentCreate,
 	type EntryRecord,
 	type Id,
-	type Input,
+	type JsonObject,
 	ROOT_CONVERSATION_ID,
 	type StorageWrite,
+	type SubmissionRecord,
 	type TaskRecord,
 } from "../src/types.ts";
 
@@ -53,12 +56,13 @@ describe("Pico MemoryStorage", () => {
 		const rootId = await createRoot(storage);
 		const entryId = storage.mintId();
 		const taskId = storage.mintId();
-		const inputId = storage.mintId();
+		const submissionId = storage.mintId();
 		const task = pendingTask(taskId, rootId);
-		const input: Input = {
-			id: inputId,
+		const input: SubmissionRecord = {
+			id: submissionId,
 			conversationId: rootId,
 			requestId: "request-1",
+			type: "input",
 			status: "placed",
 			entry: entryId,
 		};
@@ -66,7 +70,7 @@ describe("Pico MemoryStorage", () => {
 			[
 				{ type: "entry", value: entry(entryId, rootId, "user", { data: { text: "hello" } }) },
 				{ type: "task", value: task },
-				{ type: "input", value: input },
+				{ type: "submission", value: input },
 			],
 			context,
 		);
@@ -76,19 +80,19 @@ describe("Pico MemoryStorage", () => {
 			commitSeq: initialSeq,
 		});
 		expect(await storage.task(taskId, context)).toEqual(task);
-		expect(await storage.input(inputId, context)).toEqual(input);
+		expect(await storage.submission(submissionId, context)).toEqual(input);
 
 		const transientEntryId = storage.mintId();
 		const runningTask: StoredTask = {
 			...task,
 			state: { status: "running", checkpoint: { phase: "effect" } },
 		};
-		const doneInput: Input = { ...input, status: "done", answer: transientEntryId };
+		const doneInput: SubmissionRecord = { ...input, status: "done", answer: transientEntryId };
 		await expect(
 			storage.commit(
 				[
 					{ type: "task", value: runningTask },
-					{ type: "input", value: doneInput },
+					{ type: "submission", value: doneInput },
 					{ type: "entry", value: entry(transientEntryId, rootId, "assistant") },
 					{ type: "conversation", value: { id: rootId } },
 				],
@@ -97,7 +101,7 @@ describe("Pico MemoryStorage", () => {
 		).rejects.toThrow(`ID ${rootId} already belongs to conversation`);
 
 		expect(await storage.task(taskId, context)).toEqual(task);
-		expect(await storage.input(inputId, context)).toEqual(input);
+		expect(await storage.submission(submissionId, context)).toEqual(input);
 		expect(await storage.entry(transientEntryId, context)).toBeUndefined();
 		expect(
 			await storage.commit([{ type: "entry", value: entry(storage.mintId(), rootId, "after-rollback") }], context),
@@ -109,7 +113,7 @@ describe("Pico MemoryStorage", () => {
 		const rootId = await createRoot(storage);
 		const entryId = storage.mintId();
 		const taskId = storage.mintId();
-		const inputId = storage.mintId();
+		const submissionId = storage.mintId();
 		const entryData = { nested: [1, 2] };
 		const checkpoint = { phase: "ready", nested: { count: 1 } };
 		const detail = { codes: ["initial"] };
@@ -118,9 +122,10 @@ describe("Pico MemoryStorage", () => {
 			...pendingTask(taskId, rootId),
 			state: { status: "pending", checkpoint },
 		};
-		const storedInput: Input = {
-			id: inputId,
+		const storedInput: SubmissionRecord = {
+			id: submissionId,
 			conversationId: rootId,
+			type: "input",
 			status: "unanswered",
 			reason: "failed",
 			detail,
@@ -129,7 +134,7 @@ describe("Pico MemoryStorage", () => {
 			[
 				{ type: "entry", value: storedEntry },
 				{ type: "task", value: storedTask },
-				{ type: "input", value: storedInput },
+				{ type: "submission", value: storedInput },
 			],
 			context,
 		);
@@ -142,7 +147,7 @@ describe("Pico MemoryStorage", () => {
 			status: "pending",
 			checkpoint: { phase: "ready", nested: { count: 1 } },
 		});
-		expect((await storage.input(inputId, context))?.detail).toEqual({ codes: ["initial"] });
+		expect((await storage.submission(submissionId, context))?.detail).toEqual({ codes: ["initial"] });
 
 		const readEntry = (await storage.entry(entryId, context))!.entry;
 		(readEntry.data as { nested: number[] }).nested.push(9);
@@ -150,7 +155,7 @@ describe("Pico MemoryStorage", () => {
 		if (readTask.state.status !== "terminal") {
 			(readTask.state.checkpoint as { phase: string; nested: { count: number } }).nested.count = 9;
 		}
-		const readInput = (await storage.input(inputId, context))!;
+		const readInput = (await storage.submission(submissionId, context))!;
 		(readInput.detail as { codes: string[] }).codes.push("read mutation");
 
 		expect((await storage.entry(entryId, context))?.entry.data).toEqual({ nested: [1, 2] });
@@ -158,7 +163,7 @@ describe("Pico MemoryStorage", () => {
 			status: "pending",
 			checkpoint: { phase: "ready", nested: { count: 1 } },
 		});
-		expect((await storage.input(inputId, context))?.detail).toEqual({ codes: ["initial"] });
+		expect((await storage.submission(submissionId, context))?.detail).toEqual({ codes: ["initial"] });
 	});
 
 	it("detaches prototype-like JSON keys without changing object prototypes", async () => {
@@ -427,7 +432,7 @@ describe("Pico MemoryStorage", () => {
 		);
 	});
 
-	it("indexes request IDs per conversation and replaces complete input records", async () => {
+	it("indexes request IDs per conversation and replaces complete submission records", async () => {
 		const storage = new MemoryStorage();
 		const rootId = await createRoot(storage);
 		const secondConversationId = storage.mintId();
@@ -435,39 +440,505 @@ describe("Pico MemoryStorage", () => {
 		const firstId = storage.mintId();
 		const secondId = storage.mintId();
 		const otherConversationId = storage.mintId();
-		const first: Input = {
+		const first: SubmissionRecord = {
 			id: firstId,
 			conversationId: rootId,
 			requestId: "same",
+			type: "input",
 			status: "queued",
 		};
-		const second: Input = {
+		const second: SubmissionRecord = {
 			id: secondId,
 			conversationId: rootId,
 			requestId: "other",
+			type: "input",
 			status: "queued",
 		};
-		const otherConversation: Input = {
+		const otherConversation: SubmissionRecord = {
 			id: otherConversationId,
 			conversationId: secondConversationId,
 			requestId: "same",
+			type: "input",
 			status: "queued",
 		};
 		await storage.commit(
 			[
-				{ type: "input", value: first },
-				{ type: "input", value: second },
-				{ type: "input", value: otherConversation },
+				{ type: "submission", value: first },
+				{ type: "submission", value: second },
+				{ type: "submission", value: otherConversation },
 			],
 			context,
 		);
-		expect(await storage.inputByRequest(rootId, "same", context)).toEqual(first);
-		expect(await storage.inputByRequest(secondConversationId, "same", context)).toEqual(otherConversation);
+		expect(await storage.submissionByRequest(rootId, "same", context)).toEqual(first);
+		expect(await storage.submissionByRequest(secondConversationId, "same", context)).toEqual(otherConversation);
 
-		const placedSecond: Input = { ...second, status: "placed", entry: storage.mintId() };
-		await storage.commit([{ type: "input", value: placedSecond }], context);
-		expect(await storage.input(secondId, context)).toEqual(placedSecond);
-		expect(await storage.inputByRequest(rootId, "other", context)).toEqual(placedSecond);
+		const placedSecond: SubmissionRecord = { ...second, status: "placed", entry: storage.mintId() };
+		await storage.commit([{ type: "submission", value: placedSecond }], context);
+		expect(await storage.submission(secondId, context)).toEqual(placedSecond);
+		expect(await storage.submissionByRequest(rootId, "other", context)).toEqual(placedSecond);
+	});
+
+	it("stores passive write submissions without input-only lifecycle states", async () => {
+		const storage = new MemoryStorage();
+		const rootId = await createRoot(storage);
+		const doneId = storage.mintId();
+		const failedId = storage.mintId();
+		const queuedDone: SubmissionRecord = {
+			id: doneId,
+			conversationId: rootId,
+			requestId: "passive-done",
+			type: "write",
+			status: "queued",
+		};
+		const queuedFailed: SubmissionRecord = {
+			id: failedId,
+			conversationId: rootId,
+			requestId: "passive-failed",
+			type: "write",
+			status: "queued",
+		};
+		await storage.commit(
+			[
+				{ type: "submission", value: queuedDone },
+				{ type: "submission", value: queuedFailed },
+			],
+			context,
+		);
+
+		const done: SubmissionRecord = { ...queuedDone, status: "done", entry: storage.mintId() };
+		const unanswered: SubmissionRecord = {
+			...queuedFailed,
+			status: "unanswered",
+			reason: "closed",
+			detail: { retryable: false },
+		};
+		await storage.commit(
+			[
+				{ type: "submission", value: done },
+				{ type: "submission", value: unanswered },
+			],
+			context,
+		);
+		expect(await storage.submission(doneId, context)).toEqual(done);
+		expect(await storage.submissionByRequest(rootId, "passive-done", context)).toEqual(done);
+		expect(await storage.submission(failedId, context)).toEqual(unanswered);
+		expect(await storage.submissionByRequest(rootId, "passive-failed", context)).toEqual(unanswered);
+	});
+
+	it("reconstructs rewindable documents and preserves half-open incarnations", async () => {
+		const storage = new MemoryStorage();
+		const rootId = await createRoot(storage);
+		const firstId = storage.mintId();
+		const firstRecord = {
+			id: firstId,
+			kind: "conversation.notes",
+			scope: { kind: "conversation", conversationId: rootId },
+			history: "rewindable",
+			fork: "asOf",
+		} satisfies DocumentCreate;
+		const initial: JsonObject = { items: ["a"], nested: { count: 1 } };
+		const createdAt = await storage.commit(
+			[{ type: "document.create", record: firstRecord, content: { kind: "base", version: 1, value: initial } }],
+			context,
+		);
+		const appended = ["b"];
+		const ops: Op[] = [
+			["p", ["items"], 1, 0, appended],
+			["s", ["nested", "count"], 2],
+		];
+		const changedAt = await storage.commit(
+			[{ type: "document.change", id: firstId, content: { kind: "delta", version: 1, ops } }],
+			context,
+		);
+
+		(initial.items as string[]).push("caller mutation");
+		appended.push("caller mutation");
+		expect(await storage.document(firstId, createdAt, context)).toMatchObject({
+			version: 1,
+			value: { items: ["a"], nested: { count: 1 } },
+		});
+		const changed = (await storage.document(firstId, changedAt, context))!;
+		expect(changed.value).toEqual({ items: ["a", "b"], nested: { count: 2 } });
+		(changed.value.items as string[]).push("read mutation");
+		expect((await storage.document(firstId, "current", context))?.value).toEqual({
+			items: ["a", "b"],
+			nested: { count: 2 },
+		});
+
+		const checkpointAt = await storage.commit(
+			[
+				{
+					type: "document.change",
+					id: firstId,
+					content: { kind: "base", version: 2, value: { items: ["checkpoint"], nested: { count: 3 } } },
+				},
+			],
+			context,
+		);
+		const replacedAt = await storage.commit(
+			[
+				{
+					type: "document.change",
+					id: firstId,
+					content: {
+						kind: "delta",
+						version: 2,
+						ops: [["r", { items: ["replacement"], nested: { count: 4 } }]],
+					},
+				},
+			],
+			context,
+		);
+		expect(await storage.document(firstId, changedAt, context)).toMatchObject({
+			version: 1,
+			value: { items: ["a", "b"], nested: { count: 2 } },
+		});
+		expect(await storage.document(firstId, checkpointAt, context)).toMatchObject({
+			version: 2,
+			value: { items: ["checkpoint"], nested: { count: 3 } },
+		});
+		expect((await storage.document(firstId, replacedAt, context))?.value).toEqual({
+			items: ["replacement"],
+			nested: { count: 4 },
+		});
+
+		const secondId = storage.mintId();
+		const retiredAt = await storage.commit(
+			[
+				{
+					type: "document.create",
+					record: { ...firstRecord, id: secondId },
+					content: { kind: "base", version: 1, value: { items: ["new"] } },
+				},
+				{ type: "document.retire", id: firstId },
+				{
+					type: "document.change",
+					id: firstId,
+					content: { kind: "delta", version: 2, ops: [["s", ["retiring"], true]] },
+				},
+			],
+			context,
+		);
+		const address = { kind: firstRecord.kind, scope: firstRecord.scope };
+		expect((await storage.findDocument(address, changedAt, context))?.id).toBe(firstId);
+		expect(await storage.findDocument(address, retiredAt, context)).toMatchObject({
+			id: secondId,
+			createdAt: retiredAt,
+		});
+		expect(
+			(await storage.scanDocuments({ scope: firstRecord.scope, at: changedAt }, undefined, 10, context)).items.map(
+				({ id }) => id,
+			),
+		).toEqual([firstId]);
+		expect(
+			(await storage.scanDocuments({ scope: firstRecord.scope, at: retiredAt }, undefined, 10, context)).items.map(
+				({ id }) => id,
+			),
+		).toEqual([secondId]);
+		expect(await storage.document(firstId, retiredAt, context)).toBeUndefined();
+		expect((await storage.document(secondId, "current", context))?.value).toEqual({ items: ["new"] });
+	});
+
+	it("uses bases for version transitions and rejects historical reads of current-only documents", async () => {
+		const storage = new MemoryStorage();
+		await createRoot(storage);
+		const id = storage.mintId();
+		const record = {
+			id,
+			kind: "session.settings",
+			scope: { kind: "session" },
+		} satisfies DocumentCreate;
+		await storage.commit(
+			[{ type: "document.create", record, content: { kind: "base", version: 1, value: { count: 1 } } }],
+			context,
+		);
+		await storage.commit(
+			[{ type: "document.change", id, content: { kind: "delta", version: 1, ops: [["s", ["count"], 2]] } }],
+			context,
+		);
+		const migratedAt = await storage.commit(
+			[{ type: "document.change", id, content: { kind: "base", version: 2, value: { count: 3 } } }],
+			context,
+		);
+		expect(await storage.document(id, "current", context)).toMatchObject({ version: 2, value: { count: 3 } });
+		await expect(storage.document(id, migratedAt, context)).rejects.toThrow("does not retain historical content");
+
+		await expect(
+			storage.commit(
+				[{ type: "document.change", id, content: { kind: "delta", version: 1, ops: [["s", ["count"], 4]] } }],
+				context,
+			),
+		).rejects.toThrow("version transition requires a base");
+		expect((await storage.document(id, "current", context))?.value).toEqual({ count: 3 });
+		await storage.commit([{ type: "document.retire", id }], context);
+		expect(await storage.document(id, "current", context)).toBeUndefined();
+	});
+
+	it("indexes logical addresses and exact-scope scans independently", async () => {
+		const storage = new MemoryStorage();
+		const rootId = await createRoot(storage);
+		const firstId = storage.mintId();
+		const secondId = storage.mintId();
+		const conversationId = storage.mintId();
+		const taskId = storage.mintId();
+		const taskSingletonId = storage.mintId();
+		const taskFamilyId = storage.mintId();
+		const taskOtherKindId = storage.mintId();
+		const createdAt = await storage.commit(
+			[
+				{ type: "task", value: pendingTask(taskId, rootId) },
+				{
+					type: "document.create",
+					record: {
+						id: firstId,
+						kind: "cache",
+						scope: { kind: "session" },
+						key: "__proto__",
+					},
+					content: { kind: "base", version: 1, value: { owner: "first" } },
+				},
+				{
+					type: "document.create",
+					record: {
+						id: secondId,
+						kind: "cache",
+						scope: { kind: "session" },
+						key: "constructor",
+					},
+					content: { kind: "base", version: 1, value: { owner: "second" } },
+				},
+				{
+					type: "document.create",
+					record: {
+						id: conversationId,
+						kind: "cache",
+						scope: { kind: "conversation", conversationId: rootId },
+						history: "latest",
+						fork: "current",
+						key: "__proto__",
+					},
+					content: { kind: "base", version: 1, value: { owner: "conversation" } },
+				},
+				{
+					type: "document.create",
+					record: {
+						id: taskSingletonId,
+						kind: "task.cache",
+						scope: { kind: "task", taskId },
+					},
+					content: { kind: "base", version: 1, value: { owner: "singleton" } },
+				},
+				{
+					type: "document.create",
+					record: {
+						id: taskFamilyId,
+						kind: "task.cache",
+						scope: { kind: "task", taskId },
+						key: "member",
+					},
+					content: { kind: "base", version: 1, value: { owner: "family" } },
+				},
+				{
+					type: "document.create",
+					record: {
+						id: taskOtherKindId,
+						kind: "task.other",
+						scope: { kind: "task", taskId },
+					},
+					content: { kind: "base", version: 1, value: { owner: "other" } },
+				},
+			],
+			context,
+		);
+
+		expect(
+			(
+				await storage.findDocument(
+					{ kind: "cache", scope: { kind: "session" }, key: "__proto__" },
+					"current",
+					context,
+				)
+			)?.id,
+		).toBe(firstId);
+		expect(
+			(await storage.scanDocuments({ scope: { kind: "session" }, at: "current" }, undefined, 1, context)).items,
+		).toHaveLength(1);
+		const first = await storage.scanDocuments({ scope: { kind: "session" }, at: "current" }, undefined, 1, context);
+		const second = await storage.scanDocuments({ scope: { kind: "session" }, at: "current" }, first.next, 1, context);
+		expect([...first.items, ...second.items].map(({ id }) => id)).toEqual([firstId, secondId]);
+		expect(
+			(
+				await storage.scanDocuments(
+					{ scope: { kind: "conversation", conversationId: rootId }, at: "current" },
+					undefined,
+					10,
+					context,
+				)
+			).items.map(({ id }) => id),
+		).toEqual([conversationId]);
+		expect(
+			(await storage.findDocument({ kind: "task.cache", scope: { kind: "task", taskId } }, "current", context))?.id,
+		).toBe(taskSingletonId);
+		expect(
+			(
+				await storage.findDocument(
+					{ kind: "task.cache", scope: { kind: "task", taskId }, key: "member" },
+					"current",
+					context,
+				)
+			)?.id,
+		).toBe(taskFamilyId);
+		expect(
+			(
+				await storage.scanDocuments(
+					{ scope: { kind: "task", taskId }, at: "current", kind: "task.cache" },
+					undefined,
+					10,
+					context,
+				)
+			).items.map(({ id }) => id),
+		).toEqual([taskSingletonId, taskFamilyId]);
+		await expect(storage.document(taskSingletonId, createdAt, context)).rejects.toThrow(
+			"does not retain historical content",
+		);
+	});
+
+	it("keeps document lifecycle failures atomic and gives create-plus-retire an empty lifetime", async () => {
+		const storage = new MemoryStorage();
+		const rootId = await createRoot(storage);
+		const firstId = storage.mintId();
+		const secondId = storage.mintId();
+		const record = {
+			id: firstId,
+			kind: "singleton",
+			scope: { kind: "session" },
+		} satisfies DocumentCreate;
+		await storage.commit(
+			[{ type: "document.create", record, content: { kind: "base", version: 1, value: { value: 1 } } }],
+			context,
+		);
+		await expect(
+			storage.commit(
+				[
+					{
+						type: "document.create",
+						record: { ...record, id: secondId },
+						content: { kind: "base", version: 1, value: { value: 2 } },
+					},
+					{ type: "document.change", id: firstId, content: { kind: "delta", version: 1, ops: [] } },
+				],
+				context,
+			),
+		).rejects.toThrow("already has a current incarnation");
+		expect((await storage.document(firstId, "current", context))?.value).toEqual({ value: 1 });
+		expect(await storage.document(secondId, "current", context)).toBeUndefined();
+
+		const emptyId = storage.mintId();
+		const emptyAt = await storage.commit(
+			[
+				{
+					type: "document.create",
+					record: {
+						id: emptyId,
+						kind: record.kind,
+						key: "empty",
+						scope: { kind: "conversation", conversationId: rootId },
+						history: "rewindable",
+						fork: "initial",
+					},
+					content: { kind: "base", version: 1, value: {} },
+				},
+				{ type: "document.retire", id: emptyId },
+			],
+			context,
+		);
+		expect(await storage.document(emptyId, "current", context)).toBeUndefined();
+		expect(await storage.document(emptyId, emptyAt, context)).toBeUndefined();
+		expect(
+			await storage.findDocument(
+				{
+					kind: record.kind,
+					scope: { kind: "conversation", conversationId: rootId },
+					key: "empty",
+				},
+				emptyAt,
+				context,
+			),
+		).toBeUndefined();
+	});
+
+	it("rolls back record tables and secondary indexes when a document command fails", async () => {
+		const storage = new MemoryStorage();
+		const rootId = await createRoot(storage);
+		const taskId = storage.mintId();
+		const submissionId = storage.mintId();
+		const documentId = storage.mintId();
+		const task = pendingTask(taskId, rootId);
+		const submission: SubmissionRecord = {
+			id: submissionId,
+			conversationId: rootId,
+			requestId: "atomic",
+			type: "input",
+			status: "queued",
+		};
+		const record = {
+			id: documentId,
+			kind: "atomic",
+			scope: { kind: "session" },
+		} satisfies DocumentCreate;
+		const baselineSeq = await storage.commit(
+			[
+				{ type: "task", value: task },
+				{ type: "submission", value: submission },
+				{ type: "document.create", record, content: { kind: "base", version: 1, value: { count: 1 } } },
+			],
+			context,
+		);
+
+		const entryId = storage.mintId();
+		const conflictingDocumentId = storage.mintId();
+		await expect(
+			storage.commit(
+				[
+					{
+						type: "task",
+						value: { ...task, state: { status: "running", checkpoint: { phase: "effect" } } },
+					},
+					{
+						type: "submission",
+						value: { ...submission, status: "unanswered", reason: "failed" },
+					},
+					{ type: "entry", value: entry(entryId, rootId, "transient") },
+					{
+						type: "document.create",
+						record: { ...record, id: conflictingDocumentId },
+						content: { kind: "base", version: 1, value: { count: 2 } },
+					},
+				],
+				context,
+			),
+		).rejects.toThrow("already has a current incarnation");
+
+		expect(await storage.task(taskId, context)).toEqual(task);
+		expect((await storage.scanTasks({ status: "pending" }, undefined, 10, context)).items).toEqual([task]);
+		expect(await storage.submissionByRequest(rootId, "atomic", context)).toEqual(submission);
+		expect(await storage.entry(entryId, context)).toBeUndefined();
+		expect(await storage.document(conflictingDocumentId, "current", context)).toBeUndefined();
+		expect((await storage.findDocument({ kind: record.kind, scope: record.scope }, "current", context))?.id).toBe(
+			documentId,
+		);
+		expect(
+			await storage.commit(
+				[
+					{
+						type: "document.change",
+						id: documentId,
+						content: { kind: "delta", version: 1, ops: [["s", ["count"], 3]] },
+					},
+				],
+				context,
+			),
+		).toBe(baselineSeq + 1);
 	});
 
 	it("keeps one global record ID namespace and rejects exhausted ID minting", async () => {

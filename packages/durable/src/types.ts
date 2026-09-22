@@ -1,5 +1,9 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Op } from "@earendil-works/chord/delta";
 import type { Message } from "@earendil-works/pi-ai";
+
+/** JSON object used as the root of every durable document. */
+export type JsonObject = { [key: string]: JsonValue };
 
 /** Session-global identifier shared by every durable record table. */
 export type Id = number;
@@ -56,7 +60,7 @@ export type EntryRecord = {
 	readonly kind: string;
 	/** Messages contributed to model context; absent for display or bookkeeping entries. */
 	readonly model?: readonly Message[];
-	/** JSON payload consumed by views, plugins, or bookkeeping logic. */
+	/** JSON payload consumed by views, extensions, or bookkeeping logic. */
 	readonly data?: JsonValue;
 	/** First entry in the active context selected by this entry. */
 	readonly head?: Id;
@@ -72,56 +76,87 @@ export type EntryDraft = Omit<EntryRecord, "id" | "conversationId" | "byTaskId" 
 	readonly head?: Id | "self";
 };
 
-/** Identity fields shared by every input lifecycle state. */
-type InputBase = {
+/** Identity fields shared by every durable submission state. */
+type SubmissionRecordBase = {
 	readonly id: Id;
 	readonly conversationId: Id;
 	/** Host-provided deduplication key, scoped to the conversation. */
 	readonly requestId?: string;
 };
 
-/** Durable lifecycle of one admitted host input and the handle waiting for it. */
-export type Input = InputBase &
-	(
-		| {
-				/** Admitted but not yet represented in the transcript. */
-				readonly status: "queued";
-				readonly entry?: never;
-				readonly answer?: never;
-				readonly reason?: never;
-				readonly detail?: never;
-		  }
-		| {
-				/** Added to the transcript and owned by an active turn. */
-				readonly status: "placed";
-				/** User transcript entry created when this input was placed. */
-				readonly entry: Id;
-				readonly answer?: never;
-				readonly reason?: never;
-				readonly detail?: never;
-		  }
-		| {
-				/** Successfully settled with a durable transcript result. */
-				readonly status: "done";
-				/** User or passive-write transcript entry created when this input was placed. */
-				readonly entry: Id;
-				/** Assistant answer entry; absent for a completed passive write. */
-				readonly answer?: Id;
-				readonly reason?: never;
-				readonly detail?: never;
-		  }
-		| {
-				/** Terminal input that can no longer receive an answer. */
-				readonly status: "unanswered";
-				/** Present when the input was placed before becoming unanswered. */
-				readonly entry?: Id;
-				readonly answer?: never;
-				/** Stable machine-readable explanation such as `"aborted"` or `"stale"`. */
-				readonly reason: string;
-				/** Optional structured diagnostic data. */
-				readonly detail?: JsonValue;
-		  }
-	);
+/** Durable lifecycle of one admitted user input or passive entry write. */
+export type SubmissionRecord =
+	| (SubmissionRecordBase & {
+			readonly type: "input";
+	  } & (
+				| {
+						/** Admitted but not yet represented in the transcript. */
+						readonly status: "queued";
+						readonly entry?: never;
+						readonly answer?: never;
+						readonly reason?: never;
+						readonly detail?: never;
+				  }
+				| {
+						/** Added to the transcript and owned by an active turn. */
+						readonly status: "placed";
+						readonly entry: Id;
+						readonly answer?: never;
+						readonly reason?: never;
+						readonly detail?: never;
+				  }
+				| {
+						/** Successfully answered user input. */
+						readonly status: "done";
+						readonly entry: Id;
+						readonly answer: Id;
+						readonly reason?: never;
+						readonly detail?: never;
+				  }
+				| {
+						/** Terminal input that can no longer receive an answer. */
+						readonly status: "unanswered";
+						readonly entry?: Id;
+						readonly answer?: never;
+						readonly reason: string;
+						readonly detail?: JsonValue;
+				  }
+			))
+	| (SubmissionRecordBase & {
+			readonly type: "write";
+	  } & (
+				| {
+						/** Admitted but not yet appended to the transcript. */
+						readonly status: "queued";
+						readonly entry?: never;
+						readonly answer?: never;
+						readonly reason?: never;
+						readonly detail?: never;
+				  }
+				| {
+						/** Successfully appended passive entry. */
+						readonly status: "done";
+						readonly entry: Id;
+						readonly answer?: never;
+						readonly reason?: never;
+						readonly detail?: never;
+				  }
+				| {
+						/** Terminal passive write that could not be placed. */
+						readonly status: "unanswered";
+						readonly entry?: never;
+						readonly answer?: never;
+						readonly reason: string;
+						readonly detail?: JsonValue;
+				  }
+			));
+
+/** Submission fields supplied before the Session assigns an ID. */
+export type SubmissionCreate = SubmissionRecord extends infer Record
+	? Record extends SubmissionRecord
+		? Omit<Record, "id">
+		: never
+	: never;
 
 /** Durable reason and optional result recorded when a task becomes terminal. */
 export type TaskOutcome<R> =
@@ -219,7 +254,7 @@ export type TaskRecord<I, S, R> = TaskRecordBase<I> &
 export type DocumentRecord = {
 	/** Unique incarnation ID; never reused when the same logical document is recreated. */
 	readonly id: Id;
-	/** Registered document kind. */
+	/** Stable document definition kind. */
 	readonly kind: string;
 	/** Family member key; absent for singleton documents. */
 	readonly key?: string;
@@ -288,19 +323,69 @@ export type TaskQuery = {
 	readonly background?: boolean;
 };
 
-/** One table mutation in an atomic storage commit; task and input writes replace whole records. */
+/** Current state or one historical commit sequence used for document membership and content reads. */
+export type DocumentPoint = Seq | "current";
+
+/** Exact logical identity of a singleton or one keyed family member. */
+export type DocumentAddress = {
+	readonly kind: string;
+	readonly scope: DocumentRecord["scope"];
+	/** Absent selects the singleton; present selects one family member. */
+	readonly key?: string;
+};
+
+/** Ordered scan of document incarnations alive in one exact scope at one point. */
+export type DocumentQuery = {
+	readonly scope: DocumentRecord["scope"];
+	readonly at: DocumentPoint;
+	readonly kind?: string;
+};
+
+/** Complete checkpoint or Chord operation batch selected by the owning Session. */
+export type DocumentContent =
+	| {
+			readonly version: number;
+			readonly kind: "base";
+			readonly value: JsonObject;
+	  }
+	| {
+			readonly version: number;
+			readonly kind: "delta";
+			readonly ops: readonly Op[];
+	  };
+
+/** Detached materialized value and stored definition version at a selected point. */
+export type StoredDocument = {
+	readonly record: DocumentRecord;
+	readonly version: number;
+	readonly value: JsonObject;
+};
+
+/** One record or document mutation in an atomic storage commit. */
 export type StorageWrite =
 	| { readonly type: "conversation"; readonly value: ConversationRecord }
 	| { readonly type: "entry"; readonly value: EntryRecord }
 	| { readonly type: "task"; readonly value: TaskRecord<JsonValue, JsonValue, JsonValue> }
-	| { readonly type: "input"; readonly value: Input };
+	| { readonly type: "submission"; readonly value: SubmissionRecord }
+	| {
+			readonly type: "document.create";
+			readonly record: DocumentCreate;
+			readonly content: Extract<DocumentContent, { readonly kind: "base" }>;
+	  }
+	| {
+			readonly type: "document.change";
+			readonly id: Id;
+			readonly content: DocumentContent;
+	  }
+	| { readonly type: "document.retire"; readonly id: Id };
 
 /**
  * Atomic persistence boundary for Session records.
  *
  * Storage trusts the owning Session to supply semantically valid records, references,
  * ancestry, and transitions. Implementations enforce atomicity, global ID ownership,
- * immutable conversation/entry creation, and detached values; Session serializes commits.
+ * immutable conversation/entry creation, document record consistency, and detached values;
+ * Session serializes commits.
  */
 export interface Storage {
 	/** Atomically persist one batch and return the sequence assigned to that commit. */
@@ -351,11 +436,25 @@ export interface Storage {
 		context: Context,
 	): Promise<Page<TaskRecord<JsonValue, JsonValue, JsonValue>, Cursor>>;
 
-	/** Look up the latest complete record for one admitted input. */
-	input(id: Id, context: Context): Promise<Input | undefined>;
+	/** Look up the latest complete record for one admitted submission. */
+	submission(id: Id, context: Context): Promise<SubmissionRecord | undefined>;
 
-	/** Find an input by its conversation-scoped host deduplication key. */
-	inputByRequest(conversationId: Id, requestId: string, context: Context): Promise<Input | undefined>;
+	/** Find a submission by its conversation-scoped host deduplication key. */
+	submissionByRequest(conversationId: Id, requestId: string, context: Context): Promise<SubmissionRecord | undefined>;
+
+	/** Resolve the incarnation occupying one exact logical address at the selected point. */
+	findDocument(address: DocumentAddress, at: DocumentPoint, context: Context): Promise<DocumentRecord | undefined>;
+
+	/** Materialize one incarnation at the selected point without scanning unrelated documents. */
+	document(id: Id, at: DocumentPoint, context: Context): Promise<StoredDocument | undefined>;
+
+	/** Scan incarnations alive in one exact scope at the selected point. */
+	scanDocuments(
+		query: DocumentQuery,
+		cursor: Cursor | undefined,
+		limit: number,
+		context: Context,
+	): Promise<Page<DocumentRecord, Cursor>>;
 
 	/** Release backend resources; all later operations must reject. */
 	close(context: Context): Promise<void>;

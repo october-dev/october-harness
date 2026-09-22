@@ -11,13 +11,13 @@ facades, membranes, document routing, view projection, events, or clone chains.
 
 - Obsolete `pico` and `pico4` prototypes were removed.
 - `pico3` remains.
-- No Pico5 implementation exists.
+- Packages 1 and 2 are implemented in `packages/durable`; later Pico5 runtime packages remain.
 
 ## 1. Records, cursors, and memory tables
 
 Implement IDs, sequences, reserved root conversation ID `1`,
-`ConversationRecord`, `EntryRecord`, tagged inputs, live/terminal `TaskRecord`
-values, document lifecycle records, storage writes, backend-opaque JSON cursors, and
+`ConversationRecord`, `EntryRecord`, strict input/write `SubmissionRecord`
+values, live/terminal `TaskRecord` values, document records, storage writes, backend-opaque JSON cursors, and
 detached `MemoryStorage` tables.
 Reserve `Conversation` for the public conversation object, `Entry` for the typed
 entry definition, and `Task` for the typed executable definition returned by
@@ -26,14 +26,16 @@ entry definition, and `Task` for the typed executable definition returned by
 Test reserved root identity and immutable creation, mixed atomic commits,
 rollback, detached reads/writes, cursor boundaries,
 fork-aware entry scans through deep ancestor caps, head lookup,
-entry-to-commit lookup, and full task replacement.
+entry-to-commit lookup, full task replacement, and submission replacement/
+request-ID lookup.
 
 ## 2. Memory document records
 
 Add selected document base/delta writes, retirement, reincarnation,
 current/as-of membership, exact logical-address lookup, scoped scans, and
-base-plus-tail reconstruction. Storage receives no definition callbacks or
-unused candidate values.
+materialized point-in-time reads. Storage keeps base/delta revisions private and
+returns a detached value plus its stored definition version. It applies Chord
+`Op[]` directly and receives no definition callbacks or unused candidate values.
 
 Test Session-, conversation-, and task-scoped documents, half-open lifetimes,
 create-plus-retire, retired historical membership, family queries, current-only
@@ -70,28 +72,39 @@ never reclaimed and default no-fsync behavior matches the specification.
 
 ## 6. Tracker transaction core
 
-Keep one tracker per loaded document. Add transaction begin, callback rollback
-from the unchanged baseline, flush, fatal post-flush failure, committed baseline
-adoption, and eviction. After storage succeeds, materialize one immutable
-published value per changed document with `applyImmutable(previous, ops)`,
-separate from mutable tracker and borrowed storage candidates.
+**Prerequisite:** Chord Delta exposes the normative `beginChange`/`prepare`/
+`abort`/`adopt` tracker contract, including revocable async-lifetime drafts,
+frozen operation batches, and deep no-op normalization.
 
-Do not add membranes, transaction proxy graphs, capability facades, or defensive
-full-document clones. Test callback failure, no-op transactions, storage failure
-poisoning, immutable prior published values, replacement-payload ownership, and
-unload/reload.
+Keep one Chord Delta tracker per loaded document. On first `tx.doc()` access,
+call `tracker.beginChange()` and memoize its revocable copy-on-write draft by
+logical address before awaiting acquisition. Repeated access returns that same
+draft for the whole possibly async Session callback. On callback failure, abort
+all changes. A callback that settles with an unresolved acquisition rejects;
+seal `Tx`, drain and abort the acquisition, and observe its failure. Otherwise,
+prepare every open change, then evaluate checkpoints and commit Storage. Only after Storage succeeds,
+adopt every prepared tracker change and publish its candidate/ops directly.
+
+Preparation and checkpoint errors roll back normally; an uncertain Storage
+failure poisons the Session. Test callback failure, escaped-draft revocation,
+concurrent duplicate acquisition, callback failure/success with a pending
+acquisition, late acquisition after sealing, family first-seed wins, no-op normalization, multi-document preparation failure, storage
+failure poisoning, immutable prior and candidate values, frozen operation
+metadata, assignment copying, and unload/reload.
 
 ## 7. Document definitions and access
 
-Implement `defineDoc`, `defineDocFamily`, document kind/key validation, the three
-direct scopes, and get-or-create `tx.doc`, `snapshot`, and `documentSource`
-acquisition. Definitions are explicit typed arguments, not registered declarations;
-conflicting definitions that claim one persisted kind are unsupported caller
-misuse.
+Implement scope-preserving singleton/family tokens and overloads for Session,
+conversation, and task owners. Only `tx.doc()` is get-or-create: singleton tokens
+supply `initial()`, while family calls always supply key and seed and use only the
+first seed when absent. Snapshot, source, and watch lookup never create and return
+`undefined` when absent. Definitions are explicit typed arguments, not registered
+declarations; conflicting definitions claiming one persisted kind are unsupported
+caller misuse.
 
 Test concurrent initialization once, initial bases, detached snapshots, family
-initializer use only on first creation, scope/target mismatch, terminal-task
-rejection, task-derived conversation identity, retirement, and
+initializer use only on first creation, scope/token mismatch, non-creating reads,
+terminal-task rejection, task-derived conversation identity, retirement, and
 reincarnation-bound sources. Include create-task-then-document,
 document-after-terminal rejection, and create-document-then-terminal settlement
 in one transaction; internal candidate validation must not trigger
@@ -99,16 +112,18 @@ in one transaction; internal candidate validation must not trigger
 
 ## 8. Checkpoints and migration
 
-After tracker flush, Session evaluates `checkpointWhen(value, ops)` exactly once
+After tracker preparation, Session evaluates `checkpointWhen(value, ops)` exactly once
 for ordinary mutations and sends Storage only the selected base or delta.
 Implement required creation/version bases and lazy all-older-version migration
 on typed access; Harness open does not scan ordinary documents.
 
-Test latest migration persistence, `tx.doc()` migration rollback and coalescing
-with later edits, rewindable migration on current/historical read, first
-post-migration mutation base, newer-version rejection, unaccessed and unavailable-definition
-preservation, predicate failure poisoning, and checkpoint starvation without
-backend heuristics.
+Test read-only in-memory migration, `tx.doc()` migration rollback and coalescing
+with later edits, rewindable migration on current/historical read, the first
+successful `tx.doc()` version base even without a JSON change, newer-version
+rejection, migrated source/watch hydration without a write, subsequent operations
+against that migrated baseline, stored-version fork copying, unaccessed and unavailable-definition
+preservation, predicate failure rollback before Storage admission, and checkpoint
+starvation without backend heuristics.
 
 ## 9. Conversation document forks
 
@@ -121,34 +136,47 @@ of task- and Session-scoped documents.
 
 ## 10. Chord structural array operations
 
-Make ordinary positional mutations encode scattered removals without carrying
-retained payloads. Callers must not write operations manually.
+**Chord-owned prerequisite/integration:** the canonical Delta revision differ
+must be fixed in `packages/chord`; Pico only verifies and consumes it.
+
+Improve the canonical Chord Delta revision differ so ordinary positional
+mutations encode scattered removals without carrying retained payloads. Callers
+must not write operations manually.
 
 Test front/tail/middle/scattered/all/no removal, retained 256 KiB and 1 MiB
 payloads, append plus removal, later nested/index writes, exact replay, and
-unchanged previous immutable snapshots. Internal flushes must remain one commit.
+unchanged previous immutable snapshots. One prepared document change remains one
+Session commit; no intermediate candidate is adopted or published.
 
 ## 11. Chord document source
 
-Add the thin opaque-source adapter to `ReplicatedState`. It must use committed
-value/ops directly, with no tracker or re-diff.
+**Prerequisite:** Chord exposes the normative atomic `ReplicatedStateSource`
+attachment and `replicatedState(source)` adoption contract.
 
-Test contiguous Chord adapter delivery sequences, atomic hydrate/subscribe,
-attachment races, retirement ending one incarnation, recreation requiring
+Make Chord replicated state adopt Pico's opaque committed document source through
+a supported race-free source contract. It must atomically attach to the source's
+current immutable value and later committed operations without another tracker
+or re-diff. Pico remains the sole document mutator.
+
+Test contiguous Chord delivery sequences, atomic hydrate/subscribe, a snapshot
+that already covers a queued publication without duplicate application,
+retirement between source acquisition and attachment hydrating `null` rather than
+a replacement, retirement ending one incarnation, recreation requiring
 reacquisition, and listener isolation. Reuse the transaction core's immutable
 published value; do not materialize another document copy.
 
 ## 12. Document watches
 
-Implement get-or-create `watchDoc` as an incarnation-bound `WatchHandle` that
-atomically captures one fixed immutable value and registers for later committed
+Implement non-creating `watchDoc` as an incarnation-bound `WatchHandle` that
+returns `undefined` when absent and atomically captures one fixed immutable value
+while registering for later committed
 operation batches. `start()` installs one serialized asynchronous listener.
 Bound the pending queue only by the total number of operations in its undelivered
 batches. Never estimate serialized bytes or call `JSON.stringify()` for delta
 queue accounting. When the operation-count limit is exceeded, compact the entire
 undelivered suffix into one root replacement using the matching latest immutable
-published value from package 6; never retain mutable tracker or borrowed storage
-candidates.
+published value from package 6; never retain a transaction draft or borrowed
+storage candidate.
 
 Test updates between acquisition/return/start; asynchronous consumer
 initialization; no callback overlap; listener-initiated commits; compaction
@@ -214,15 +242,20 @@ retirement of task-scoped documents, default non-inheritance, inheritance from
 the current committed tail, an empty source conversation, document fork
 policies, and explicit model/section seed overrides.
 
-## 18. Inputs and positional inbox
+## 18. Submissions and positional inbox
 
-Define the initial inbox and turn-control documents, then implement request-ID
-deduplication, awaitable input handles, busy admission, withdrawal, queue modes,
-and `postTools`/`final` boundaries. Use a fake successor task.
+Define the initial inbox and turn-control documents, then implement strict input/
+write `SubmissionRecord` variants, `Conversation.submit()`, request-ID
+deduplication, awaitable/reacquirable submissions, busy admission, withdrawal, queue modes,
+and `postTools`/`final` boundaries. Successful input settlement requires an
+answer; write settlement means entry placement and never starts a turn. Use a fake successor
+task.
 
-Table-test every input transition, interleaved steer/follow-up/write selection,
-self-head cuts, stale targets, successor triggers, reopen waits, compact
-large-payload removals, and orphan/fault cleanup of active turn control.
+Table-test every submission transition, cross-type request-ID conflicts,
+interleaved steer/follow-up/write selection, self-head cuts, stale targets,
+successor triggers, reopen waits, writes pending without a later boundary,
+compact large-payload removals, abort results for queued/placed/terminal
+submissions, and orphan/fault cleanup of active turn control.
 
 ## 19. Remaining built-in documents and view
 
@@ -280,7 +313,7 @@ cancellation through pi-ai's exported `Models` interface. Do not add a Pico
 model adapter. The faux test double implements that same interface.
 
 Test every phase before and after reopen, aborted partial conversion, overflow
-through a fake collapse kind, input settlement, and no visible-undurable update.
+through a fake collapse kind, input-submission settlement, and no visible-undurable update.
 Replace the fake tool successor and rerun the package 21 integration tests.
 
 ## 23. Collapse task
@@ -294,18 +327,19 @@ overflow integration test.
 
 ## 24. Harness integration
 
-Implement the exact Pico3-shaped public surface in specification §2.2:
+Implement the exact public surface in specification §2.2:
 `Harness.open/resume/suspend/close`, lifecycle gates, root/create/lookup
-`Conversation` objects, ordered `write` handles, send/input handles,
+`Conversation` objects, typed input/write `submit()` and `Submission` objects,
 conversation-bound commits and history pagination, fork/collapse/reset/abort/idle,
-typed task wait/abort, generic document access, task/tool/section registries, and structural conversation watches. Do not restore Pico3's
+typed task wait/abort, generic document access, task/tool/section registries, and
+structural conversation watches. Do not restore Pico3's
 namespace router, fixed document accessors, semantic view events, or manual Chord
 view bridge.
 
 Expose service withdrawal/client detach and product wiring. Implement the §9.4
 agent-mode notification adapter directly from uncoalesced committed publication,
 without another tracker or persistence authority. Migrate TUI hydration to the
-structural conversation watch, make print await its own `InputHandle`, and expose
+structural conversation watch, make print await its own input `Submission`, and expose
 JSON/RPC correlated commands plus ordered committed notifications. Test that
 watch reset compaction cannot erase a subscribed notification lifecycle, late
 clients use structural hydration rather than event replay, progress notifications
@@ -315,15 +349,15 @@ backpressure/disconnect policy stays in the mode adapter.
 Implement the v1 host-extension reload path as stop admission, close/join, dispose,
 rebuild with new document tokens and registered task/tool/section definitions, reopen/migrate live tasks, and resume. Ordinary documents migrate
 on later typed access. Test that closing seals commit and
-get-or-create admission, lets storage settlement for already-flushed admitted
+mutation admission, lets storage settlement for already-prepared admitted
 commits finish despite caller cancellation, stops watches, joins in-flight watch
 callbacks and task/tool/hook invocations outside the Session line, writes no abort
 or terminal outcome, starts no fresh abort invocation, and does not run old and
 new generations concurrently. Include cancellation during watch acquisition and
 a non-cooperative watch callback in shutdown/extension-reload quiescence tests.
 
-Test stable persisted root identity; atomic conversation/config/section/input
-creation; default `"off"` thinking; every configuration getter/setter; explicit
+Test stable persisted root identity; atomic conversation/config/section/input-
+submission creation; default `"off"` thinking; every configuration getter/setter; explicit
 active-tool seed duplicate/unregistered rejection; default active registry
 snapshot; as-of fork inheritance including unavailable historical names; durable
 `missing_active_tool` settlement; fork seed overrides; concrete-entry forks;
@@ -334,8 +368,9 @@ quiescence with eligible work; listener initial/future delivery and isolation;
 and runtime registration between open and resume without resurrection of a task
 settled during open.
 
-Compile-test every §2.2 signature and the usage sequences in the normative
-specification and Chord guide. The erased registry test must include a concrete task with narrowed
+Compile-test every §2.2 and §3 owner/key/seed overload plus the usage sequences
+in the normative specification and Chord guide. Verify that a Chord root
+replacement delta remains distinct from a Session-selected storage checkpoint. The erased registry test must include a concrete task with narrowed
 input, multiple checkpoint phases, and custom hooks. Run all package-specific
 tests and the repository check. Verify a local
 coding-agent turn and a reopened interrupted turn, then stop for final review.

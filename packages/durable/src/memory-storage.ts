@@ -1,22 +1,46 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
+import { applyImmutable } from "@earendil-works/chord/delta";
 import type {
 	ConversationRecord,
 	Cursor,
+	DocumentAddress,
+	DocumentContent,
+	DocumentCreate,
+	DocumentPoint,
+	DocumentQuery,
+	DocumentRecord,
 	EntryQuery,
 	EntryRecord,
 	Id,
-	Input,
+	JsonObject,
 	Page,
 	Seq,
 	Storage,
 	StorageWrite,
+	StoredDocument,
+	SubmissionRecord,
 	TaskQuery,
 	TaskRecord,
 } from "./types.ts";
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 type TaskStatus = StoredTask["state"]["status"];
-type TableName = "conversation" | "entry" | "task" | "input";
+type TableName = "conversation" | "entry" | "task" | "submission" | "document";
+type DocumentRevision = DocumentContent & { readonly seq: Seq };
+type StoredDocumentState = {
+	record: DocumentRecord;
+	revisions: DocumentRevision[];
+};
+type DocumentAction = {
+	create?: DocumentCreate;
+	content?: DocumentContent;
+	retire: boolean;
+};
+
+type DocumentAddressIndex = {
+	ids: Id[];
+	currentId?: Id;
+};
 
 type State = {
 	conversations: Map<Id, ConversationRecord>;
@@ -28,8 +52,11 @@ type State = {
 	tasks: Map<Id, StoredTask>;
 	taskIds: Id[];
 	taskIdsByStatus: Record<TaskStatus, Id[]>;
-	inputs: Map<Id, Input>;
-	inputIdsByRequest: Map<Id, Map<string, Id>>;
+	submissions: Map<Id, SubmissionRecord>;
+	submissionIdsByRequest: Map<Id, Map<string, Id>>;
+	documents: Map<Id, StoredDocumentState>;
+	documentAddresses: Map<string, DocumentAddressIndex>;
+	documentIdsByScope: Map<string, Id[]>;
 };
 
 const clone = <T>(value: T): T => {
@@ -89,11 +116,41 @@ const removeSorted = (ids: Id[], id: Id): void => {
 	if (ids[index] === id) ids.splice(index, 1);
 };
 
+const scopeKey = (scope: DocumentRecord["scope"]): string => {
+	switch (scope.kind) {
+		case "session":
+			return JSON.stringify(["session"]);
+		case "conversation":
+			return JSON.stringify(["conversation", scope.conversationId]);
+		case "task":
+			return JSON.stringify(["task", scope.taskId]);
+	}
+};
+
+const addressKey = (address: DocumentAddress): string =>
+	JSON.stringify([
+		address.kind,
+		scopeKey(address.scope),
+		address.key === undefined ? ["singleton"] : ["family", address.key],
+	]);
+
+const recordAddressKey = (record: DocumentRecord | DocumentCreate): string =>
+	addressKey({ kind: record.kind, scope: record.scope, key: record.key });
+
+const isAliveAt = (record: DocumentRecord, at: DocumentPoint): boolean => {
+	if (at === "current") return record.retiredAt === undefined;
+	return record.createdAt <= at && (record.retiredAt === undefined || at < record.retiredAt);
+};
+
+const isCurrentOnly = (record: DocumentRecord): boolean =>
+	record.scope.kind !== "conversation" || record.history === "latest";
+
 const tableContaining = (state: State, id: Id): TableName | undefined => {
 	if (state.conversations.has(id)) return "conversation";
 	if (state.entries.has(id)) return "entry";
 	if (state.tasks.has(id)) return "task";
-	if (state.inputs.has(id)) return "input";
+	if (state.submissions.has(id)) return "submission";
+	if (state.documents.has(id)) return "document";
 	return undefined;
 };
 
@@ -120,8 +177,11 @@ export class MemoryStorage implements Storage {
 		tasks: new Map(),
 		taskIds: [],
 		taskIdsByStatus: { pending: [], running: [], terminal: [] },
-		inputs: new Map(),
-		inputIdsByRequest: new Map(),
+		submissions: new Map(),
+		submissionIdsByRequest: new Map(),
+		documents: new Map(),
+		documentAddresses: new Map(),
+		documentIdsByScope: new Map(),
 	};
 	private nextId = 2;
 	private nextSeq = 1;
@@ -130,14 +190,17 @@ export class MemoryStorage implements Storage {
 	async commit(writes: readonly StorageWrite[], _context: Context): Promise<Seq> {
 		this.assertOpen();
 		const prepared = writes.map((write) => clone(write));
-		this.checkImmutableIds(prepared);
 		const seq = this.nextSeq;
+		this.checkGlobalIds(prepared);
+		const documentActions = this.prepareDocumentActions(prepared);
+		this.checkDocumentActions(documentActions);
 
 		for (const write of prepared) {
 			switch (write.type) {
 				case "conversation":
 					this.state.conversations.set(write.value.id, write.value);
 					insertSorted(this.state.conversationIds, write.value.id);
+					this.nextId = Math.max(this.nextId, write.value.id + 1);
 					break;
 				case "entry": {
 					this.state.entries.set(write.value.id, write.value);
@@ -156,6 +219,7 @@ export class MemoryStorage implements Storage {
 						}
 						insertSorted(headIds, write.value.id);
 					}
+					this.nextId = Math.max(this.nextId, write.value.id + 1);
 					break;
 				}
 				case "task": {
@@ -168,31 +232,38 @@ export class MemoryStorage implements Storage {
 						insertSorted(this.state.taskIdsByStatus[write.value.state.status], write.value.id);
 					}
 					this.state.tasks.set(write.value.id, write.value);
+					this.nextId = Math.max(this.nextId, write.value.id + 1);
 					break;
 				}
-				case "input": {
-					const previous = this.state.inputs.get(write.value.id);
+				case "submission": {
+					const previous = this.state.submissions.get(write.value.id);
 					if (previous?.requestId !== undefined) {
-						const previousRequests = this.state.inputIdsByRequest.get(previous.conversationId);
+						const previousRequests = this.state.submissionIdsByRequest.get(previous.conversationId);
 						if (previousRequests?.get(previous.requestId) === write.value.id) {
 							previousRequests.delete(previous.requestId);
-							if (previousRequests.size === 0) this.state.inputIdsByRequest.delete(previous.conversationId);
+							if (previousRequests.size === 0) this.state.submissionIdsByRequest.delete(previous.conversationId);
 						}
 					}
-					this.state.inputs.set(write.value.id, write.value);
+					this.state.submissions.set(write.value.id, write.value);
 					if (write.value.requestId !== undefined) {
-						let requests = this.state.inputIdsByRequest.get(write.value.conversationId);
+						let requests = this.state.submissionIdsByRequest.get(write.value.conversationId);
 						if (requests === undefined) {
 							requests = new Map();
-							this.state.inputIdsByRequest.set(write.value.conversationId, requests);
+							this.state.submissionIdsByRequest.set(write.value.conversationId, requests);
 						}
 						requests.set(write.value.requestId, write.value.id);
 					}
+					this.nextId = Math.max(this.nextId, write.value.id + 1);
 					break;
 				}
+				case "document.create":
+				case "document.change":
+				case "document.retire":
+					break;
 			}
-			this.nextId = Math.max(this.nextId, write.value.id + 1);
 		}
+
+		this.applyDocumentActions(documentActions, seq);
 		this.nextSeq++;
 		return seq;
 	}
@@ -304,17 +375,81 @@ export class MemoryStorage implements Storage {
 		return page(values, limit);
 	}
 
-	async input(id: Id, _context: Context): Promise<Input | undefined> {
+	async submission(id: Id, _context: Context): Promise<SubmissionRecord | undefined> {
 		this.assertOpen();
-		const value = this.state.inputs.get(id);
+		const value = this.state.submissions.get(id);
 		return value === undefined ? undefined : clone(value);
 	}
 
-	async inputByRequest(conversationId: Id, requestId: string, _context: Context): Promise<Input | undefined> {
+	async submissionByRequest(
+		conversationId: Id,
+		requestId: string,
+		_context: Context,
+	): Promise<SubmissionRecord | undefined> {
 		this.assertOpen();
-		const id = this.state.inputIdsByRequest.get(conversationId)?.get(requestId);
+		const id = this.state.submissionIdsByRequest.get(conversationId)?.get(requestId);
 		if (id === undefined) return undefined;
-		return clone(this.state.inputs.get(id)!);
+		return clone(this.state.submissions.get(id)!);
+	}
+
+	async findDocument(
+		address: DocumentAddress,
+		at: DocumentPoint,
+		_context: Context,
+	): Promise<DocumentRecord | undefined> {
+		this.assertOpen();
+		const index = this.state.documentAddresses.get(addressKey(address));
+		if (at === "current") {
+			return index?.currentId === undefined ? undefined : clone(this.state.documents.get(index.currentId)!.record);
+		}
+		for (const id of index?.ids ?? []) {
+			const record = this.state.documents.get(id)!.record;
+			if (isAliveAt(record, at)) return clone(record);
+		}
+		return undefined;
+	}
+
+	async document(id: Id, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
+		this.assertOpen();
+		const stored = this.state.documents.get(id);
+		if (stored === undefined) return undefined;
+		if (at !== "current" && isCurrentOnly(stored.record)) {
+			throw new Error(`Document ${id} does not retain historical content`);
+		}
+		if (!isAliveAt(stored.record, at)) return undefined;
+		const revisions = at === "current" ? stored.revisions : stored.revisions.filter((revision) => revision.seq <= at);
+		let baseIndex = revisions.length - 1;
+		while (baseIndex >= 0 && revisions[baseIndex]!.kind !== "base") baseIndex--;
+		const base = revisions[baseIndex];
+		if (base?.kind !== "base") throw new Error(`Document ${id} is missing a required base`);
+		let value = base.value;
+		for (let index = baseIndex + 1; index < revisions.length; index++) {
+			const revision = revisions[index]!;
+			if (revision.kind !== "delta" || revision.version !== base.version) {
+				throw new Error(`Document ${id} crosses a stored version boundary without a base`);
+			}
+			value = applyImmutable(value, revision.ops) as JsonObject;
+		}
+		return { record: clone(stored.record), version: base.version, value: clone(value) };
+	}
+
+	async scanDocuments(
+		query: DocumentQuery,
+		cursor: Cursor | undefined,
+		limit: number,
+		_context: Context,
+	): Promise<Page<DocumentRecord, Cursor>> {
+		this.assertOpen();
+		const ids = this.state.documentIdsByScope.get(scopeKey(query.scope)) ?? [];
+		const after = cursorId(cursor);
+		const start = after === undefined ? 0 : upperBound(ids, after);
+		const values: DocumentRecord[] = [];
+		for (let index = start; index < ids.length && values.length <= limit; index++) {
+			const record = this.state.documents.get(ids[index]!)!.record;
+			if (query.kind !== undefined && record.kind !== query.kind) continue;
+			if (isAliveAt(record, query.at)) values.push(record);
+		}
+		return page(values, limit);
 	}
 
 	async close(_context: Context): Promise<void> {
@@ -346,14 +481,15 @@ export class MemoryStorage implements Storage {
 		}
 	}
 
-	private checkImmutableIds(writes: readonly StorageWrite[]): void {
+	private checkGlobalIds(writes: readonly StorageWrite[]): void {
 		const claimed = new Map<Id, TableName>();
 		for (const write of writes) {
-			const table = write.type;
-			const id = write.value.id;
+			if (write.type === "document.change" || write.type === "document.retire") continue;
+			const table: TableName = write.type === "document.create" ? "document" : write.type;
+			const id = write.type === "document.create" ? write.record.id : write.value.id;
 			const existing = tableContaining(this.state, id);
 			const earlier = claimed.get(id);
-			if (table === "conversation" || table === "entry") {
+			if (table === "conversation" || table === "entry" || table === "document") {
 				if (existing !== undefined) throw new Error(`ID ${id} already belongs to ${existing}`);
 				if (earlier !== undefined) throw new Error(`ID ${id} is written more than once`);
 			} else {
@@ -363,6 +499,114 @@ export class MemoryStorage implements Storage {
 				if (earlier !== undefined && earlier !== table) throw new Error(`ID ${id} is written as two record types`);
 			}
 			claimed.set(id, table);
+		}
+	}
+
+	private prepareDocumentActions(writes: readonly StorageWrite[]): Map<Id, DocumentAction> {
+		const actions = new Map<Id, DocumentAction>();
+		for (const write of writes) {
+			if (write.type !== "document.create" && write.type !== "document.change" && write.type !== "document.retire") {
+				continue;
+			}
+			const id = write.type === "document.create" ? write.record.id : write.id;
+			let action = actions.get(id);
+			if (action === undefined) {
+				action = { retire: false };
+				actions.set(id, action);
+			}
+			switch (write.type) {
+				case "document.create":
+					if (action.create !== undefined || action.content !== undefined) {
+						throw new Error(`Document ${id} has more than one content command`);
+					}
+					action.create = write.record;
+					action.content = write.content;
+					break;
+				case "document.change":
+					if (action.content !== undefined) throw new Error(`Document ${id} has more than one content command`);
+					action.content = write.content;
+					break;
+				case "document.retire":
+					if (action.retire) throw new Error(`Document ${id} is retired more than once`);
+					action.retire = true;
+					break;
+			}
+		}
+		return actions;
+	}
+
+	private checkDocumentActions(actions: ReadonlyMap<Id, DocumentAction>): void {
+		const liveCounts = new Map<string, number>();
+		for (const [id, action] of actions) {
+			const existing = this.state.documents.get(id);
+			if (action.create === undefined && existing === undefined) throw new Error(`Unknown document: ${id}`);
+			if (action.create !== undefined && existing !== undefined) throw new Error(`Document ${id} already exists`);
+			if (existing?.record.retiredAt !== undefined) throw new Error(`Document ${id} is retired`);
+			if (action.create !== undefined && action.content?.kind !== "base") {
+				throw new Error(`Document ${id} creation requires a base`);
+			}
+			const previous = existing?.revisions.at(-1);
+			if (action.content?.kind === "delta") {
+				if (previous === undefined) throw new Error(`Document ${id} delta has no base`);
+				if (previous.version !== action.content.version) {
+					throw new Error(`Document ${id} version transition requires a base`);
+				}
+			}
+
+			const key = action.create === undefined ? recordAddressKey(existing!.record) : recordAddressKey(action.create);
+			const currentId = this.state.documentAddresses.get(key)?.currentId;
+			let live = liveCounts.get(key);
+			if (live === undefined) live = currentId === undefined ? 0 : 1;
+			if (action.retire && currentId === id) live--;
+			if (action.create !== undefined && !action.retire) live++;
+			liveCounts.set(key, live);
+		}
+
+		for (const live of liveCounts.values()) {
+			if (live > 1) throw new Error(`Document address already has a current incarnation`);
+		}
+	}
+
+	private applyDocumentActions(actions: ReadonlyMap<Id, DocumentAction>, seq: Seq): void {
+		for (const [id, action] of actions) {
+			let stored = this.state.documents.get(id);
+			if (action.create !== undefined) {
+				const record: DocumentRecord = {
+					...action.create,
+					createdAt: seq,
+					...(action.retire ? { retiredAt: seq } : {}),
+				};
+				stored = { record, revisions: [{ ...action.content!, seq }] };
+				this.state.documents.set(id, stored);
+
+				const key = recordAddressKey(record);
+				let address = this.state.documentAddresses.get(key);
+				if (address === undefined) {
+					address = { ids: [] };
+					this.state.documentAddresses.set(key, address);
+				}
+				insertSorted(address.ids, id);
+
+				let scopeIds = this.state.documentIdsByScope.get(scopeKey(record.scope));
+				if (scopeIds === undefined) {
+					scopeIds = [];
+					this.state.documentIdsByScope.set(scopeKey(record.scope), scopeIds);
+				}
+				insertSorted(scopeIds, id);
+				this.nextId = Math.max(this.nextId, id + 1);
+			} else if (action.content !== undefined) {
+				const revision = { ...action.content, seq } as DocumentRevision;
+				if (revision.kind === "base" && isCurrentOnly(stored!.record)) stored!.revisions = [revision];
+				else stored!.revisions.push(revision);
+			}
+
+			if (action.retire && action.create === undefined) stored!.record = { ...stored!.record, retiredAt: seq };
+			if (action.retire && isCurrentOnly(stored!.record)) stored!.revisions = [];
+			if (action.create !== undefined || action.retire) {
+				const address = this.state.documentAddresses.get(recordAddressKey(stored!.record))!;
+				if (action.retire && address.currentId === id) delete address.currentId;
+				if (action.create !== undefined && !action.retire) address.currentId = id;
+			}
 		}
 	}
 

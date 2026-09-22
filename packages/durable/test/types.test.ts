@@ -1,9 +1,12 @@
 import { expectTypeOf, it } from "vitest";
 import type {
 	ContextEdit,
+	DocumentContent,
 	DocumentCreate,
 	DocumentRecord,
-	Input,
+	StorageWrite,
+	SubmissionCreate,
+	SubmissionRecord,
 	TaskOutcome,
 	TaskRecord,
 	TaskState,
@@ -20,6 +23,28 @@ it("encodes discriminator-dependent fields", () => {
 		status: "terminal",
 		outcome: { status: "completed", result: { value: 1 } },
 	} satisfies TaskState<{ phase: string }, { value: number }>;
+	const completedInput = {
+		id: 1,
+		conversationId: 1,
+		type: "input",
+		status: "done",
+		entry: 2,
+		answer: 3,
+	} satisfies SubmissionRecord;
+	const completedWrite = {
+		id: 4,
+		conversationId: 1,
+		type: "write",
+		status: "done",
+		entry: 5,
+	} satisfies SubmissionRecord;
+	const queuedWriteCreate = {
+		conversationId: 1,
+		type: "write",
+		status: "queued",
+	} satisfies SubmissionCreate;
+	const baseContent = { kind: "base", version: 1, value: { count: 1 } } satisfies DocumentContent;
+	const deltaContent = { kind: "delta", version: 1, ops: [["s", ["count"], 2]] } satisfies DocumentContent;
 	const conversationDocument = {
 		id: 1,
 		kind: "test",
@@ -32,6 +57,11 @@ it("encodes discriminator-dependent fields", () => {
 	expectTypeOf(replace.action).toEqualTypeOf<"replace">();
 	expectTypeOf(pending.status).toEqualTypeOf<"pending">();
 	expectTypeOf(terminal.status).toEqualTypeOf<"terminal">();
+	expectTypeOf(completedInput.answer).toEqualTypeOf<number>();
+	expectTypeOf(completedWrite.type).toEqualTypeOf<"write">();
+	expectTypeOf(queuedWriteCreate.status).toEqualTypeOf<"queued">();
+	expectTypeOf(baseContent.kind).toEqualTypeOf<"base">();
+	expectTypeOf(deltaContent.kind).toEqualTypeOf<"delta">();
 	expectTypeOf(conversationDocument.fork).toEqualTypeOf<"asOf">();
 
 	const compileTimeFailures = () => {
@@ -111,14 +141,71 @@ it("encodes discriminator-dependent fields", () => {
 			// @ts-expect-error storage, not the create command, supplies createdAt
 			createdAt: 1,
 		};
+		// @ts-expect-error document bases cannot carry operation batches
+		const baseWithOps: DocumentContent = { kind: "base", version: 1, value: {}, ops: [] };
+		// @ts-expect-error document deltas cannot carry materialized values
+		const deltaWithValue: DocumentContent = { kind: "delta", version: 1, ops: [], value: {} };
+		const createWithDelta: StorageWrite = {
+			type: "document.create",
+			record: { id: 1, kind: "test", scope: { kind: "session" } },
+			// @ts-expect-error document creation always starts from a complete base
+			content: { kind: "delta", version: 1, ops: [] },
+		};
 		// @ts-expect-error completed outcomes cannot carry errors
 		const completedWithError: TaskOutcome<number> = {
 			status: "completed",
 			result: 1,
 			error: { message: "impossible" },
 		};
-		// @ts-expect-error queued inputs cannot reference transcript entries
-		const queuedWithEntry: Input = { id: 1, conversationId: 1, status: "queued", entry: 2 };
+		// @ts-expect-error queued submissions cannot reference transcript entries
+		const queuedWithEntry: SubmissionRecord = {
+			id: 1,
+			conversationId: 1,
+			type: "input",
+			status: "queued",
+			entry: 2,
+		};
+		// @ts-expect-error successful input submissions require an answer entry
+		const inputWithoutAnswer: SubmissionRecord = {
+			id: 2,
+			conversationId: 1,
+			type: "input",
+			status: "done",
+			entry: 3,
+		};
+		// @ts-expect-error passive write submissions never carry an answer
+		const writeWithAnswer: SubmissionRecord = {
+			id: 4,
+			conversationId: 1,
+			type: "write",
+			status: "done",
+			entry: 5,
+			answer: 6,
+		};
+		// @ts-expect-error passive writes have no placed intermediate state
+		const placedWrite: SubmissionRecord = {
+			id: 7,
+			conversationId: 1,
+			type: "write",
+			status: "placed",
+			entry: 8,
+		};
+		// @ts-expect-error failed passive writes cannot reference an entry
+		const unansweredWriteWithEntry: SubmissionRecord = {
+			id: 9,
+			conversationId: 1,
+			type: "write",
+			status: "unanswered",
+			reason: "failed",
+			entry: 10,
+		};
+		const submissionCreateWithId: SubmissionCreate = {
+			// @ts-expect-error Session, not the submission create value, assigns its ID
+			id: 11,
+			conversationId: 1,
+			type: "write",
+			status: "queued",
+		};
 		void [
 			missingReplacement,
 			omissionWithMessages,
@@ -131,8 +218,16 @@ it("encodes discriminator-dependent fields", () => {
 			taskCreateWithPolicy,
 			latestCreateWithAsOf,
 			createWithSequence,
+			baseWithOps,
+			deltaWithValue,
+			createWithDelta,
 			completedWithError,
 			queuedWithEntry,
+			inputWithoutAnswer,
+			writeWithAnswer,
+			placedWrite,
+			unansweredWriteWithEntry,
+			submissionCreateWithId,
 		];
 	};
 

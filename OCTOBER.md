@@ -515,6 +515,14 @@ discard October's commits.
 | 2026-09-03 | `e44d75c20a51142abc056c243b13c1d7bb4be687` | 0.84.4 |
 | 2026-09-05 | `da840b6216578c2a571d0374ac6a2091a83f9d91` | 0.85.1 |
 | 2026-09-22 | `95fbc04997eaee961eb673fa7923e9220609ebd5` | 0.87.0 |
+| 2026-09-22 (follow-up) | `d201760ffee16564aa8d9a759e0c85b70db33674` | 0.87.0 |
+
+2026-09-22 follow-up: merged the two additional upstream commits through `d201760ff`
+(`8158b0321` and the upstream merge commit). These add versioned document storage in
+`packages/durable`; October-specific runtime code is unchanged. Updated the repository
+and npm-package READMEs to launch with `october`, authenticate with `/login` inside the
+session, and document `october update` with the direct npm update alternative. Shell
+`october login` remains optional. No package version, release tag, or Desktop pin changed.
 
 2026-09-22: merged 198 upstream commits through `95fbc0499`. Inherited packages and
 runtime dependencies now track Pi 0.87.0, including structured system-prompt sections,

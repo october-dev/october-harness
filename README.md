@@ -77,10 +77,10 @@ October Harness requires Node.js 22.19 or newer.
 
 ```bash
 npm install -g --ignore-scripts @october-dev/october
-october login
-cd /path/to/your/project
 october
 ```
+
+Run `october` from your project's directory. If you need to sign in, enter `/login` inside October and choose **October account**, **Another provider account**, or **API key**. Existing credentials are reused; a separate shell login is not required.
 
 Ask for a quick orientation:
 
@@ -90,26 +90,33 @@ Summarize this repository, explain how to run its checks, and suggest the highes
 
 October can read, write, and edit files, run shell commands, inspect the repository, and retain the session so you can continue later.
 
-Already have another provider account? Start `october`, run `/login`, select the provider, then use `/model` to choose a model.
+Use `/model` inside October to choose or change your model.
 
 ## Update October Harness
 
-For a global npm installation, install the latest release and verify the version:
+From your shell, use the built-in updater for a supported global installation:
+
+```bash
+october update
+october --version
+```
+
+For a global npm installation, you can also install the latest published release directly:
 
 ```bash
 npm install -g --ignore-scripts @october-dev/october@latest
 october --version
 ```
 
-Restart running harness sessions to use the update. Your saved credentials, settings, and sessions are preserved. October Desktop manages its own harness version; this command updates only the standalone npm installation.
+Restart running harness sessions after updating. Your saved credentials, settings, and sessions are preserved. `october update` updates the harness only; use `october update --all` to update the harness and installed extensions together.
+
+October Desktop manages its own harness version. Updating the standalone CLI does not change a Desktop-pinned installation.
 
 ## Authentication, models, and providers
 
 ### October inference
 
-```bash
-october login
-```
+Start `october`, enter `/login`, and choose **October account**. October opens the browser for approval, then returns you to the terminal session. You can optionally sign in before launching the session with `october login` from your shell.
 
 Standalone login uses a device-code flow and stores a revocable credential under `~/.october/agent/`. Inside October Desktop, the app injects and refreshes the signed-in session, so no separate login is required.
 

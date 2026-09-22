@@ -12,8 +12,8 @@ This guide uses the contracts in the [Pico5 specification](pico-v5.md).
 - **Durable document:** JSON persisted as a complete base, Chord operations, and
   checkpoints. Its definition token declares schema, version, scope, and initialization;
   conversation scope also declares history and fork behavior.
-- **Transaction draft:** the mutable tracked object from `await tx.doc`, valid
-  only inside that commit callback, including all nested objects.
+- **Transaction draft:** the revocable copy-on-write object from `await tx.doc`,
+  valid only inside that commit callback, including all nested objects.
 - **DocumentSource:** an opaque handle to one document incarnation's committed changes,
   not a mutable value or a public subscription API.
 - **ReplicatedState:** Chord's immutable complete values through `value` and
@@ -32,36 +32,30 @@ Examples build on one another. Pico5 names (`defineDoc`, `defineDocFamily`,
 refer to normative contracts, without a specified import path or runnable Pico5
 package. In those contracts, `ConversationRecord`, `EntryRecord`, and
 `TaskRecord` are persisted records, while `Conversation` is the public
-conversation object and `Entry`/`Task` are typed definitions. These Chord imports
-exist today:
+conversation object and `Entry`/`Task` are typed definitions. The Chord imports
+below are the concrete APIs used by the examples:
 
 ```ts
 import {
   createFacetHost, createRemoteServiceBinding, defineFacet, defineService,
+  replicatedState,
   type Context, type Facet, type JsonValue, type RemoteServiceTransport,
   type ReplicatedState,
 } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { applyImmutable } from "@earendil-works/chord/delta";
 
-// The spec calls this JsonObject; current Chord exports JsonValue, not JsonObject.
+// The Pico specification calls this object-root constraint JsonObject.
 type JsonObject = { [key: string]: JsonValue };
-
-// Required by Pico5, but not a current Chord export yet.
-declare function documentReplicatedState<T extends JsonObject>(
-  source: DocumentSource<T>, context: Context,
-): Promise<{ readonly state: ReplicatedState<T | null>; dispose(): void }>;
 ```
 
-The adapter must register Chord-recognized state, atomically hydrate a matching
-committed value and adapter-owned delivery sequence, and forward committed ops without another
-tracker or re-diff. Disposal releases observation, not the document. Even Chord's
-hydration requests must never flush an uncommitted draft.
-
-Current `env.replicatedState(initial)` creates an **in-memory**, immutable
-latest-value source with transaction-scoped `.change(context, callback)` and
-`.replace(context, value)`, not a durable source adapter. There is no
-`replicatedState.own(source)`. Do not mirror documents into another state source.
+Chord adoption atomically captures a committed snapshot, buffers every later
+source frame, installs the frame listener, and drains the buffer before returning.
+Operations already reflected in the snapshot are never redelivered. It forwards
+committed values and operations without another tracker or re-diff. Disposing the
+adopted state releases observation, not the document. A source-backed state is
+publication-only; Pico remains the sole mutator. Even hydration must never prepare
+or publish an uncommitted draft.
 
 ## 1. A Session-wide canvas
 
@@ -86,20 +80,23 @@ interface CanvasService {
 const Canvas = defineService<CanvasService>("app.canvas");
 
 async function createCanvasFacet(session: Session, context: Context): Promise<Facet> {
-  const target = { scope: "session" } as const;
-  // Get-or-create: an absent canvas is initialized in a serialized commit.
-  const source = await session.documentSource(CanvasDoc, target, context);
-  const replica = await documentReplicatedState(source, context);
+  // Creation is explicit; observation never writes.
+  await session.commit(async tx => {
+    await tx.doc(CanvasDoc);
+  }, context);
+  const source = await session.documentSource(CanvasDoc, context);
+  if (source === undefined) throw new Error("canvas was retired during setup");
   return defineFacet({
     id: "app.canvas/session",
     setup(env) {
-      env.own(() => replica.dispose());
+      const state = replicatedState(source);
+      env.own(() => state.dispose());
       env.provide(Canvas, {
-        state: replica.state,
+        state,
         async addStroke(stroke, context) {
           await session.commit(async tx => {
-            const draft = await tx.doc(CanvasDoc, target);
-            draft.strokes.push(stroke); // The draft now owns stroke; caller must not mutate it.
+            const draft = await tx.doc(CanvasDoc);
+            draft.strokes.push(stroke); // Chord copies the assigned stroke by value.
           }, context);
         },
       });
@@ -133,7 +130,8 @@ async function runCanvasExample(session: Session): Promise<void> {
 }
 ```
 
-The application owns the open Session. Acquire state **before** synchronous
+The application owns the open Session. Acquire the document source
+asynchronously before synchronous `setup`, then adopt it synchronously during
 `setup`; `env.provide` cannot run in `onActivate`. Install one provider per
 Session host. Chord may reload presentation facets independently, but v1 does
 not use facet reload to replace Session-side task or hook implementations. A
@@ -166,7 +164,7 @@ async function connectCanvas(transport: RemoteServiceTransport, context: Context
 ```
 
 ```text
-first acquisition -> commit base { strokes: [] }
+explicit first tx.doc -> commit base { strokes: [] }
 addStroke(A)       -> commit A -> local and remote subscribers see A
 worker restarts   -> open same durable storage; install canvas facet again
 acquire source    -> load base + committed deltas, without rerunning initial()
@@ -181,7 +179,7 @@ A method's successful commit does not promise every remote callback has run yet.
 
 A **document family** uses one definition for many instances. The logical key is
 `(kind, conversationId, key)`; the persisted numeric document ID identifies an
-incarnation and is never reused. Initializer input is not part of the key.
+incarnation and is never reused. The creation seed is not part of the key.
 
 ```ts
 type ReviewInput = { path: string; patch: string };
@@ -190,7 +188,7 @@ type ReviewState = ReviewInput & { comments: ReviewComment[] };
 const ReviewDoc = defineDocFamily<ReviewState, ReviewInput>({
   kind: "app.diff-review", version: 1, family: true, scope: "conversation",
   history: "latest", fork: "current",
-  initial: input => ({ path: input.path, patch: input.patch, comments: [] }),
+  initial: seed => ({ path: seed.path, patch: seed.patch, comments: [] }),
   checkpointWhen: value => value.comments.length % 50 === 0,
 });
 interface DiffReviewService {
@@ -202,7 +200,7 @@ const DiffReviews = defineService<DiffReviewService>("app.diff-reviews");
 
 function reviewFacet(
   session: Session, conversationId: Id,
-  reviews: readonly { key: string; initial: ReviewInput }[], context: Context,
+  reviews: readonly { key: string; seed: ReviewInput }[], context: Context,
 ): Facet {
   return defineFacet({
     id: "app.diff-reviews/session",
@@ -210,18 +208,21 @@ function reviewFacet(
       const instances = env.provideMany(DiffReviews);
       env.onActivate(async () => {
         for (const review of reviews) {
-          const target = { scope: "conversation" as const, conversationId, ...review };
-          const source = await session.documentSource(ReviewDoc, target, context);
-          const replica = await documentReplicatedState(source, context);
-          env.own(() => replica.dispose());
+          await session.commit(async tx => {
+            await tx.doc(ReviewDoc, conversationId, review.key, review.seed);
+          }, context);
+          const source = await session.documentSource(ReviewDoc, conversationId, review.key, context);
+          if (source === undefined) throw new Error("review was retired during setup");
+          const state = replicatedState(source);
+          env.own(() => state.dispose());
           // Chord instance keys route services; they are not numeric document incarnation IDs.
           instances.spawn(JSON.stringify([conversationId, review.key]), {
-            state: replica.state,
+            state,
             async identity() { return { conversationId, key: review.key }; },
             async addComment(comment, context) {
               await session.commit(async tx => {
-                const draft = await tx.doc(ReviewDoc, target);
-                draft.comments.push(comment); // Do not mutate comment after this assignment.
+                const draft = await tx.doc(ReviewDoc, conversationId, review.key, review.seed);
+                draft.comments.push(comment); // Chord copies the assigned comment by value.
               }, context);
             },
           }); // The facet owns spawned service lifetimes automatically.
@@ -232,7 +233,7 @@ function reviewFacet(
 }
 ```
 
-Example input: `[{ key: "review-7", initial: { path: "a.ts", patch: "-old\n+new" } }]`.
+Example input: `[{ key: "review-7", seed: { path: "a.ts", patch: "-old\n+new" } }]`.
 Pass distinct family keys and a real conversation ID; install the facet as above.
 Keyed consumers use `env.observe(DiffReviews, handler)`, not `env.use`. The handler
 receives `(review, context)`; call `review.identity(context)` to identify it and
@@ -249,9 +250,9 @@ fork at E with current: child review-7 contains A and B
 child adds C: parent still contains only A and B
 ```
 
-With `fork: "initial"`, no instance copies; first child access uses supplied input.
+With `fork: "initial"`, no instance copies; the first child `tx.doc()` uses its supplied seed.
 `latest` cannot read history or fork `asOf`; use `history: "rewindable"` with `asOf`
-to reflect E's commit. Reaccess ignores `initial`; updating the patch requires
+to reflect E's commit. Reaccess ignores later seeds; updating the patch requires
 an explicit mutation or a distinct review key.
 
 ## 3. Task-scoped output and a tool/task watch
@@ -267,16 +268,13 @@ const JobOutputDoc = defineDoc<JobOutput>({
   initial: () => ({ stdout: "", chunks: 0 }),
   checkpointWhen: value => value.chunks % 100 === 0,
 });
-function jobOutputTarget(taskId: Id) {
-  return { scope: "task" as const, taskId };
-}
 async function appendJobOutput(
   runtime: TaskRuntime<JobInput, { phase: "running" }, null, {}>,
   chunk: string, context: Context,
 ): Promise<void> {
   // Read process output outside this callback. The runtime gates the live task.
   await runtime.commit(async tx => {
-    const draft = await tx.doc(JobOutputDoc, jobOutputTarget(runtime.taskId));
+    const draft = await tx.doc(JobOutputDoc, runtime.taskId);
     draft.stdout = (draft.stdout + chunk).slice(-50_000);
     draft.chunks += 1;
   }, context);
@@ -285,8 +283,8 @@ async function observeJob(
   api: DocumentObserver, producerTaskId: Id,
   finished: Promise<void>, context: Context,
 ): Promise<void> {
-  const target = jobOutputTarget(producerTaskId);
-  const watch = await api.watchDoc(JobOutputDoc, target, context);
+  const watch = await api.watchDoc(JobOutputDoc, producerTaskId, context);
+  if (watch === undefined) return;
   let value = watch.value;
   console.log(value === null ? "retired" : value.stdout);
   try {
@@ -304,8 +302,9 @@ async function observeJob(
 
 The running phase calls `appendJobOutput` and must also commit its next checkpoint
 or terminal outcome. `api` is the invocation's `DocumentObserver`; `TaskRuntime`
-includes that interface. Acquisition validates the target task is live and
-derives its conversation from the task record.
+includes that interface. `tx.doc()` creation validates that the target task is live and derives its
+conversation from the task record. A later non-creating watch lookup returns
+`undefined` after the task is terminal and its document has retired.
 
 ```text
 watchDoc: capture immutable V0 + register for later committed operation batches
@@ -321,8 +320,9 @@ Watches automatically stop when their invocation ends. A Session-acquired watch
 is caller-owned and stops on Session close. Previously delivered snapshots never
 mutate. Slow or unstarted delivery may coalesce an undelivered suffix into a
 complete reset, so a watch is convergent state observation rather than a
-transition journal. Retirement ends the incarnation's stream; recreation
-requires a new watch/source and a new numeric document ID. A terminal task cannot
+transition journal. Retirement ends the incarnation's stream; a service exposing that source must
+withdraw or remain terminal at `null`. Recreation requires a new watch/source,
+service attachment, and numeric document ID. A terminal task cannot
 create more output. Task-scoped documents
 never copy into forks. Preserve required output in result entries or Session- or
 conversation-scoped documents in the terminal commit before retirement. Use a
@@ -348,28 +348,29 @@ services or trusted invocation watches. A retired source publishes `null`; a
 dynamic service should then withdraw its instance rather than expose stale data.
 
 ```text
-addStroke -> hold Session mutation line -> await tx.doc -> mutate tracked draft
-callback succeeds -> tracker flush: incremental ops + candidate value
+addStroke -> hold Session mutation line -> await tx.doc -> mutate tracker change draft
+callback succeeds -> tracker prepare: immutable candidate + frozen ops
 Session checkpoint predicate selects a base or delta exactly once
 atomic storage commit: persist selected document and record writes
-storage succeeds -> materialize immutable published value + enqueue value/ops, still on line
+storage succeeds -> adopt candidate + enqueue candidate/ops, still on line
 release line -> deliver committed source ops -> adapter -> local/remote Chord consumers
 late subscriber -> atomically capture committed value + adapter sequence + subscription
 ```
 
-No visible-undurable path exists. Callback failure restores the unchanged
-baseline. Failure after flush, including checkpoint/storage failure, publishes
-nothing and poisons the open Session; close and reopen it instead of continuing.
+No visible-undurable path exists. Callback, tracker preparation, and checkpoint
+failure abort normally before Storage admission. An uncertain Storage failure
+publishes nothing and poisons the open Session; close and reopen it instead of
+continuing.
 
 ## Footguns
 
-- Never retain drafts, nested proxies, or bound array methods across commits.
-  Never mutate inserted aliases or insert one mutable object at multiple paths.
+- Never retain drafts, nested proxies, or bound array methods across commits;
+  they are revoked. Assigned containers are copied by value.
 - Async commit holds the line through storage settlement and baseline adoption.
   Await document access there, not models, processes, network calls, or humans.
-- Normal `snapshot`, `documentSource`, and `watchDoc` reads are get-or-create and
-  lazily migrate through the supplied token. Harness open does not scan ordinary
-  documents. Family `initial` is first-creation input, not an update.
+- Only `tx.doc()` creates. `snapshot`, `documentSource`, and `watchDoc` return
+  `undefined` when absent and never write. Family seeds are used only when the
+  first `tx.doc()` creates an incarnation; later seeds are ignored.
 - Initialize from the fixed `watch.value` before `start()`. Slow or unstarted
   delivery may coalesce an undelivered suffix into a root replacement when its
   operation count exceeds the limit, omitting intermediate states. Queue

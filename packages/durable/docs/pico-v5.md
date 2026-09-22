@@ -4,7 +4,12 @@ Pico5 is a durable, extensible agent harness. This document is normative.
 Pico5 uses existing package types as follows:
 
 ```ts
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type {
+  Context,
+  Draft,
+  JsonValue,
+  ReplicatedState,
+} from "@earendil-works/chord";
 import { applyImmutable, type Op } from "@earendil-works/chord/delta";
 import type {
   Message,
@@ -32,8 +37,8 @@ The core rule is:
 
 ## 1. Terms and invariants
 
-- A **Session** owns one mutation line, conversations, entries, tasks, inputs,
-  and documents.
+- A **Session** owns one mutation line, conversations, entries, tasks,
+  submissions, and documents.
 - A **conversation** is a transcript scope. It may fork another conversation.
 - An **entry** is an immutable transcript record.
 - A **task** is a durable state machine attached to one conversation.
@@ -50,13 +55,13 @@ Required invariants:
 3. All visible progress is durable. There is no volatile publication path.
 4. External effects do not run inside the Session mutation transaction.
 5. Entries and IDs are immutable and never reused after a committed write.
-6. Document drafts and assigned mutable objects must not escape their
-   transaction. This restriction is initially documented, not enforced by a
-   membrane.
+6. Document drafts are revoked when their transaction callback settles. Values
+   assigned into a draft are copied by value.
 7. The mutation line remains held through storage settlement and committed-state
    adoption. Listener callbacks run later, off the line.
-8. A failure after document flush, including checkpoint or storage failure, is
-   fatal to the open Session. It publishes nothing and must be reopened.
+8. An uncertain storage failure is fatal to the open Session. It publishes
+   nothing and must be reopened. Preparation and checkpoint failures occur before
+   storage admission and roll back normally.
 
 ## 2. Core records
 
@@ -123,30 +128,73 @@ type EntryDraft = Omit<EntryRecord, "id" | "conversationId" | "byTaskId" | "head
   readonly head?: Id | "self";
 };
 
-type InputBase = {
+type SubmissionRecordBase = {
   readonly id: Id;
   readonly conversationId: Id;
   readonly requestId?: string;
 };
 
-type Input = InputBase & (
-  | { readonly status: "queued" }
-  | { readonly status: "placed"; readonly entry: Id }
-  | {
-      readonly status: "done";
-      readonly entry: Id;
-      readonly answer?: Id; // absent for a completed passive write
-    }
-  | {
-      readonly status: "unanswered";
-      readonly entry?: Id; // present when placement preceded failure
-      readonly reason: string;
-      readonly detail?: JsonValue;
-    }
-);
+type SubmissionRecord =
+  | (SubmissionRecordBase & {
+      readonly type: "input";
+    } & (
+      | {
+          readonly status: "queued";
+          readonly entry?: never;
+          readonly answer?: never;
+          readonly reason?: never;
+          readonly detail?: never;
+        }
+      | {
+          readonly status: "placed";
+          readonly entry: Id;
+          readonly answer?: never;
+          readonly reason?: never;
+          readonly detail?: never;
+        }
+      | {
+          readonly status: "done";
+          readonly entry: Id;
+          readonly answer: Id;
+          readonly reason?: never;
+          readonly detail?: never;
+        }
+      | {
+          readonly status: "unanswered";
+          readonly entry?: Id;
+          readonly answer?: never;
+          readonly reason: string;
+          readonly detail?: JsonValue;
+        }
+    ))
+  | (SubmissionRecordBase & {
+      readonly type: "write";
+    } & (
+      | {
+          readonly status: "queued";
+          readonly entry?: never;
+          readonly answer?: never;
+          readonly reason?: never;
+          readonly detail?: never;
+        }
+      | {
+          readonly status: "done";
+          readonly entry: Id;
+          readonly answer?: never;
+          readonly reason?: never;
+          readonly detail?: never;
+        }
+      | {
+          readonly status: "unanswered";
+          readonly entry?: never;
+          readonly answer?: never;
+          readonly reason: string;
+          readonly detail?: JsonValue;
+        }
+    ));
 
-type InputCreate = Input extends infer Record
-  ? Record extends Input
+type SubmissionCreate = SubmissionRecord extends infer Record
+  ? Record extends SubmissionRecord
     ? Omit<Record, "id">
     : never
   : never;
@@ -203,11 +251,24 @@ type ModelRef = {
 
 type UserInput = UserMessage["content"];
 
-type SendInput = {
-  readonly content: UserInput;
+type SubmissionDraft = {
   readonly requestId?: string;
-  readonly whenBusy?: "steer" | "followUp" | "reject";
-};
+} & (
+  | {
+      readonly type: "input";
+      readonly content: UserInput;
+      readonly whenBusy?: "steer" | "followUp" | "reject";
+      readonly entry?: never;
+    }
+  | {
+      readonly type: "write";
+      readonly entry: EntryDraft;
+      readonly content?: never;
+      readonly whenBusy?: never;
+    }
+);
+
+type InputSubmissionDraft = Extract<SubmissionDraft, { readonly type: "input" }>;
 
 type SectionSeed =
   | { readonly key: string; readonly value: JsonValue }
@@ -255,17 +316,15 @@ type ContextView = {
   readonly messages: readonly Message[];
 };
 
-type SettledInput = Input & {
+type SettledSubmissionRecord = SubmissionRecord & {
   readonly status: "done" | "unanswered";
 };
 
-interface InputHandle {
+interface Submission {
   readonly id: Id;
-  result(context: Context): Promise<Input | undefined>;
-  wait(context: Context): Promise<SettledInput>;
-  abort(
-    context: Context,
-  ): Promise<"aborted" | "already_placed" | "not_found">;
+  status(context: Context): Promise<SubmissionRecord>;
+  wait(context: Context): Promise<SettledSubmissionRecord>;
+  abort(context: Context): Promise<"aborted" | "already_placed" | "settled">;
 }
 
 type SettledTask<R> = TaskRecord<JsonValue, JsonValue, R> & {
@@ -280,8 +339,7 @@ type HooksOf<K> = K extends Task<infer _I, infer _S, infer _R, infer H>
 
 interface Conversation {
   readonly id: Id;
-  send(input: SendInput, context: Context): Promise<InputHandle>;
-  write(entry: EntryDraft, context: Context): Promise<InputHandle>;
+  submit(submission: SubmissionDraft, context: Context): Promise<Submission>;
 
   getModel(context: Context): Promise<ModelRef | undefined>;
   setModel(model: ModelRef | undefined, context: Context): Promise<void>;
@@ -352,11 +410,12 @@ interface Harness extends Session {
   ): Promise<Conversation>;
 
   getTask(id: Id, context: Context): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
-  abortInput(
+  submission(id: Id, context: Context): Promise<Submission | undefined>;
+  abortSubmission(
     id: Id,
     context: Context,
     conversationId?: Id,
-  ): Promise<"aborted" | "already_placed" | "not_found">;
+  ): Promise<"aborted" | "already_placed" | "settled" | "not_found">;
   abortTask(id: Id, context: Context): Promise<"marked" | "terminal">;
   markTask(id: Id, context: Context): Promise<"marked" | "terminal">;
   waitForTask<R>(ref: TaskRef<R>, context: Context): Promise<SettledTask<R>>;
@@ -375,9 +434,9 @@ declare const Harness: {
 This intentionally retains the useful Pico3 host shape. It removes Pico3's
 fixed `rewindable()`/`sticky()` accessors, namespace router, semantic view events,
 and manual Chord view bridge. Typed Pico5 documents and the structural
-conversation watch replace those surfaces. `write()` now returns an
-`InputHandle`, because a busy passive write may remain queued before it receives
-an entry ID.
+conversation watch replace those surfaces. `submit()` durably admits either a
+user input or passive entry write and returns one `Submission` that tracks its
+settlement.
 
 `Harness.open()` installs built-in task, tool, and section definitions followed
 by supplied task kinds, tools, and sections. It changes
@@ -407,13 +466,14 @@ movement during normal operation, not replacement of executing extension code;
 section 7.4 governs code reload.
 
 Conversation creation atomically commits the conversation, built-in
-configuration and section/tool seeds, and optional input admission. For a fork,
+configuration and section/tool seeds, and an optional input submission. For a fork,
 omitted model, section, and active-tool values follow their document definition's
 fork policy; provided values override those forked built-in values in the same
 commit. Other documents follow their own definitions without special handling.
 
 The built-in conversation configuration document contains the selected model,
-thinking level, section values, and active tool names. Its initial thinking level
+thinking level, an ordered array of section key/value records, and active tool
+names. Its initial thinking level
 is `"off"`. It is rewindable with `fork: "asOf"`, so a child starts from the
 configuration visible at its selected entry unless explicit creation seeds
 override it. Conversation creation eagerly
@@ -443,7 +503,7 @@ Unregistering a tool does not rewrite any conversation.
 
 If request preparation finds unavailable active names, it performs no provider
 request. It atomically terminalizes the generation task as `failed` with
-`detail: { code: "missing_active_tool", names }`, makes its placed inputs
+`detail: { code: "missing_active_tool", names }`, makes its placed input submissions
 `unanswered` with reason `missing_active_tool`, clears matching turn control, and
 appends a visible model-less diagnostic entry. It does not silently change the
 durable loadout. Historical system entries remain replayable because they store
@@ -466,7 +526,7 @@ does not guarantee placement of queued passive writes.
 `markTask()` only commits `abortRequested`; it neither signals nor joins an
 active invocation. The scheduler notices the mark on its next drain.
 `abortTask()` also signals and joins an active run before starting the abort
-invocation. `Conversation.abort()` withdraws queued non-write inputs, marks
+invocation. `Conversation.abort()` withdraws queued input submissions, marks
 non-background tasks in the conversation and owned subtree, signals them, and
 resolves only after that subtree is ordinarily idle. Passive writes and
 background tasks survive. Conversation idle means no non-background live task
@@ -480,13 +540,15 @@ commit. Listener failures go to `onReport` and do not stop other listeners. Its
 idempotent disposer removes the listener; Harness close removes all remaining
 listeners.
 
-`send()` and `write()` return after durable admission, not settlement. `send`
-creates a user message with the admission timestamp. `whenBusy` defaults to
-`followUp`. `write()` uses the ordered passive path in section 6 and never starts
-generation. A completed passive write identifies its entry in `Input.entry`; a
-completed send identifies the answer in `Input.answer`. Cancelling `wait()` only
-cancels that wait. It does not withdraw or abort the input; `InputHandle.abort()`
-is the explicit queued-input withdrawal operation.
+`submit()` returns after durable admission, not settlement. An input submission
+creates a user message with the admission timestamp; `whenBusy` defaults to
+`followUp`. A write submission uses the ordered passive path in section 6 and
+never starts generation. `Submission.wait()` settles an input only after its
+answer or terminal failure; it settles a write when the entry is placed or the
+write becomes terminally unplaceable. Cancelling `wait()` only cancels that wait.
+It does not withdraw the submission; `Submission.abort()` is the explicit queued
+withdrawal operation. `Harness.submission()` reacquires a submission after
+reopen; records remain queryable after settlement.
 
 `abortTask()` durably requests cancellation and returns `marked` after the mark
 is committed, any active run invocation has joined, and an abort invocation has
@@ -548,45 +610,100 @@ type DocDefinition<T extends JsonObject> =
 type DocFamilyDefinition<T extends JsonObject, I extends JsonValue> =
   Omit<CommonDocDefinition<T>, "initial"> & DocumentSemantics & {
     readonly family: true;
-    initial(input: I): T;
+    initial(seed: I): T;
   };
 
+declare const docType: unique symbol;
+interface DocToken<T extends JsonObject, D extends DocDefinition<T>> {
+  readonly definition: D;
+  readonly [docType]?: T;
+}
+interface DocFamilyToken<
+  T extends JsonObject,
+  I extends JsonValue,
+  D extends DocFamilyDefinition<T, I>,
+> {
+  readonly definition: D;
+  readonly [docType]?: T;
+}
+
+type SessionDocToken<T extends JsonObject> = DocToken<
+  T,
+  CommonDocDefinition<T> & { readonly scope: "session" }
+>;
+type ConversationDocToken<T extends JsonObject> = DocToken<
+  T,
+  CommonDocDefinition<T> & (LatestConversationSemantics | RewindableConversationSemantics)
+>;
+type RewindableConversationDocToken<T extends JsonObject> = DocToken<
+  T,
+  CommonDocDefinition<T> & RewindableConversationSemantics
+>;
+type TaskDocToken<T extends JsonObject> = DocToken<
+  T,
+  CommonDocDefinition<T> & { readonly scope: "task" }
+>;
+
+type SessionDocFamilyToken<T extends JsonObject, I extends JsonValue> = DocFamilyToken<
+  T,
+  I,
+  DocFamilyDefinition<T, I> & { readonly scope: "session" }
+>;
+type ConversationDocFamilyToken<T extends JsonObject, I extends JsonValue> = DocFamilyToken<
+  T,
+  I,
+  DocFamilyDefinition<T, I> & (LatestConversationSemantics | RewindableConversationSemantics)
+>;
+type RewindableConversationDocFamilyToken<T extends JsonObject, I extends JsonValue> = DocFamilyToken<
+  T,
+  I,
+  DocFamilyDefinition<T, I> & RewindableConversationSemantics
+>;
+type TaskDocFamilyToken<T extends JsonObject, I extends JsonValue> = DocFamilyToken<
+  T,
+  I,
+  DocFamilyDefinition<T, I> & { readonly scope: "task" }
+>;
+
+function defineDoc<T extends JsonObject>(
+  definition: CommonDocDefinition<T> & { readonly scope: "session" },
+): SessionDocToken<T>;
+function defineDoc<T extends JsonObject>(
+  definition: CommonDocDefinition<T> & LatestConversationSemantics,
+): ConversationDocToken<T>;
 function defineDoc<T extends JsonObject>(
   definition: CommonDocDefinition<T> & RewindableConversationSemantics,
-): RewindableDocToken<T>;
-function defineDoc<T extends JsonObject>(definition: DocDefinition<T>): DocToken<T>;
+): RewindableConversationDocToken<T>;
+function defineDoc<T extends JsonObject>(
+  definition: CommonDocDefinition<T> & { readonly scope: "task" },
+): TaskDocToken<T>;
 
 function defineDocFamily<T extends JsonObject, I extends JsonValue>(
-  definition: Omit<CommonDocDefinition<T>, "initial"> &
-    RewindableConversationSemantics & {
-      readonly family: true;
-      initial(input: I): T;
-    },
-): RewindableDocFamilyToken<T, I>;
+  definition: Omit<CommonDocDefinition<T>, "initial"> & {
+    readonly family: true;
+    readonly scope: "session";
+    initial(seed: I): T;
+  },
+): SessionDocFamilyToken<T, I>;
 function defineDocFamily<T extends JsonObject, I extends JsonValue>(
-  definition: DocFamilyDefinition<T, I>,
-): DocFamilyToken<T, I>;
-
-declare const docType: unique symbol;
-interface DocToken<T extends JsonObject> {
-  readonly definition: DocDefinition<T>;
-  readonly [docType]?: T;
-}
-interface RewindableDocToken<T extends JsonObject> extends DocToken<T> {
-  readonly definition: CommonDocDefinition<T> & RewindableConversationSemantics;
-}
-interface DocFamilyToken<T extends JsonObject, I extends JsonValue> {
-  readonly definition: DocFamilyDefinition<T, I>;
-  readonly [docType]?: T;
-}
-interface RewindableDocFamilyToken<T extends JsonObject, I extends JsonValue>
-  extends DocFamilyToken<T, I> {
-  readonly definition: Omit<CommonDocDefinition<T>, "initial"> &
-    RewindableConversationSemantics & {
-      readonly family: true;
-      initial(input: I): T;
-    };
-}
+  definition: Omit<CommonDocDefinition<T>, "initial"> & LatestConversationSemantics & {
+    readonly family: true;
+    initial(seed: I): T;
+  },
+): ConversationDocFamilyToken<T, I>;
+function defineDocFamily<T extends JsonObject, I extends JsonValue>(
+  definition: Omit<CommonDocDefinition<T>, "initial"> & RewindableConversationSemantics & {
+    readonly family: true;
+    initial(seed: I): T;
+  },
+): RewindableConversationDocFamilyToken<T, I>;
+function defineDocFamily<T extends JsonObject, I extends JsonValue>(
+  definition: Omit<CommonDocDefinition<T>, "initial"> & {
+    readonly family: true;
+    readonly scope: "task";
+    initial(seed: I): T;
+  },
+): TaskDocFamilyToken<T, I>;
 ```
 
 Validation rules:
@@ -612,7 +729,7 @@ case model, tool, inbox, or presentation state.
 
 ### 3.2 Records and lifetimes
 
-A persisted document instance has one lifecycle record:
+A persisted document instance has one `DocumentRecord`:
 
 ```ts
 type DocumentRecord = {
@@ -659,116 +776,91 @@ There is no mutable `session.document()` API.
 
 ```ts
 interface Session extends DocumentObserver {
-  commit<T>(
-    change: (tx: Tx) => T | Promise<T>,
-    context: Context,
-  ): Promise<T>;
-
+  commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T>;
   close(context: Context): Promise<void>;
 
-  snapshot<T extends JsonObject>(
-    token: DocToken<T>,
-    target: DocTarget,
-    context: Context,
-  ): Promise<Readonly<T>>;
+  snapshot<T extends JsonObject>(token: SessionDocToken<T>, context: Context): Promise<Readonly<T> | undefined>;
+  snapshot<T extends JsonObject>(token: ConversationDocToken<T>, conversationId: Id, context: Context): Promise<Readonly<T> | undefined>;
+  snapshot<T extends JsonObject>(token: TaskDocToken<T>, taskId: Id, context: Context): Promise<Readonly<T> | undefined>;
+  snapshot<T extends JsonObject, I extends JsonValue>(token: SessionDocFamilyToken<T, I>, key: string, context: Context): Promise<Readonly<T> | undefined>;
+  snapshot<T extends JsonObject, I extends JsonValue>(token: ConversationDocFamilyToken<T, I>, conversationId: Id, key: string, context: Context): Promise<Readonly<T> | undefined>;
+  snapshot<T extends JsonObject, I extends JsonValue>(token: TaskDocFamilyToken<T, I>, taskId: Id, key: string, context: Context): Promise<Readonly<T> | undefined>;
 
-  snapshot<T extends JsonObject, I extends JsonValue>(
-    token: DocFamilyToken<T, I>,
-    target: FamilyTarget<I>,
-    context: Context,
-  ): Promise<Readonly<T>>;
+  snapshotAsOf<T extends JsonObject>(token: RewindableConversationDocToken<T>, conversationId: Id, at: Id, context: Context): Promise<Readonly<T> | undefined>;
+  snapshotAsOf<T extends JsonObject, I extends JsonValue>(token: RewindableConversationDocFamilyToken<T, I>, conversationId: Id, key: string, at: Id, context: Context): Promise<Readonly<T> | undefined>;
 
-  snapshotAsOf<T extends JsonObject>(
-    token: RewindableDocToken<T>,
-    conversationId: Id,
-    at: Id,
-    context: Context,
-  ): Promise<Readonly<T> | undefined>;
-
-  snapshotAsOf<T extends JsonObject, I extends JsonValue>(
-    token: RewindableDocFamilyToken<T, I>,
-    target: HistoricalFamilyTarget,
-    at: Id,
-    context: Context,
-  ): Promise<Readonly<T> | undefined>;
-
-  documentSource<T extends JsonObject>(
-    token: DocToken<T>,
-    target: DocTarget,
-    context: Context,
-  ): Promise<DocumentSource<T>>;
-
-  documentSource<T extends JsonObject, I extends JsonValue>(
-    token: DocFamilyToken<T, I>,
-    target: FamilyTarget<I>,
-    context: Context,
-  ): Promise<DocumentSource<T>>;
+  documentSource<T extends JsonObject>(token: SessionDocToken<T>, context: Context): Promise<DocumentSource<T> | undefined>;
+  documentSource<T extends JsonObject>(token: ConversationDocToken<T>, conversationId: Id, context: Context): Promise<DocumentSource<T> | undefined>;
+  documentSource<T extends JsonObject>(token: TaskDocToken<T>, taskId: Id, context: Context): Promise<DocumentSource<T> | undefined>;
+  documentSource<T extends JsonObject, I extends JsonValue>(token: SessionDocFamilyToken<T, I>, key: string, context: Context): Promise<DocumentSource<T> | undefined>;
+  documentSource<T extends JsonObject, I extends JsonValue>(token: ConversationDocFamilyToken<T, I>, conversationId: Id, key: string, context: Context): Promise<DocumentSource<T> | undefined>;
+  documentSource<T extends JsonObject, I extends JsonValue>(token: TaskDocFamilyToken<T, I>, taskId: Id, key: string, context: Context): Promise<DocumentSource<T> | undefined>;
 }
 
 interface Tx {
   conversation(id: Id): Promise<ConversationRecord | undefined>;
   entry(id: Id): Promise<EntryRecord | undefined>;
-  input(id: Id): Promise<Input | undefined>;
   task(id: Id): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
   scanEntries(query: EntryQuery): Promise<readonly EntryRecord[]>;
   scanTasks(query: TaskQuery): Promise<readonly TaskRecord<JsonValue, JsonValue, JsonValue>[]>;
 
   createConversation(value: Omit<ConversationRecord, "id">): ConversationRecord;
   appendEntry(conversationId: Id, value: EntryDraft): EntryRecord;
-  createInput(value: InputCreate): Input;
-  setInput(value: Input): void;
   createTask<I, S extends { phase: string }, R, H extends object>(
     task: Task<I, S, R, H>, input: I, options?: TaskOptions,
   ): TaskRef<R>;
   setTask(value: TaskRecord<JsonValue, JsonValue, JsonValue>): void;
 
-  doc<T extends JsonObject>(token: DocToken<T>, target: DocTarget): Promise<T>;
-  doc<T extends JsonObject, I extends JsonValue>(token: DocFamilyToken<T, I>, target: FamilyTarget<I>): Promise<T>;
-  retireDoc<T extends JsonObject>(token: DocToken<T>, target: DocTarget): void;
-  retireDoc<T extends JsonObject, I extends JsonValue>(token: DocFamilyToken<T, I>, target: FamilyKey): void;
+  doc<T extends JsonObject>(token: SessionDocToken<T>): Promise<Draft<T>>;
+  doc<T extends JsonObject>(token: ConversationDocToken<T>, conversationId: Id): Promise<Draft<T>>;
+  doc<T extends JsonObject>(token: TaskDocToken<T>, taskId: Id): Promise<Draft<T>>;
+  doc<T extends JsonObject, I extends JsonValue>(token: SessionDocFamilyToken<T, I>, key: string, seed: I): Promise<Draft<T>>;
+  doc<T extends JsonObject, I extends JsonValue>(token: ConversationDocFamilyToken<T, I>, conversationId: Id, key: string, seed: I): Promise<Draft<T>>;
+  doc<T extends JsonObject, I extends JsonValue>(token: TaskDocFamilyToken<T, I>, taskId: Id, key: string, seed: I): Promise<Draft<T>>;
+
+  retireDoc<T extends JsonObject>(token: SessionDocToken<T>): Promise<void>;
+  retireDoc<T extends JsonObject>(token: ConversationDocToken<T>, conversationId: Id): Promise<void>;
+  retireDoc<T extends JsonObject>(token: TaskDocToken<T>, taskId: Id): Promise<void>;
+  retireDoc<T extends JsonObject, I extends JsonValue>(token: SessionDocFamilyToken<T, I>, key: string): Promise<void>;
+  retireDoc<T extends JsonObject, I extends JsonValue>(token: ConversationDocFamilyToken<T, I>, conversationId: Id, key: string): Promise<void>;
+  retireDoc<T extends JsonObject, I extends JsonValue>(token: TaskDocFamilyToken<T, I>, taskId: Id, key: string): Promise<void>;
 }
-
-type DocTarget =
-  | { readonly scope: "session" }
-  | { readonly scope: "conversation"; readonly conversationId: Id }
-  | { readonly scope: "task"; readonly taskId: Id };
-
-type FamilyKey = DocTarget & { readonly key: string };
-
-type FamilyTarget<I> = FamilyKey & { readonly initial: I };
-
-type HistoricalFamilyTarget = {
-  readonly scope: "conversation";
-  readonly conversationId: Id;
-  readonly key: string;
-};
 ```
 
-Every normal access is get-or-create and receives the definition token that
-supplies its static type, initializer, migration, and checkpoint policy. Ordinary
-document definitions are not registered and ordinary documents are not scanned
-at open.
+Only public typed `tx.doc()` is get-or-create. Internal fork copying may create
+new incarnations directly from stored values without a definition. `tx.doc()`
+receives the definition token that supplies
+its static type, initializer, migration, and checkpoint policy. Scope-preserving
+token overloads require callers to supply only the concrete conversation/task ID
+and, for a family, its key and creation seed. Ordinary definitions are not
+registered and ordinary documents are not scanned at open.
 
 - Existing instances are reconstructed and migrated lazily according to section
-  3.6. Standalone access may commit a required current-only migration before its
-  method returns. `tx.doc()` instead stages that base in its enclosing transaction.
-- Missing instances are created in a serialized commit with an initial base.
-- Concurrent acquisition initializes once.
-- The target scope must match the token's declared scope.
-- Task-scoped access validates against the transaction's latest candidate task
+  3.6. A migration reached through `tx.doc()` is staged in its enclosing
+  transaction.
+- A missing singleton calls the token's `initial()`. A missing family member calls
+  `initial(seed)`. Creation stores an initial base.
+- The first acquisition of one logical address is memoized before awaiting. Later
+  acquisitions in that transaction return the same draft; for a missing family,
+  the first call's detached seed wins and later seeds are ignored.
+- `snapshot()`, `snapshotAsOf()`, `documentSource()`, and `watchDoc()` never create
+  or persist migration. They return `undefined` when the requested incarnation is
+  absent and migrate a reconstructed value only in memory.
+- Task-scoped `tx.doc()` validates against the transaction's latest candidate task
   record, falling back to committed state. This internal validation is not a
   caller table read and does not trigger `ReadAfterWrite`. Its conversation is
-  derived from the task record rather than repeated in the target.
+  derived from the task record.
+- `retireDoc()` resolves the logical address without creating it. Retirement of
+  an acquired draft persists its final content before retirement. A later
+  `tx.doc()` at that address in the same transaction creates a new incarnation
+  with a new draft and ID.
 - A terminal candidate rejects later task-document access. Terminal settlement
   retires both existing task documents and task documents created earlier in the
   same transaction.
 - `snapshot()` returns a detached JSON copy.
-- `documentSource()` returns an opaque committed source.
-- `tx.doc()` returns the transaction's mutable tracked draft.
+- `documentSource()` returns an opaque source bound to one committed incarnation.
+- `tx.doc()` returns one revocable copy-on-write `Draft<T>` for the transaction.
 - Historical reads never create documents in the past.
-
-A family initializer input matters only on first creation. Later accesses must
-supply the same logical target; their `initial` value is ignored.
 
 `snapshotAsOf()` is available only for rewindable conversation documents. It
 validates that `at` is visible through the requested conversation's ancestry,
@@ -784,51 +876,91 @@ alive at the target commit.
 
 ### 3.4 Mutation ownership
 
-Chord mutates the tracked working object immediately while retaining the
-previous baseline until flush.
+Pico uses Chord Delta's transaction shape directly:
+
+```ts
+interface Prepared<T extends object> {
+  readonly base: T;
+  readonly value: T;
+  readonly ops: readonly Op[];
+}
+interface Change<T extends object> {
+  readonly state: Draft<T>;
+  prepare(): Prepared<T>;
+  abort(): void;
+}
+interface Tracker<T extends object> {
+  readonly value: T;
+  beginChange(): Change<T>;
+  prepareReplace(value: T): Prepared<T>;
+  adopt(prepared: Prepared<T>): void;
+}
+```
+
+One tracker has at most one open change. `prepare()` revokes the draft and returns
+an inert branded result without changing `tracker.value`; `abort()` is
+idempotent. `adopt()` accepts only a result from that tracker whose `base` is
+still current. `ops.length === 0` implies `value === base`. Pico's Session line
+ensures no tracker becomes stale between preparation, Storage settlement, and
+adoption.
+
+Each loaded document owns one tracker. The first `tx.doc()` acquisition calls
+`tracker.beginChange()` and memoizes that change's draft for the rest of the
+possibly async Session callback.
 
 Transaction behavior:
 
 ```text
 begin transaction
-  acquire document drafts
-  mutate ordinary JSON
-callback fails
-  restore each changed tracker from its unchanged baseline
-callback succeeds
-  flush each changed tracker -> incremental ops + candidate value
-  Session evaluates each ordinary mutation's checkpoint predicate exactly once
-  and gives Storage only the selected base or delta representation
-  Storage.commit persists it while the Session line remains held
+  acquire and memoize document changes by logical address
+  mutate revocable copy-on-write drafts
+callback settles
+  seal Tx and synchronously reject further draft/Tx use
+  if any acquisition is pending: abort open changes, reject, then drain and abort it
+callback fails with no pending acquisition
+  abort every open change; persist and publish nothing
+callback succeeds with no pending acquisition
+  prepare every open change -> immutable candidate + frozen Chord Op[]
+  normalize deep no-ops to the previous value + []
+  Session evaluates each required/ordinary document write exactly once
+  Storage.commit persists the atomic batch while the Session line remains held
 storage succeeds
-  materialize each changed immutable published value with applyImmutable(previous, ops)
-  adopt committed baselines and enqueue value/ops publication while holding the line
+  adopt every prepared change and enqueue candidate/ops publication
   release the line; invoke listeners later
-post-flush or storage failure
-  poison Session; publish nothing; close/reopen required
+storage fails
+  poison Session and publish nothing
 ```
 
-The immutable published value is separate from the tracker's mutable working
-object and is created once per changed document, not once per watch. Initial
-publication similarly applies the complete base operation to `undefined`.
-Storage's detached retained copy does not satisfy this Session-side ownership
-requirement.
+A pending acquisition that resolves after sealing never exposes a draft; its
+change is aborted and its promise rejects. The Session observes every such
+settlement before releasing the line.
 
-No defensive document copy is required solely for storage failure because the
-open Session cannot continue after that failure.
+`prepare()` performs all JSON, ownership, diff, and freezing work. Preparation or
+checkpoint failure occurs before Storage admission and rolls back normally.
+Adoption performs no diffing, allocation, or callback. The prepared candidate
+itself becomes the immutable published value; Pico does not replay its operations
+to construct another copy. An unchanged existing current-version document writes
+and publishes nothing. Creation and required version transitions still write a
+base when their prepared operation batch is empty; an equal-value version base
+does not emit a watch update.
 
-Unsupported:
+Values assigned into a draft are copied immediately by value. Repeated placements
+are independent. Chord may structurally share unchanged immutable subtrees across
+revisions. Operation tuples, paths, splice payload arrays, permutations, and the
+outer batch are frozen before checkpoint code, Storage, or listeners can observe
+them.
 
 ```ts
-let escaped: LiveState;
+let escaped: Draft<LiveState>;
 await session.commit(async tx => {
-  escaped = await tx.doc(LiveDoc, { scope: "conversation", conversationId });
+  escaped = await tx.doc(LiveDoc, conversationId);
 });
-escaped.message = message; // unsupported
+escaped.message = message; // throws: the draft was revoked
 ```
 
-The same rule applies to nested proxies and mutable objects assigned into a
-document.
+Fire-and-forget work that mutates a draft before the owner callback settles may
+silently enter that transaction and is unsupported. After settlement, draft and
+`Tx` operations reject.
 
 ### 3.5 Bases and checkpoints
 
@@ -841,18 +973,19 @@ storage record is a base:
 const useBase = definition.checkpointWhen?.(candidateValue, ops) ?? false;
 ```
 
-The Session evaluates this predicate exactly once after tracker flush. Creation
-and version transitions require bases and do not call it. The Session then gives
-Storage only the selected representation:
+The Session evaluates this predicate exactly once after tracker preparation.
+Creation and version transitions require bases and do not call it. The Session
+then gives Storage only the selected representation:
 
 ```text
 required or predicate true -> base with complete value
-otherwise                  -> delta with incremental ops
+otherwise                  -> delta with the prepared Chord operation batch
 ```
 
-A predicate failure occurs after flush and therefore poisons the open Session as
-described in section 1. Storage executes no definition code and never receives
-an unused complete candidate with a selected delta.
+A Chord root-replacement operation remains a delta unless the definition selected
+a checkpoint; it does not authorize reclamation. Predicate failure aborts the
+prepared transaction before Storage admission. Storage executes no definition
+code and never receives an unused complete candidate with a selected delta.
 
 - For Session, task, and latest conversation documents, a committed base permits
   physical reclamation of older records.
@@ -887,16 +1020,16 @@ access-driven: `tx.doc()`, `snapshot()`, `snapshotAsOf()`, `documentSource()`, a
 `watchDoc()` reconstruct and migrate through the token supplied to that call.
 Harness open does not sweep ordinary documents.
 
-- A standalone current-only acquisition persists the migrated value as a required
-  current-version base before its method returns. `tx.doc()` stages the migration
-  in the enclosing transaction; callback failure persists nothing, and later
-  draft edits coalesce into one final required base.
+- Read-only access migrates only its returned in-memory value and never writes.
+  `tx.doc()` stages migration in its enclosing transaction; callback failure
+  persists nothing, and later draft edits coalesce into one final required base.
 - Rewindable history is not rewritten. Current and historical reconstructed
   values are migrated after replay.
-- The first mutation of a migrated rewindable value stores a required
-  current-version base before subsequent current-version deltas.
-- A fork copies the selected stored value and version. Typed access in the child
-  migrates it later when necessary.
+- The first `tx.doc()` transaction after any stored-version migration writes a
+  required current-version base, even when the migrated JSON is deeply equal.
+- A fork obtains the selected stored value/version from Storage rather than a
+  typed migrated tracker cache. The child copies that stored pair and migrates on
+  later typed access.
 - Unaccessed documents and documents with unavailable definitions preserve their stored instances,
   versions, and bytes.
 
@@ -909,7 +1042,7 @@ appended later entries. Document state at `E` is the final state of the commit
 containing `E`. Different document states require separate commits.
 
 Each conversation document follows the history/fork policy persisted in its
-lifecycle record:
+`DocumentRecord`:
 
 | conversation setting | child value |
 |---|---|
@@ -933,24 +1066,23 @@ External model, process, tool, network, and human effects run outside it.
 
 ```ts
 await session.commit(async tx => {
-  const input = await tx.input(inputId);            // table read
-  const live = await tx.doc(LiveDoc, { scope: "conversation", conversationId });
+  const task = await tx.task(taskId);                // table read
+  const live = await tx.doc(LiveDoc, conversationId);
 
-  const entry = tx.appendEntry(conversationId, message); // first table write
-  live.message = undefined;                         // document mutation remains valid
-  tx.setInput({ ...input, status: "done", answer: entry.id });
+  tx.appendEntry(conversationId, message);           // first table write
+  delete live.message;                               // document mutation remains valid
+  tx.setTask(nextTask(task));
 }, context);
 ```
 
-Mutation admission occurs on the Session line before a commit callback or
-get-or-create acquisition starts. Closing seals mutation admission and task
+Mutation admission occurs on the Session line before a commit callback starts. Closing seals mutation admission and task
 reservation. Already-admitted commits settle before storage closes. Once a
 commit is admitted, caller cancellation does not interrupt storage settlement or
 undo the commit. Cancelling a close wait does not reopen admission.
 
 Table rules:
 
-- Tables are conversations, entries, tasks, and inputs.
+- Tables are conversations, entries, tasks, and submissions.
 - Table reads are allowed before the first table write.
 - Any table read after the first table write throws `ReadAfterWrite`.
 - Document access and read-your-writes remain available after table writes.
@@ -1130,7 +1262,7 @@ A terminal transition atomically:
 1. Writes the terminal task record.
 2. Appends any result entries.
 3. Retires all documents scoped to that task.
-4. Resolves any inputs settled by the task.
+4. Resolves any submissions settled by the task.
 
 The execution checkpoint and memos disappear from the terminal representation.
 Terminal records remain queryable for dependencies, waiters, inspection, and
@@ -1169,50 +1301,52 @@ Initial task definitions are registered before open performs live-task migration
 and orphan reconciliation. Dynamic registration begins only after that pass.
 Document migration remains access-driven. Unknown or unmigratable live task kinds
 become terminal `orphaned`;
-affected inputs become unanswered, any matching active turn control is cleared,
+affected input submissions become unanswered, any matching active turn control is cleared,
 task-scoped documents retire, and a visible notice entry is appended in one
-commit. Faulting a turn task performs the same control/input cleanup with a
+commit. Faulting a turn task performs the same control/submission cleanup with a
 `faulted` outcome.
 
-## 6. Inputs and inbox
+## 6. Submissions and inbox
 
-Input records back awaitable host handles. The inbox itself is an ordered
-conversation document containing tagged items:
+Submission records back awaitable host objects. Their record transitions use
+Session-private transaction operations, not the public `Tx` interface. The inbox
+itself is an ordered conversation document containing tagged items:
 
 ```ts
 type InboxItem =
-  | { readonly id: Id; readonly mode: "steer" | "followUp"; readonly input: Message }
+  | { readonly id: Id; readonly mode: "steer" | "followUp"; readonly message: Message }
   | { readonly id: Id; readonly mode: "write"; readonly entry: EntryDraft };
 ```
 
 A built-in turn-control document has an optional `active` value naming the task
-currently responsible for the turn and its placed input IDs. `active !==
+currently responsible for the turn and its placed input-submission IDs. `active !==
 undefined` defines `busy`; get-or-create of the idle document does not. The
 value remains active while generation, tools, and post-tools hand work to one
 another.
 
 Admission and terminal transitions:
 
-| action | input state | other writes |
+| action | submission state | other writes |
 |---|---|---|
-| idle `send` | `placed`, with user entry | create turn controller/generation |
-| busy `send` | `queued` | append steer/follow-up inbox item |
-| idle passive `write` | `done`, with entry | append entry; no turn |
-| busy passive `write` | `queued` | append write inbox item |
+| idle input submission | `placed`, with user entry | create turn controller/generation |
+| busy input submission | `queued` | append steer/follow-up inbox item |
+| idle write submission | `done`, with entry | append entry; no turn |
+| busy write submission | `queued` | append write inbox item |
 | boundary places user item | `placed`, with entry | add ID to current/successor turn |
 | boundary places write | `done`, with entry | append entry |
-| turn answers | `done`, with answer entry | clear/hand off turn controller |
-| turn fails or aborts | `unanswered`, with reason | clear/hand off turn controller |
+| turn answers | input `done`, with required answer entry | clear/hand off turn controller |
+| turn fails or aborts | input `unanswered`, with reason | clear/hand off turn controller |
 | withdraw queued item | `unanswered`, reason `aborted` | remove inbox item |
 | stale item | `unanswered`, reason `stale` | remove inbox item |
 
-`requestId` deduplicates within one conversation before any write. Busy send
-with `whenBusy: "reject"` writes nothing and reports `ConversationBusy`. Before
-an idle send places its own entry, it runs a final boundary to drain any older
-eligible queued items. A handle waits until `done` or `unanswered`; abort
-withdraws only a still-queued input and otherwise reports that placement already
-occurred. Conversation abort withdraws queued steer/follow-up inputs but keeps
-passive writes for later placement.
+`requestId` deduplicates within one conversation before any write; reusing one
+for the other submission type rejects. A busy input with `whenBusy: "reject"`
+writes no record and reports `ConversationBusy`. Before an idle input places its
+own entry, it runs a final boundary to drain older eligible queued items. A
+`Submission` waits until `done` or `unanswered`; abort withdraws only a still-
+queued submission, reports `already_placed` for a placed input, and reports
+`settled` for any terminal submission. Conversation abort withdraws queued steer/follow-up submissions but keeps writes
+for later placement.
 
 Boundary selection is deterministic by item ID:
 
@@ -1221,22 +1355,21 @@ Boundary selection is deterministic by item ID:
 | `postTools` | all | first/all by mode | none |
 | `final` | all | first/all by mode | first/all by mode |
 
-A queued self-head write cuts older pending user items: those inputs become
+A queued self-head write cuts older pending user items: those submissions become
 stale, the write is placed, and the current turn terminates. Other head writes
 whose target predates the caller's newest known head are stale.
 
 At ordinary `postTools`, generation continues even with no queued trigger;
 selected steer IDs join that continuation. A terminating/handoff post-tools
 boundary uses final behavior instead. At `final`, the current turn's placed
-inputs settle first; selected user IDs start one successor generation. Writes
+input submissions settle first; selected user IDs start one successor generation. Writes
 never trigger generation by themselves. A final boundary without continuation
 or user triggers leaves the conversation idle.
 
 Selected and stale items are removed positionally while retained item order is
-preserved.
-Chord must encode scattered removals without retransmitting retained payloads.
-The exact tracker optimization is implementation work; IDs are not substituted
-for positional inbox semantics.
+preserved. Chord's revision differ must express scattered removals without
+carrying retained values; IDs are not substituted for positional inbox
+semantics.
 
 ## 7. Hooks, tools, and system sections
 
@@ -1279,7 +1412,7 @@ type ToolExecutionResult = {
 
 interface OwnedConversation {
   readonly id: Id;
-  send(input: SendInput, context: Context): Promise<InputHandle>;
+  submit(submission: InputSubmissionDraft, context: Context): Promise<Submission>;
   abort(context: Context): Promise<void>;
   waitForIdle(context: Context): Promise<void>;
 }
@@ -1336,9 +1469,9 @@ does not merge keys. Its promise resolves after the corresponding or coalesced
 document commit. During normal settlement, accepted output updates drain before
 the tool-result entry and terminal task record commit. Abort and close obey
 invocation and Session admission gates: uncommitted buffered updates may be
-discarded, while admitted commits settle. Pre-flush cancellation or callback
-failure does not poison the Session. Post-flush, checkpoint, or storage failure
-follows the fatal Session rule.
+discarded, while admitted commits settle. Cancellation, callback, tracker
+preparation, and checkpoint failures occur before Storage admission and do not
+poison the Session. An uncertain Storage failure follows the fatal Session rule.
 
 Tools are dynamically registered declarations with name, description, JSON
 schema, replay policy, and execute function. A tool call is accepted only if it
@@ -1348,6 +1481,9 @@ validated before and after `beforeTool` hooks.
 After hooks and validation, the tool task durably records the final call and
 resolved replay policy before execution. Recovery does not rerun `beforeTool`
 and does not let a changed registry declaration alter that stored policy.
+
+An owned conversation accepts only input submissions; tools use ordinary
+transaction writes for passive entries.
 
 A tool executes in a durable task. It may:
 
@@ -1369,8 +1505,8 @@ newest committed visible entry as `parent.at`; if no entry exists, it creates no
 history parent. Conversation documents then apply section 3.7 at that entry, and
 explicit model/section seeds override their inherited built-in values. With no
 parent, documents initialize normally. That handle's
-operations reject after the invocation ends. An `InputHandle` returned by its
-`send()` is invocation-bound in the same way; the admitted input itself remains
+operations reject after the invocation ends. A `Submission` returned by its
+`submit()` is invocation-bound in the same way; the admitted submission remains
 durable after those methods reject. Invocation-owned document watches stop when
 the invocation ends.
 
@@ -1437,9 +1573,9 @@ existing section; `null` removes it, and a later re-addition appends it to the
 ordered section map. Within one message, tool removals happen before additions,
 so a same-name replacement gets the new declaration and position.
 
-The built-in configuration document preserves section insertion order.
-`setSection(section, undefined)` removes the key; setting it later appends it at
-the end. Preparation compares both values and order. If values can be patched
+The built-in configuration document stores sections as an ordered array, never
+as an object whose key order must be inferred by Delta. `setSection(section,
+undefined)` removes the record; setting it later appends it at the end. Preparation compares both values and order. If values can be patched
 without changing order, it emits the minimal patch. If effective and desired
 section order differ, one commit appends two `pi.system` entries: the first
 removes every effective section with `null`, and the second re-adds every desired
@@ -1541,9 +1677,46 @@ does not delete transcript history.
 
 ### 9.1 Document source
 
+Chord exposes this source-adoption contract from its replicated-state layer:
+
 ```ts
+interface ReplicatedStateSourceFrame<T> {
+  readonly cursor: number;
+  readonly value: T;
+  readonly ops: readonly Op[];
+  readonly context: Context;
+}
+
+interface ReplicatedStateSourceAttachment<T> {
+  /** Fixed immutable snapshot captured at the atomic attachment boundary. */
+  readonly snapshot: { readonly value: T; readonly cursor: number };
+  /** Install the sole listener and synchronously drain every buffered frame. */
+  activate(listener: (frame: ReplicatedStateSourceFrame<T>) => void): void;
+  dispose(): void;
+}
+
+interface ReplicatedStateSource<T> {
+  /** Atomically capture a snapshot and begin buffering every later commit. */
+  attach(): ReplicatedStateSourceAttachment<T>;
+}
+
+interface ReplicatedStateSourceOptions {
+  readonly onError?: (error: Error) => void;
+}
+
+interface AttachedReplicatedState<T> extends ReplicatedState<T> {
+  readonly value: T;
+  dispose(): void;
+}
+
+function replicatedState<T>(
+  source: ReplicatedStateSource<T>,
+  options?: ReplicatedStateSourceOptions,
+): AttachedReplicatedState<T>;
+
 declare const documentSourceType: unique symbol;
-interface DocumentSource<T extends JsonObject> {
+interface DocumentSource<T extends JsonObject>
+  extends ReplicatedStateSource<Readonly<T> | null> {
   readonly [documentSourceType]: T;
 }
 
@@ -1565,52 +1738,52 @@ interface WatchHandle<T> {
 type DocumentWatch<T extends JsonObject> = WatchHandle<Readonly<T> | null>;
 
 interface DocumentObserver {
-  watchDoc<T extends JsonObject>(token: DocToken<T>, target: DocTarget, context: Context): Promise<DocumentWatch<T>>;
-  watchDoc<T extends JsonObject, I extends JsonValue>(token: DocFamilyToken<T, I>, target: FamilyTarget<I>, context: Context): Promise<DocumentWatch<T>>;
+  watchDoc<T extends JsonObject>(token: SessionDocToken<T>, context: Context): Promise<DocumentWatch<T> | undefined>;
+  watchDoc<T extends JsonObject>(token: ConversationDocToken<T>, conversationId: Id, context: Context): Promise<DocumentWatch<T> | undefined>;
+  watchDoc<T extends JsonObject>(token: TaskDocToken<T>, taskId: Id, context: Context): Promise<DocumentWatch<T> | undefined>;
+  watchDoc<T extends JsonObject, I extends JsonValue>(token: SessionDocFamilyToken<T, I>, key: string, context: Context): Promise<DocumentWatch<T> | undefined>;
+  watchDoc<T extends JsonObject, I extends JsonValue>(token: ConversationDocFamilyToken<T, I>, conversationId: Id, key: string, context: Context): Promise<DocumentWatch<T> | undefined>;
+  watchDoc<T extends JsonObject, I extends JsonValue>(token: TaskDocFamilyToken<T, I>, taskId: Id, key: string, context: Context): Promise<DocumentWatch<T> | undefined>;
 }
 ```
 
-`DocumentSource` is opaque. Pico5 adds this adapter at the Chord boundary:
+`DocumentSource` is an opaque Chord-recognized `ReplicatedStateSource`. A Chord
+replicated state adopts it directly and forwards its committed immutable value
+and operations without another tracker or re-diff. `attach()` is one synchronous
+boundary: `snapshot.value` includes every commit through `snapshot.cursor`, and
+the attachment buffers only later frames. `activate()` installs the sole listener
+and synchronously drains those frames in contiguous cursor order before returning.
+An operation already covered by the snapshot is never redelivered. Source-backed
+state is publication-only and Pico remains its sole mutator.
 
-```ts
-interface ReplicatedDocument<T extends JsonObject> {
-  readonly state: ReplicatedState<T | null>;
-  dispose(): void;
-}
+Source and watch acquisition never create; absent lookup returns `undefined`.
+Successful acquisition binds one concrete incarnation. Retirement publishes a
+JSON `null` replacement and ends that incarnation's stream. The service may then
+withdraw itself; if it remains exposed, consumers see `null`, never stale state.
+If the incarnation retires before attachment, attachment hydrates terminal
+`null`; it never binds a replacement incarnation. A later recreation requires
+acquiring a new source/watch.
 
-function documentReplicatedState<T extends JsonObject>(
-  source: DocumentSource<T>,
-  context: Context,
-): Promise<ReplicatedDocument<T>>;
-```
-
-The adapter registers the source with Chord and exposes it without a second
-tracker or re-diff. Normal source and watch acquisition are get-or-create and
-bind one concrete incarnation. Retirement publishes a JSON `null` replacement
-and ends that incarnation's stream. The service may then withdraw itself; if it
-remains exposed, consumers see `null`, never stale state. A later recreation
-requires acquiring a new source/watch.
-
-Each Chord adapter assigns its own in-memory contiguous delivery sequence; Pico
-does not persist or expose that sequence through `WatchHandle`. Hydration
-atomically captures a matching immutable value and adapter sequence before
-subsequent source operations are delivered. Reopen creates a new source
-lifetime and hydration.
+Each adopted replicated state assigns its own in-memory contiguous delivery
+sequence; Pico does not persist or expose that sequence through `WatchHandle`.
+A live source or watch pins its incarnation's loaded tracker; eviction begins only
+after every attachment ends. Reopen creates a new source lifetime and hydration.
 
 ### 9.2 `watchDoc`
 
-Tasks, hooks, and tools may observe any document for which their code has a token
-and target. There is no additional subtree permission system inside trusted
+Tasks, hooks, and tools may observe any existing document for which their code
+has a token and owner/key. There is no additional subtree permission system inside trusted
 Session code.
 
-`watchDoc()` is available on task, hook, and tool APIs. Acquisition performs
-normal get-or-create and, on the Session line, binds one concrete incarnation,
-captures its immutable committed value, and registers the handle for every later
-committed operation batch. `watch.value` is that fixed acquisition snapshot and
+`watchDoc()` is available on task, hook, and tool APIs. On the Session line,
+acquisition resolves one existing concrete incarnation, captures its immutable
+committed value, and registers the handle for every later committed operation
+batch. It returns `undefined` when absent. `watch.value` is that fixed acquisition snapshot and
 never changes.
 
 ```ts
-const watch = await api.watchDoc(JobOutputDoc, target, context);
+const watch = await api.watchDoc(JobOutputDoc, producerTaskId, context);
+if (watch === undefined) return;
 let value = watch.value;
 try {
   await initializeConsumer(value, context);
@@ -1656,13 +1829,11 @@ accumulating an unbounded operation list. This bounds delta bookkeeping, not the
 document value itself. This watch observes convergent committed state, not every
 intermediate transition.
 
-The replacement value is the immutable publication value corresponding exactly
-to the last batch compacted into it. After storage succeeds, Pico materializes
-that value once per changed document with
-`applyImmutable(previousPublishedValue, ops)`; it never retains mutable
-`Tracker.state`, `Tracker.target`, or a borrowed storage candidate. Watches may
-share the immutable publication value and operation payloads. A mutable consumer
-must detach them before using mutable `apply()` or `track()`.
+The replacement value is the prepared immutable candidate corresponding exactly
+to the last batch compacted into it. Pico adopts and publishes that candidate
+after storage succeeds; it never exposes a draft or borrowed storage value.
+Watches may share the immutable candidate and frozen operation payloads. A
+mutable consumer must detach them before using mutable `apply()` or `track()`.
 
 A watch remains bound to its original incarnation. Retirement replaces the
 pending suffix with `[["r", null]]`. Before start, `value` remains the original
@@ -1674,9 +1845,8 @@ the reset follows any in-flight callback. Successful terminal delivery closes as
 prevents another callback from starting, and signals the watch delivery context.
 An in-flight callback is allowed to settle; `closed` resolves only afterward.
 The acquisition `Context` governs the watch lifetime. Cancellation during
-acquisition cleans up any registration before rejecting; an already-admitted
-get-or-create commit still settles and is not undone. Cancellation immediately
-after successful acquisition may therefore return an already-stopped handle,
+acquisition cleans up any registration before rejecting. Cancellation immediately
+after successful acquisition may return an already-stopped handle,
 whose `start()` throws and whose `closed` reports `cancelled`. Invocation
 termination and Session close stop owned watches similarly. Listener rejection
 is reported, discards pending work, and closes only that watch as
@@ -1707,7 +1877,7 @@ document op ["s", ["message"], value]
 ```
 
 Entry appends/head changes and every changed mounted document are included in
-the same publication. The mount owns no tracker and performs no semantic
+the same publication. The mount owns no document revision producer and performs no semantic
 projection. It materializes one immutable published view per batch with
 `applyImmutable(previousView, mountedOps)` so every conversation watch can share
 that value for reset compaction. A Chord adapter assigns a contiguous in-memory
@@ -1730,20 +1900,20 @@ compaction. It owns no tracker or persistence and emits notifications only after
 the commit that makes them true.
 
 The adapter protocol covers run start/settlement, committed assistant progress,
-message entry settlement, tool intent/progress/result, input queue/outcome,
+message entry settlement, tool intent/progress/result, submission queue/outcome,
 retry/deferred/compaction state, configuration changes, and faults. One commit
 may produce an ordered batch. Progress notifications represent Pico's throttled
 durable partials, not every raw provider frame. The exact legacy `AgentEvent`
 wire format is not preserved.
 
 Notifications have no hydration or replay contract. A consumer requiring a
-complete lifecycle subscribes before admitting the input; a late or reconnecting
+complete lifecycle subscribes before admitting the submission; a late or reconnecting
 consumer hydrates structural state and history instead. Product adapters apply
 these rules:
 
 - TUI hydrates and renders `ConversationView`, then applies structural updates;
   notifications may drive transient animation but are not its authority.
-- Print awaits its submitted `InputHandle` and prints that input's answer.
+- Print awaits its input `Submission` and prints that submission's answer.
 - JSON/RPC expose correlated commands plus the ordered agent notification
   protocol, with transport backpressure and disconnect policy owned by that
   adapter.
@@ -1796,23 +1966,17 @@ type DocumentContent =
   | { readonly version: number; readonly kind: "base"; readonly value: JsonObject }
   | { readonly version: number; readonly kind: "delta"; readonly ops: readonly Op[] };
 
-type StoredDocumentRecord =
-  | { readonly seq: Seq; readonly version: number; readonly kind: "base"; readonly value: JsonObject }
-  | { readonly seq: Seq; readonly version: number; readonly kind: "delta"; readonly ops: readonly Op[] };
-
 type StoredDocument = {
   readonly record: DocumentRecord;
-  readonly records: readonly [
-    Extract<StoredDocumentRecord, { kind: "base" }>,
-    ...Extract<StoredDocumentRecord, { kind: "delta" }>[],
-  ];
+  readonly version: number;
+  readonly value: JsonObject;
 };
 
 type StorageWrite =
   | { readonly type: "conversation"; readonly value: ConversationRecord }
   | { readonly type: "entry"; readonly value: EntryRecord }
   | { readonly type: "task"; readonly value: TaskRecord<JsonValue, JsonValue, JsonValue> }
-  | { readonly type: "input"; readonly value: Input }
+  | { readonly type: "submission"; readonly value: SubmissionRecord }
   | {
       readonly type: "document.create";
       readonly record: DocumentCreate;
@@ -1828,7 +1992,7 @@ type StorageWrite =
 /**
  * Trusts the owning Session to supply semantically valid records, references,
  * ancestry, and transitions. Enforces atomicity, global ID ownership, immutable
- * conversation/entry creation, document lifecycle consistency, and detached
+ * conversation/entry creation, document record consistency, and detached
  * values; Session serializes commits.
  */
 interface Storage {
@@ -1845,8 +2009,8 @@ interface Storage {
   task(id: Id, context: Context): Promise<TaskRecord<JsonValue, JsonValue, JsonValue> | undefined>;
   scanTasks(query: TaskQuery, cursor: Cursor | undefined, limit: number, context: Context): Promise<Page<TaskRecord<JsonValue, JsonValue, JsonValue>, Cursor>>;
 
-  input(id: Id, context: Context): Promise<Input | undefined>;
-  inputByRequest(conversationId: Id, requestId: string, context: Context): Promise<Input | undefined>;
+  submission(id: Id, context: Context): Promise<SubmissionRecord | undefined>;
+  submissionByRequest(conversationId: Id, requestId: string, context: Context): Promise<SubmissionRecord | undefined>;
 
   findDocument(address: DocumentAddress, at: DocumentPoint, context: Context): Promise<DocumentRecord | undefined>;
   document(id: Id, at: DocumentPoint, context: Context): Promise<StoredDocument | undefined>;
@@ -1878,15 +2042,17 @@ ascending incarnation IDs. There is no ordinary open-time all-document scan.
 Task queries support conversation, kind, live/terminal status, abort mark, and
 background status.
 
-`document(id, at)` returns the newest applicable base plus its ordered delta tail
-and never scans unrelated documents. An unknown ID returns `undefined`. At
-`"current"`, a retired incarnation returns `undefined`. A numeric lookup of a
-rewindable conversation incarnation returns `undefined` outside its half-open
-lifetime and reconstructs the selected value inside it. A numeric lookup of a
-known current-only incarnation rejects rather than depending on content that
-reclamation may have removed. Metadata membership remains queryable historically.
-A missing required base inside an addressable rewindable lifetime is storage
-corruption, not absence.
+`document(id, at)` internally selects the newest applicable base, applies its
+ordered Chord delta tail, and returns the detached materialized value plus stored
+definition version. Base/delta records are backend-private. The lookup never
+scans unrelated documents. An unknown ID returns `undefined`. At `"current"`, a
+retired incarnation returns `undefined`. A numeric lookup of a rewindable
+conversation incarnation returns `undefined` outside its half-open lifetime and
+reconstructs the selected value inside it. A numeric lookup of a known current-
+only incarnation rejects rather than depending on reclaimed content. Metadata
+membership remains queryable historically. A missing required base, a version
+change inside a delta tail, or an operation that cannot be applied inside an
+addressable lifetime is storage corruption, not absence.
 
 One normalized batch contains at most one create/change content command per
 incarnation and may also retire that incarnation. Storage applies content before
@@ -1911,8 +2077,8 @@ after a committed base or retirement.
 
 One SQL transaction is one Session commit. SQLite stores:
 
-- conversation, entry, task, and input records;
-- document lifecycle records;
+- conversation, entry, task, and submission records;
+- document records;
 - indexed document bases/deltas by document and commit sequence.
 
 Live task transitions replace one row. Terminal tasks remain as small records.
@@ -1933,7 +2099,7 @@ must not be exposed directly by reads. A JSONL backend cannot simply add file
 appends around aliasing memory tables.
 
 ```text
-main.jsonl       table writes, lifecycle, and one marker per commit
+main.jsonl       table writes, document records, and one marker per commit
 doc-<id>.jsonl   one document incarnation
 task-<id>.jsonl  live task replacements
 ```
@@ -1968,19 +2134,19 @@ the initial implementation.
 
 These are contracts, not invitations to add defensive machinery:
 
-- **Draft escape:** `tx.doc()` values, nested proxies, and array methods are valid
-  only during that transaction. Retaining them can contaminate a later commit.
-- **Inserted aliases:** after assigning an object or array into a draft, do not
-  mutate the original value. The tracker owns it.
+- **Detached draft work:** drafts and bound array methods are revoked after the
+  Session callback settles. Fire-and-forget work that runs before settlement can
+  still mutate the active transaction and is unsupported.
 - **Read after write:** read every required table row before the first table
   write. Document drafts remain usable afterward; table reads do not.
 - **Long transactions:** an async commit callback holds the Session mutation
   line. Never await models, tools, processes, network calls, humans, a nested
   Session commit, or a Session waiter inside it. Use methods on the current `Tx`.
-- **Get-or-create reads:** `snapshot()` and `documentSource()` can create and
-  commit an absent document. They are not historical or side-effect-free reads.
-- **Family initialization:** `initial` input is used only for a new incarnation.
-  It does not update an existing instance.
+- **Explicit creation:** only typed `tx.doc()` creates an absent document. Snapshot,
+  source, and watch lookup return `undefined` instead.
+- **Family initialization:** the first acquisition of an absent family address
+  selects its seed. Existing instances and later calls ignore seeds; a seed is
+  neither identity nor an update.
 - **Checkpoint starvation:** if `checkpointWhen()` never returns true, replay
   and current-only document storage can grow without bound while the document is
   live.
@@ -2020,7 +2186,6 @@ Pico5 initially has no:
 - whole-Session DOM;
 - visible-undurable publication;
 - Session-kernel semantic event journal or independently maintained event state;
-- transaction membrane;
 - session-scoped rewindable documents;
 - automatic checkpoint heuristic;
 - automatic third-party view mounting;
