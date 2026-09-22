@@ -66,7 +66,7 @@ async function registryVersion(version) {
 	return response.json();
 }
 
-export async function verifyPublishedOctoberTarball(artifact, { lookup = registryVersion, wait = delay, attempts = 6, delayMs = 5_000 } = {}) {
+export async function verifyPublishedOctoberTarball(artifact, { lookup = registryVersion, wait = delay, attempts = 41, delayMs = 30_000 } = {}) {
 	let lastError;
 	for (let attempt = 0; attempt < attempts; attempt++) {
 		let published;
@@ -82,7 +82,10 @@ export async function verifyPublishedOctoberTarball(artifact, { lookup = registr
 				return published;
 			}
 		}
-		if (attempt + 1 < attempts) await wait(delayMs);
+		if (attempt + 1 < attempts) {
+			console.log(`Waiting for npm metadata for ${octoberPackageName}@${artifact.version}; lookup ${attempt + 2}/${attempts} in ${delayMs}ms`);
+			await wait(delayMs);
+		}
 	}
 	throw new Error("Published integrity could not be verified; inspect npm before retrying", { cause: lastError });
 }

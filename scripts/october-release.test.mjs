@@ -51,7 +51,19 @@ test("published October integrity waits for registry propagation and transient f
 	});
 	assert.equal(result, published);
 	assert.equal(queries, 4);
-	assert.deepEqual(waits, [5_000, 5_000, 5_000]);
+	assert.deepEqual(waits, [30_000, 30_000, 30_000]);
+});
+
+test("published October verification allows registry delays lasting several minutes", async () => {
+	let queries = 0;
+	let elapsedWait = 0;
+	const result = await verifyPublishedOctoberTarball(artifact, {
+		lookup: async () => ++queries === 21 ? published : undefined,
+		wait: async (milliseconds) => { elapsedWait += milliseconds; },
+	});
+	assert.equal(result, published);
+	assert.equal(queries, 21);
+	assert.equal(elapsedWait, 600_000);
 });
 
 test("published October integrity never retries or accepts different contents", async () => {
