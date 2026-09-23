@@ -124,12 +124,11 @@ Start `october`, enter `/login`, and choose **October account**. October opens t
 
 Standalone login uses a device-code flow and stores a revocable credential under `~/.october/agent/`. Inside October Desktop, the app injects and refreshes the signed-in session, so no separate login is required.
 
-The built-in October provider refreshes its model catalog from the October inference gateway. Its offline seed catalog includes:
-
-- `october/Qwen/Qwen3.6-35B-A3B-FP8`: the recommended default, with text input and reasoning;
-- `october/Kimi-K2.7-Code`: a text-and-image model retained for deployments that provide access.
+The built-in October provider refreshes its model catalog from the October inference gateway. Before the first refresh, its offline seed catalog contains only `october/Qwen/Qwen3.6-35B-A3B-FP8`, the recommended default, with text input and reasoning. Paused models such as `october/Kimi-K2.7-Code` appear only when the gateway lists them.
 
 Existing saved model choices are preserved. If a session still selects Kimi and receives `model use not permitted`, use `/model` to select Qwen3.6 or pass `--provider october --model october/Qwen/Qwen3.6-35B-A3B-FP8`.
+
+October Pro and Max plans also include paid OpenRouter models, listed under `openrouter/` (for example `openrouter/anthropic/claude-sonnet-5`). They are billed at cost from your monthly harness credit. The `/model` picker shows each paid model's price and marks the others as free. While an October model is selected, the footer shows your remaining credit. Paid models accept text only; images are replaced with a placeholder before the request is sent. On the Free plan, or when your credit runs out, October explains how to upgrade or top up and suggests a free model; it does not ask you to sign in again.
 
 Use `/model` in the TUI or inspect available models from the shell:
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added October Pro and Max paid OpenRouter models from the October gateway catalog. The model picker shows their prices, the footer shows remaining harness credit, and plan, credit, capacity, and request errors are rewritten as actionable messages that do not trigger re-authentication.
+
 ### Changed
 
 - Lead default introductions with October's multiplayer-first identity and Bus collaboration capabilities, distinguishing supported features from tools available in the current session.

@@ -3,7 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { findInitialModel } from "../src/core/model-resolver.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { createOctoberProviderConfig, OCTOBER_DEFAULT_MODEL_ID } from "../src/extensions/october/provider.ts";
+import {
+	createOctoberProviderConfig,
+	OCTOBER_DEFAULT_MODEL_ID,
+	OCTOBER_SEED_MODELS,
+} from "../src/extensions/october/provider.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 const unknownModel: Model<Api> = {
@@ -43,7 +47,14 @@ beforeEach(async () => {
 		allowModelNetwork: false,
 		refreshOnCreate: false,
 	});
-	runtime.registerProvider("october", createOctoberProviderConfig());
+	// Only the recommended model is seeded; a second catalog entry stands in for any alternative.
+	runtime.registerProvider("october", {
+		...createOctoberProviderConfig(),
+		refreshModels: async () => [
+			...OCTOBER_SEED_MODELS,
+			{ ...OCTOBER_SEED_MODELS[0]!, id: "october/Alternative-Model", name: "Alternative Model" },
+		],
+	});
 	const refreshed = await runtime.refresh({ providers: ["october"], allowNetwork: false });
 	recommended = runtime.getModel("october", OCTOBER_DEFAULT_MODEL_ID)!;
 	alternative = runtime.getModels("october").find((model) => model.id !== OCTOBER_DEFAULT_MODEL_ID)!;

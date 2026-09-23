@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
 import { registerOctoberDesktopAuth, seedOctoberCredential } from "./auth.ts";
+import { registerOctoberBilling } from "./billing.ts";
 import { parseOctoberBusEnv } from "./bus/env.ts";
 import { registerOctoberHooks } from "./bus/hooks.ts";
 import { OctoberMcpClient } from "./bus/mcp-client.ts";
@@ -11,6 +12,7 @@ import { registerOctoberProvider } from "./provider.ts";
 
 export default async function octoberExtension(pi: ExtensionAPI): Promise<void> {
 	registerOctoberProvider(pi);
+	registerOctoberBilling(pi);
 	const permissions = createOctoberPermissionController();
 	registerOctoberPermissions(pi, permissions);
 	registerOctoberHeader(pi);
