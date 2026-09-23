@@ -60,7 +60,7 @@ describe("buildSystemPrompt", () => {
 				contextFiles: [{ path: "/workspace/AGENTS.md", content: "Project instructions." }],
 			});
 
-			expect(initial.preamble).toContain("I'm October Harness, October's coding agent.");
+			expect(initial.preamble).toContain("I'm October Harness, October's open, multiplayer-first coding agent.");
 			expect(initial.rules).toContain("Lead with the outcome.");
 			expect(initial.rules).toContain("Verify behavior before claiming a fix works.");
 			expect(initial.docs).toContain("October Harness documentation");

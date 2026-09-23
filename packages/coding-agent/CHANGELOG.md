@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Lead default introductions with October's multiplayer-first identity and Bus collaboration capabilities, distinguishing supported features from tools available in the current session.
+
 ## [0.87.0-october.2] - 2026-09-22
 
 ### Fixed
