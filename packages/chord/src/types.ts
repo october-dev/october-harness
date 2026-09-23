@@ -1,6 +1,5 @@
-import type { Op } from "./delta/index.ts";
+import type { Draft, Op } from "./delta/index.ts";
 import type { RemoteServiceProvider } from "./services/provider.ts";
-import type { Draft } from "./state/draft.ts";
 
 export type { RemoteServiceError } from "./services/errors.ts";
 export type { RemoteServiceProvider } from "./services/provider.ts";
@@ -57,6 +56,54 @@ export interface MutableReplicatedState<T extends object> extends ReplicatedStat
 	change(context: Context, mutate: (draft: Draft<T>) => void): void;
 	/** Atomically replace the complete value with a detached immutable JSON snapshot. */
 	replace(context: Context, value: T): void;
+}
+
+/** One immutable authoritative revision committed after an attachment snapshot. */
+export interface ReplicatedStateSourceFrame<T> {
+	/** Monotonic source cursor. The first frame after a snapshot must be `snapshot.cursor + 1`. */
+	readonly cursor: number;
+	/** The exact immutable value produced by this commit. */
+	readonly value: T;
+	/** The exact immutable operation batch that produced `value` from the preceding source revision. */
+	readonly ops: readonly Op[];
+	readonly context: Context;
+}
+
+export interface ReplicatedStateSourceAttachment<T> {
+	/** Fixed immutable snapshot captured at the atomic attachment boundary. */
+	readonly snapshot: { readonly value: T; readonly cursor: number };
+	/**
+	 * Install the sole listener and synchronously drain every buffered frame in source commit order.
+	 * This method is single-use. After it begins, every new committed frame must also be delivered in order
+	 * until disposal, including commits made reentrantly while a prior frame is being delivered.
+	 */
+	activate(listener: (frame: ReplicatedStateSourceFrame<T>) => void): void;
+	/** Stop delivery and release source resources. Disposal must be idempotent. */
+	dispose(): void;
+}
+
+/**
+ * An authoritative immutable revision source.
+ *
+ * `attach()` must synchronously and atomically capture one snapshot and register the returned attachment to buffer
+ * every later committed frame. The snapshot must include every commit before that boundary; buffered frames must
+ * include every commit after it, with no overlap or gap. Snapshot values, frame values, and operation batches are
+ * immutable and remain valid after delivery. Chord only publishes these references; it never applies or re-diffs them.
+ */
+export interface ReplicatedStateSource<T> {
+	attach(): ReplicatedStateSourceAttachment<T>;
+}
+
+export interface ReplicatedStateSourceOptions {
+	/** Receives source-contract and publication-listener failures without throwing them into the source. */
+	readonly onError?: (error: Error) => void;
+}
+
+/** A synchronously hydrated publication-only state backed by one source attachment. */
+export interface AttachedReplicatedState<T> extends ReplicatedState<T> {
+	readonly value: T;
+	/** Idempotently release the source attachment. The last published value remains readable. */
+	dispose(): void;
 }
 
 declare const SERVICE_TYPE: unique symbol;

@@ -1,76 +1,80 @@
 import { describe, expect, it } from "vitest";
 import { apply, track } from "../src/delta/index.ts";
 
-describe("delta payload cloning", () => {
-	it("deeply detaches mixed objects and arrays in a base snapshot", () => {
+describe("tracker ownership", () => {
+	it("deeply detaches and freezes the imported revision", () => {
 		const input = {
 			point: { x: 3, y: 7, pressure: 0.1 },
 			rows: [{ values: [0, false, null, "text", { n: 1 }] }],
 		};
-		const producer = track(input);
-		const copy = apply<typeof input>(undefined, producer.flush());
-		expect(copy).toEqual(input);
-		expect(copy).not.toBe(input);
-		expect(copy.point).not.toBe(input.point);
-		expect(copy.rows).not.toBe(input.rows);
-		expect(copy.rows[0]).not.toBe(input.rows[0]);
-		expect(copy.rows[0].values).not.toBe(input.rows[0].values);
-		expect(copy.rows[0].values[4]).not.toBe(input.rows[0].values[4]);
-		copy.point.pressure = 0.9;
-		(copy.rows[0].values[4] as { n: number }).n = 2;
-		expect(input.point.pressure).toBe(0.1);
-		expect(input.rows[0].values[4]).toEqual({ n: 1 });
-		producer.state.point.x = 99;
-		expect(copy.point.x).toBe(3);
+		const tracker = track(input);
+		expect(tracker.value).toEqual(input);
+		expect(tracker.value).not.toBe(input);
+		expect(tracker.value.point).not.toBe(input.point);
+		expect(tracker.value.rows[0]!.values[4]).not.toBe(input.rows[0]!.values[4]);
+		expect(Object.isFrozen(tracker.value.rows[0]!.values)).toBe(true);
+		input.point.x = 99;
+		expect(tracker.value.point.x).toBe(3);
 	});
 
-	it("preserves null prototypes at the root and inside arrays", () => {
+	it("preserves null prototypes and expands aliases", () => {
 		type Dictionary = { enabled: boolean; child: { n: number } };
 		const dictionary = Object.assign(Object.create(null) as Dictionary, { enabled: true, child: { n: 1 } });
-		const rootCopy = apply<Dictionary>(undefined, track(dictionary).flush());
-		const nestedCopy = apply<{ rows: Dictionary[] }>(undefined, track({ rows: [dictionary] }).flush());
-		expect(Object.getPrototypeOf(rootCopy)).toBeNull();
-		expect(Object.getPrototypeOf(nestedCopy.rows[0])).toBeNull();
-		expect(Object.getPrototypeOf(rootCopy.child)).toBe(Object.prototype);
-		expect(rootCopy.child).not.toBe(dictionary.child);
-		expect(nestedCopy.rows[0].child).not.toBe(dictionary.child);
-		rootCopy.child.n = 2;
-		expect(dictionary.child.n).toBe(1);
-		expect(nestedCopy.rows[0].child.n).toBe(1);
-	});
-
-	it("recursively clones own data properties shadowing inherited names", () => {
-		const input = { constructor: { n: 1 }, toString: [{ n: 2 }], hasOwnProperty: { n: 3 } };
-		const copy = apply<typeof input>(undefined, track(input).flush());
-		expect(Object.getPrototypeOf(copy)).toBe(Object.prototype);
-		for (const key of Object.keys(input)) expect(Object.hasOwn(copy, key)).toBe(true);
-		expect(copy.constructor).not.toBe(input.constructor);
-		expect(copy.toString[0]).not.toBe(input.toString[0]);
-		expect(copy.hasOwnProperty).not.toBe(input.hasOwnProperty);
-		copy.constructor.n = 9;
-		expect(input.constructor.n).toBe(1);
-	});
-
-	it("continues expanding shared input values into independent JSON payloads", () => {
 		const shared = { nested: [{ n: 1 }] };
-		const copy = apply<{ a: typeof shared; b: typeof shared }>(undefined, track({ a: shared, b: shared }).flush());
-		expect(copy.a).toEqual(copy.b);
-		expect(copy.a).not.toBe(copy.b);
-		expect(copy.a.nested).not.toBe(copy.b.nested);
-		expect(copy.a.nested[0]).not.toBe(copy.b.nested[0]);
+		const tracker = track({ dictionary, left: shared, right: shared });
+		expect(Object.getPrototypeOf(tracker.value.dictionary)).toBeNull();
+		expect(tracker.value.dictionary).not.toBe(dictionary);
+		expect(tracker.value.left).not.toBe(tracker.value.right);
+		expect(tracker.value.left.nested[0]).not.toBe(tracker.value.right.nested[0]);
 	});
 
-	it("keeps published insertion payloads independent of subsequent producer edits", () => {
-		type Item = { point: { x: number; y: number; pressure: number }; tags: { name: string }[] };
-		const producer = track({ items: [] as Item[] });
-		const replica = apply<typeof producer.state>(undefined, producer.flush());
-		producer.state.items.push({ point: { x: 1, y: 2, pressure: 0.5 }, tags: [{ name: "original" }] });
-		const batch = producer.flush();
-		producer.state.items[0].point.x = 9;
-		producer.state.items[0].tags[0].name = "changed";
-		const published = apply(replica, batch);
-		expect(published.items[0].point.x).toBe(1);
-		expect(published.items[0].tags[0].name).toBe("original");
-		expect(published.items[0].point).not.toBe(producer.target.items[0].point);
+	it("copies assigned and inserted values immediately", () => {
+		const tracker = track({ rows: [] as { nested: { value: number } }[] });
+		const assigned = { nested: { value: 1 } };
+		const change = tracker.beginChange();
+		change.state.rows.push(assigned);
+		assigned.nested.value = 9;
+		expect(change.state.rows[0]!.nested.value).toBe(1);
+		const prepared = change.prepare();
+		expect(prepared.value.rows[0]!.nested.value).toBe(1);
+		const replica = apply(structuredClone(prepared.base), prepared.ops);
+		expect(replica).toEqual(prepared.value);
+	});
+
+	it("rejects cycles, accessors, classes, and non-finite numbers", () => {
+		const cyclic: { self?: object } = {};
+		cyclic.self = cyclic;
+		expect(() => track(cyclic)).toThrow(/cycles/);
+		expect(() => track({ value: Number.NaN })).toThrow(/strict JSON/);
+		expect(() => track({ value: new Date() })).toThrow(/plain objects/);
+		const accessor = Object.defineProperty({}, "value", { enumerable: true, get: () => 1 });
+		expect(() => track(accessor)).toThrow(/data properties/);
+	});
+
+	it("rejects indexed accessors and non-enumerable array entries without invoking getters", () => {
+		let reads = 0;
+		const accessor: number[] = [];
+		Object.defineProperty(accessor, "0", {
+			enumerable: true,
+			configurable: true,
+			get() {
+				reads += 1;
+				return 1;
+			},
+		});
+		expect(() => track({ values: accessor })).toThrow(/data properties/);
+		expect(reads).toBe(0);
+
+		const hidden: number[] = [];
+		Object.defineProperty(hidden, "0", { value: 1, enumerable: false, configurable: true, writable: true });
+		expect(() => track({ values: hidden })).toThrow(/enumerable/);
+
+		const tracker = track({ values: [] as number[] });
+		const change = tracker.beginChange();
+		expect(() => {
+			change.state.values = accessor;
+		}).toThrow(/data properties/);
+		expect(reads).toBe(0);
+		change.abort();
 	});
 });

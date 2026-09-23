@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT } from "../src/context/index.ts";
-import { replicatedState } from "../src/index.ts";
+import type { Draft, Op } from "../src/delta/index.ts";
+import {
+	type Context,
+	type JsonValue,
+	type ReplicatedStateSource,
+	type ReplicatedStateSourceAttachment,
+	type ReplicatedStateSourceFrame,
+	replicatedState,
+} from "../src/index.ts";
 import { ReplicatedStateReplica } from "../src/services/state.ts";
 import { getReplicatedStateInternals } from "../src/services/state-internals.ts";
-import type { Draft } from "../src/state/draft.ts";
-import type { JsonValue } from "../src/types.ts";
 
 describe("transactional replicated state", () => {
 	it("publishes one immutable structurally shared revision", () => {
@@ -38,6 +44,18 @@ describe("transactional replicated state", () => {
 		).toThrow("stop");
 		expect(state.value).toBe(previous);
 		expect(() => escaped?.value).toThrow(TypeError);
+	});
+
+	it("rejects PromiseLike callbacks and aborts their draft", () => {
+		const state = replicatedState({ value: 0 });
+		const previous = state.value;
+		expect(() =>
+			state.change(BACKGROUND_CONTEXT, ((draft: Draft<{ value: number }>) => {
+				draft.value = 1;
+				return Promise.resolve();
+			}) as (draft: Draft<{ value: number }>) => void),
+		).toThrow(/synchronous/);
+		expect(state.value).toBe(previous);
 	});
 
 	it("rejects nested changes and replacements without losing the outer rollback", () => {
@@ -190,5 +208,195 @@ describe("transactional replicated state", () => {
 		state.replace(BACKGROUND_CONTEXT, { ...state.value, value: { nested: 2 } });
 		expect(state.value).toEqual({ value: { nested: 2 }, retained: { nested: 2 } });
 		expect(state.value.retained).not.toBe(previous.retained);
+	});
+});
+
+type SourceValue = Readonly<{ value: number }>;
+
+class TestSource<T> implements ReplicatedStateSource<T> {
+	readonly attachments = new Set<TestSourceAttachment<T>>();
+	onAttach: (() => void) | undefined;
+	#value: T;
+	#cursor: number;
+
+	constructor(value: T, cursor = 0) {
+		this.#value = value;
+		this.#cursor = cursor;
+	}
+
+	attach(): ReplicatedStateSourceAttachment<T> {
+		const attachment = new TestSourceAttachment(Object.freeze({ value: this.#value, cursor: this.#cursor }), () =>
+			this.attachments.delete(attachment),
+		);
+		this.attachments.add(attachment);
+		this.onAttach?.();
+		return attachment;
+	}
+
+	commit(value: T, ops: readonly Op[], context: Context = BACKGROUND_CONTEXT, cursor = this.#cursor + 1): void {
+		this.#value = value;
+		this.#cursor = cursor;
+		const frame = Object.freeze({ cursor, value, ops, context });
+		for (const attachment of [...this.attachments]) attachment.publish(frame);
+	}
+}
+
+class TestSourceAttachment<T> implements ReplicatedStateSourceAttachment<T> {
+	readonly snapshot: { readonly value: T; readonly cursor: number };
+	readonly #onDispose: () => void;
+	readonly #buffer: ReplicatedStateSourceFrame<T>[] = [];
+	#listener: ((frame: ReplicatedStateSourceFrame<T>) => void) | undefined;
+	#activated = false;
+	#disposed = false;
+
+	constructor(snapshot: { readonly value: T; readonly cursor: number }, onDispose: () => void) {
+		this.snapshot = snapshot;
+		this.#onDispose = onDispose;
+	}
+
+	activate(listener: (frame: ReplicatedStateSourceFrame<T>) => void): void {
+		if (this.#activated) throw new Error("attachment is already active");
+		this.#activated = true;
+		this.#listener = listener;
+		for (const frame of this.#buffer.splice(0)) listener(frame);
+	}
+
+	publish(frame: ReplicatedStateSourceFrame<T>): void {
+		if (this.#disposed) return;
+		if (this.#listener === undefined) this.#buffer.push(frame);
+		else this.#listener(frame);
+	}
+
+	dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+		this.#buffer.length = 0;
+		this.#onDispose();
+	}
+}
+
+describe("authoritative replicated state sources", () => {
+	it("captures before activation and drains queued commits in order", () => {
+		const initial = Object.freeze({ value: 0 });
+		const first = Object.freeze({ value: 1 });
+		const second = Object.freeze({ value: 2 });
+		const firstOps = Object.freeze([["s", ["value"], 1] as const]);
+		const secondOps = Object.freeze([["s", ["value"], 2] as const]);
+		const source = new TestSource<SourceValue>(initial, 10);
+		source.onAttach = () => {
+			source.commit(first, firstOps);
+			source.commit(second, secondOps);
+		};
+
+		const state = replicatedState(source);
+		const deliveries: Array<{ value: SourceValue; sequence: number }> = [];
+		state.subscribe((value, _context, delivery) => deliveries.push({ value, sequence: delivery.sequence }));
+		expect(state.value).toBe(second);
+		expect(deliveries).toEqual([{ value: second, sequence: 2 }]);
+		expect(getReplicatedStateInternals(state)?.snapshot()).toEqual({ value: second, sequence: 2 });
+	});
+
+	it("hydrates at sequence zero when attaching after existing commits", () => {
+		const initial = Object.freeze({ value: 0 });
+		const current = Object.freeze({ value: 1 });
+		const source = new TestSource<SourceValue>(initial, 40);
+		source.commit(current, Object.freeze([["s", ["value"], 1] as const]));
+		const state = replicatedState(source);
+		const deliveries: number[] = [];
+		state.subscribe((_value, _context, delivery) => deliveries.push(delivery.sequence));
+		expect(state.value).toBe(current);
+		expect(deliveries).toEqual([0]);
+	});
+
+	it("publishes exact source value and operation references without applying or re-diffing", () => {
+		const source = new TestSource<SourceValue>(Object.freeze({ value: 0 }));
+		const state = replicatedState(source);
+		const next = Object.freeze({ value: 1 });
+		const ops = Object.freeze([["s", ["value"], 1] as const]);
+		let publishedOps: readonly Op[] | undefined;
+		getReplicatedStateInternals(state)?.subscribe((received) => {
+			publishedOps = received;
+		});
+		let publishedValue: SourceValue | undefined;
+		state.subscribe((value, _context, delivery) => {
+			if (delivery.kind === "update") publishedValue = value;
+		});
+
+		source.commit(next, ops);
+		expect(state.value).toBe(next);
+		expect(publishedValue).toBe(next);
+		expect(publishedOps).toBe(ops);
+	});
+
+	it("buffers reentrant frames and skips updates covered by a late hydration", () => {
+		const source = new TestSource<SourceValue>(Object.freeze({ value: 0 }));
+		const state = replicatedState(source);
+		const received: number[] = [];
+		const late: Array<{ kind: string; sequence: number; value: number }> = [];
+		let nested = false;
+		getReplicatedStateInternals(state)?.subscribe((_ops, sequence) => {
+			if (sequence !== 1 || nested) return;
+			nested = true;
+			source.commit(Object.freeze({ value: 2 }), Object.freeze([["s", ["value"], 2] as const]));
+			state.subscribe((value, _context, delivery) => late.push({ ...delivery, value: value.value }));
+		});
+		state.subscribe((value, _context, delivery) => {
+			if (delivery.kind === "update") received.push(value.value);
+		});
+
+		source.commit(Object.freeze({ value: 1 }), Object.freeze([["s", ["value"], 1] as const]));
+		expect(received).toEqual([1, 2]);
+		expect(late).toEqual([{ kind: "hydrate", sequence: 2, value: 2 }]);
+	});
+
+	it("reports listener failures without throwing them into the source", () => {
+		const source = new TestSource<SourceValue>(Object.freeze({ value: 0 }));
+		const errors: Error[] = [];
+		const state = replicatedState(source, { onError: (error) => errors.push(error) });
+		const received: number[] = [];
+		state.subscribe((_value, _context, delivery) => {
+			if (delivery.kind === "update") throw new Error("listener failed");
+		});
+		state.subscribe((value, _context, delivery) => {
+			if (delivery.kind === "update") received.push(value.value);
+		});
+
+		expect(() =>
+			source.commit(Object.freeze({ value: 1 }), Object.freeze([["s", ["value"], 1] as const])),
+		).not.toThrow();
+		source.commit(Object.freeze({ value: 2 }), Object.freeze([["s", ["value"], 2] as const]));
+		expect(received).toEqual([1, 2]);
+		expect(errors.map((error) => error.message)).toEqual(["listener failed", "listener failed"]);
+	});
+
+	it("reports cursor gaps, disposes the broken attachment, and ignores later frames", () => {
+		const source = new TestSource<SourceValue>(Object.freeze({ value: 0 }), 5);
+		const errors: Error[] = [];
+		const state = replicatedState(source, { onError: (error) => errors.push(error) });
+		source.commit(Object.freeze({ value: 2 }), Object.freeze([["s", ["value"], 2] as const]), BACKGROUND_CONTEXT, 7);
+		expect(errors[0]?.message).toContain("expected 6, received 7");
+		expect(source.attachments.size).toBe(0);
+		expect(state.value).toEqual({ value: 0 });
+		source.commit(Object.freeze({ value: 3 }), Object.freeze([["s", ["value"], 3] as const]), BACKGROUND_CONTEXT, 8);
+		expect(state.value).toEqual({ value: 0 });
+	});
+
+	it("keeps attachments independent and disposes each idempotently", () => {
+		const source = new TestSource<SourceValue>(Object.freeze({ value: 0 }));
+		const first = replicatedState(source);
+		const second = replicatedState(source);
+		expect(source.attachments.size).toBe(2);
+		source.commit(Object.freeze({ value: 1 }), Object.freeze([["s", ["value"], 1] as const]));
+		expect(first.value.value).toBe(1);
+		expect(second.value.value).toBe(1);
+
+		first.dispose();
+		first.dispose();
+		expect(source.attachments.size).toBe(1);
+		source.commit(Object.freeze({ value: 2 }), Object.freeze([["s", ["value"], 2] as const]));
+		expect(first.value.value).toBe(1);
+		expect(second.value.value).toBe(2);
+		second.dispose();
+		expect(source.attachments.size).toBe(0);
 	});
 });

@@ -164,8 +164,16 @@ function assertDenseArray(value: readonly unknown[]): void {
 		throw new TypeError("Replicated state arrays must be dense and contain only indexed entries");
 	}
 	for (let index = 0; index < value.length; index++) {
-		if (!Object.hasOwn(value, index) || value[index] === undefined) {
-			throw new TypeError("Replicated state arrays cannot contain holes or undefined entries");
+		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+		if (
+			descriptor === undefined ||
+			!descriptor.enumerable ||
+			!("value" in descriptor) ||
+			descriptor.value === undefined
+		) {
+			throw new TypeError(
+				"Replicated state arrays must contain enumerable indexed data properties with defined values",
+			);
 		}
 	}
 }

@@ -11,7 +11,7 @@ facades, membranes, document routing, view projection, events, or clone chains.
 
 - Obsolete `pico` and `pico4` prototypes were removed.
 - `pico3` remains.
-- Packages 1 and 2 are implemented in `packages/durable`; later Pico5 runtime packages remain.
+- Packages 1–3 are implemented in `packages/durable`; later Pico5 runtime packages remain.
 
 ## 1. Records, cursors, and memory tables
 
@@ -55,17 +55,51 @@ deleted-page reuse, and representative storage sizes.
 
 Implement table writes in `main.jsonl`, one document sidecar per incarnation,
 one sidecar per live task, and one main marker per commit. Do not add a
-standalone-sidecar protocol. Serialization must also provide the storage ownership
-boundary: retained indexes/materializations are detached from write arguments,
-and reads never expose backend-owned cached objects.
+standalone-sidecar protocol.
+
+Copy, rather than import, the current `ExecutionEnv`, `FileSystem`, `Shell`, Node
+implementation, and their required utility files from `packages/agent/src/harness`
+into `packages/durable/src/env`. Copy only the environment-related slice, not
+agent skills, prompts, telemetry, or tool definitions. Extend the copied
+filesystem contract with exact-byte file truncation and file flushing. JSONL
+depends only on `FileSystem`, not the broader `ExecutionEnv`. Keep the portable
+environment and JSONL entry points free of Node built-ins; expose Node
+implementations only from `/env/node` and `/storage/jsonl/node`. Do not use the
+Pico3 implementation as source material.
+
+Refactor the current `MemoryStorage` state machinery into a two-phase prepared
+mutation: validation and detachment produce a candidate that can later be
+applied without failure. Build `MemoryStorage.commit()` on that pair, and reuse
+the same machinery for JSONL. JSONL must append every prepared sidecar record,
+append the main marker, and only then apply the prepared in-memory mutation.
+Serialization or preparation failure occurs before file I/O and does not poison
+the backend. Retained indexes/materializations remain detached from write
+arguments, and reads never expose backend-owned cached objects.
+
+JSONL creation has `fsync?: boolean`, defaulting to `false`. With `false`, append
+sidecars and then the marker without an explicit flush. With `true`, append all
+affected sidecars, flush each affected sidecar, and then append the main marker.
+Do not explicitly flush `main.jsonl` for ordinary publication. A main-only commit
+has no sidecars to flush. Any uncertain publication append or flush failure
+poisons the open backend and publishes no prepared in-memory mutation. Package 5
+adds the separate post-publication flush required to authorize reclamation.
 
 Fault-test torn/short sidecar writes, failures between sidecars, every marker
-boundary, unconfirmed tails, missing confirmed data, and poisoned writes.
+boundary, unconfirmed tails, missing confirmed data, poisoned writes, exact-byte
+tail truncation, both fsync settings and their call ordering, detached retained
+state and reads, and browser-safe portable entry points. Run the complete storage
+conformance suite directly and after reopen.
 
 ## 5. JSONL reclamation
 
 Implement task-document retirement and current-only base reclamation using
-committed markers, temporary replacement, rename, and descriptor invalidation.
+committed markers and descriptor invalidation. Remove a sidecar directly when no
+records remain; otherwise use temporary replacement and rename. With `fsync:
+true`, flush `main.jsonl` once before destructive reclamation so the authorizing
+marker cannot disappear while cleanup survives; if that flush fails, skip
+reclamation without failing the already-published commit. Flush a non-empty
+temporary replacement before rename. This is not publication flushing or main
+compaction.
 
 Crash-test every rewrite/rename boundary. Verify that rewindable history is
 never reclaimed and default no-fsync behavior matches the specification.

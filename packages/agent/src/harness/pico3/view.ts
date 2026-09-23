@@ -1,4 +1,5 @@
-import { applyImmutable, type Op, type Tracker, track } from "@earendil-works/chord/delta";
+import { applyImmutable, type Op } from "@earendil-works/chord/delta";
+import { type Tracker, track } from "./legacy-tracker.ts";
 import type { CommitResult, Session } from "./session.ts";
 import type {
 	AnyKind,
@@ -86,8 +87,8 @@ export class ViewManager {
 					.map((scoped) => scoped.event);
 				if (appended.length === 0 && documentChanges.length === 0 && !taskChanged && events.length === 0) continue;
 
-				const entryOps = applyEntries(record.tracker, appended);
 				const state = record.tracker.state;
+				applyEntries(state.entries, appended);
 				const rewindableChanged = documentChanges.some(
 					(change) => change.ref.doc === "rewindable" && change.ref.conversationId === record.conversationId,
 				);
@@ -117,7 +118,7 @@ export class ViewManager {
 					syncRecord(state.plugins, this.plugins(rewindable!, sticky!, session));
 				}
 
-				const ops = [...entryOps, ...record.tracker.flush()];
+				const ops = record.tracker.flush();
 				if (ops.length === 0 && events.length === 0) continue;
 				const envelope = Object.freeze({
 					revision: ++record.revision,
@@ -334,23 +335,15 @@ class WatchImpl implements Watch {
 	}
 }
 
-function applyEntries(tracker: Tracker<ConversationView>, appended: EntryList): Op[] {
-	const ops: Op[] = [];
-	const entries = tracker.state.entries;
+function applyEntries(entries: EntryList, appended: EntryList): void {
 	for (const entry of appended) {
 		if (entry.head !== undefined) {
 			const retained = entries.findIndex((candidate) => candidate.id >= entry.head!);
 			const remove = retained < 0 ? entries.length : retained;
-			if (remove > 0) {
-				ops.push(...tracker.flush());
-				entries.splice(0, remove);
-				tracker.flush();
-				ops.push(["p", ["entries"], 0, remove, []]);
-			}
+			if (remove > 0) entries.splice(0, remove);
 		}
 		entries.push(structuredClone(entry));
 	}
-	return ops;
 }
 
 function inputIds(task: Task): Id[] {

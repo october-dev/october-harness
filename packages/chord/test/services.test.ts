@@ -8,7 +8,10 @@ import {
 	RemoteServiceProvider,
 	type RemoteServiceTransport,
 	type ReplicatedState,
+	type ReplicatedStateSource,
+	type ReplicatedStateSourceFrame,
 	replicatedState,
+	type ServiceProviderUpdate,
 } from "../src/index.ts";
 import { createLoopbackServiceTransport } from "./helpers.ts";
 
@@ -39,8 +42,9 @@ interface Echo {
 
 const Echo = defineService<Echo>("test.echo");
 
+type TimelineState = { entries: { id: string }[]; retained: { value: number } };
 interface Timeline {
-	readonly state: ReplicatedState<{ entries: { id: string }[]; retained: { value: number } }>;
+	readonly state: ReplicatedState<TimelineState>;
 }
 
 const Timeline = defineService<Timeline>("test.timeline");
@@ -276,6 +280,52 @@ describe("remote services", () => {
 		raw.close();
 		await namespace.dispose(BACKGROUND_CONTEXT);
 		provider.dispose();
+	});
+
+	test("publishes authoritative source references through services without re-diffing", () => {
+		const initial: TimelineState = Object.freeze({ entries: [{ id: "one" }], retained: { value: 1 } });
+		let publish: ((frame: ReplicatedStateSourceFrame<TimelineState>) => void) | undefined;
+		let disposed = false;
+		const source: ReplicatedStateSource<TimelineState> = {
+			attach() {
+				return {
+					snapshot: { value: initial, cursor: 20 },
+					activate(listener) {
+						publish = listener;
+					},
+					dispose() {
+						disposed = true;
+					},
+				};
+			},
+		};
+		const state = replicatedState(source);
+		const provider = new RemoteServiceProvider([Timeline]);
+		provider.provide(Timeline, { state });
+		const updates: ServiceProviderUpdate[] = [];
+		const subscription = provider.subscribe(Timeline.id, "singleton", (update) => updates.push(update));
+		const snapshotMember = subscription.snapshot.instances[0]?.members[0];
+		expect(snapshotMember?.kind).toBe("state");
+		if (snapshotMember?.kind === "state") expect(snapshotMember.ops[0]?.[1]).toBe(initial);
+		subscription.activate();
+
+		const next: TimelineState = Object.freeze({
+			entries: [{ id: "one" }, { id: "two" }],
+			retained: initial.retained,
+		});
+		const ops: ReplicatedStateSourceFrame<TimelineState>["ops"] = Object.freeze([
+			["p", ["entries"], 1, 0, [{ id: "two" }]],
+		]);
+		publish?.({ cursor: 21, value: next, ops, context: BACKGROUND_CONTEXT });
+		expect(updates).toHaveLength(1);
+		const update = updates[0];
+		expect(update?.type).toBe("state");
+		if (update?.type === "state") expect(update.ops).toBe(ops);
+
+		subscription.close();
+		provider.dispose();
+		state.dispose();
+		expect(disposed).toBe(true);
 	});
 
 	test("keeps singleton facades stable when their provider is replaced", async () => {

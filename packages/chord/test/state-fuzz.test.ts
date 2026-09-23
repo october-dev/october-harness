@@ -1,9 +1,5 @@
 import { expect, it } from "vitest";
-import { BACKGROUND_CONTEXT } from "../src/context/index.ts";
-import { applyImmutable, type Op } from "../src/delta/index.ts";
-import { replicatedState } from "../src/index.ts";
-import { getReplicatedStateInternals } from "../src/services/state-internals.ts";
-import type { Draft } from "../src/state/draft.ts";
+import { applyImmutable, type Draft, type Op, track } from "../src/delta/index.ts";
 
 type Item = { id: number; text: string; score: number };
 type Document = {
@@ -75,7 +71,7 @@ const mutate = (document: MutableDocument, choice: number, value: number): void 
 	}
 };
 
-it("converges across randomized transactional revisions", () => {
+it("converges across randomized prepared revisions", () => {
 	for (let seed = 1; seed <= 100; seed++) {
 		const rng = random(seed);
 		const initial: Document = {
@@ -83,23 +79,22 @@ it("converges across randomized transactional revisions", () => {
 			text: "start",
 			meta: { revision: 0 },
 		};
-		const state = replicatedState(initial);
+		const tracker = track(initial);
 		const expected = clone(initial);
-		let replica = clone(state.value);
-		let latest: readonly Op[] = [];
-		getReplicatedStateInternals(state)!.subscribe((operations) => {
-			latest = operations;
-		});
+		let replica = clone(tracker.value);
 		for (let step = 0; step < 100; step++) {
 			const choice = Math.floor(rng() * 14);
 			const value = seed * 1_000 + step;
 			mutate(expected, choice, value);
-			latest = [];
-			state.change(BACKGROUND_CONTEXT, (draft) => mutate(draft, choice, value));
-			replica = applyImmutable(replica, latest);
-			expect(state.value, `state seed ${seed} step ${step} choice ${choice}`).toEqual(expected);
+			const change = tracker.beginChange();
+			mutate(change.state, choice, value);
+			const prepared = change.prepare();
+			const operations: readonly Op[] = prepared.ops;
+			replica = applyImmutable(replica, operations);
+			tracker.adopt(prepared);
+			expect(tracker.value, `state seed ${seed} step ${step} choice ${choice}`).toEqual(expected);
 			expect(replica, `replica seed ${seed} step ${step} choice ${choice}`).toEqual(expected);
-			expect(Object.isFrozen(state.value)).toBe(true);
+			expect(Object.isFrozen(tracker.value)).toBe(true);
 		}
 	}
 });

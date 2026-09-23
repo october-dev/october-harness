@@ -437,11 +437,12 @@ export class RemoteServiceProvider {
 			if (member.kind === "method") {
 				members.push({ name, kind: "method" });
 			} else {
+				const snapshot = member.state.snapshot();
 				members.push({
 					name,
 					kind: "state",
-					sequence: member.state.sequence,
-					ops: [["r", member.state.value as JsonValue]],
+					sequence: snapshot.sequence,
+					ops: [["r", snapshot.value as JsonValue]],
 				});
 			}
 		}

@@ -170,7 +170,7 @@ test("late joiner reconstructs streaming generation state without replayed event
 	watch.stop();
 });
 
-test("a head commit is represented by transcript splice ops and matching entry/head events", async () => {
+test("a self-head commit rewrites one transcript entry with matching entry/head events", async () => {
 	const env = await open({});
 	onTestFinished(() => env.close());
 	await env.root.write({ kind: "before" }, ctx);
@@ -181,10 +181,17 @@ test("a head commit is represented by transcript splice ops and matching entry/h
 	});
 	await env.root.reset("fresh", ctx);
 	assert.ok(envelope);
-	const entryOps = envelope.ops.filter((op) => op[0] === "p" && op[1]?.[0] === "entries");
-	assert.equal(entryOps.length, 2);
-	assert.equal(entryOps[0]?.[2], 0);
-	assert.ok((entryOps[0]?.[3] as number) > 0);
+	const entryOps = envelope.ops.filter((op) => op[0] !== "r" && op[1][0] === "entries");
+	assert.deepEqual(
+		entryOps
+			.map((op) => {
+				if (op[0] !== "s") throw new Error(`Unexpected transcript operation ${op[0]}`);
+				assert.equal(op[1][1], 0);
+				return op[1][2];
+			})
+			.sort(),
+		["head", "id", "kind", "model"],
+	);
 	assert.deepEqual(
 		envelope.events.map((event) => event.type),
 		["head.moved", "entry.added"],

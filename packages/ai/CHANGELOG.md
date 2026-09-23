@@ -2,13 +2,19 @@
 
 ## [Unreleased]
 
+## [0.87.1] - 2026-09-22
+
 ### Added
 
+- Added Claude Opus 5.5, GPT-6 Sol, and GPT-6 Luna to the GitHub Copilot catalog.
+- Added GPT-6 Sol and GPT-6 Luna for OpenAI API keys and OpenAI Codex subscriptions, with full reasoning-effort, prompt-caching, tool-search, long-context pricing, and official cost metadata.
+- Added Claude Opus 5.5 to the built-in Anthropic model catalog with adaptive thinking, 1M context, and official pricing metadata.
 - Added Grok 4.7 to the built-in xAI model catalog with long-context pricing metadata.
 
 ### Fixed
 
 - Fixed image-only user messages being rejected by some OpenAI-compatible providers because they included an empty text part ([#9797](https://github.com/earendil-works/pi/issues/9797))
+- Fixed Anthropic OAuth requests reporting an outdated Claude Code version.
 
 ## [0.87.0] - 2026-09-21
 

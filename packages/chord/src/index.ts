@@ -10,6 +10,7 @@ export {
 	defineService,
 	replicatedState,
 } from "./api.ts";
+export type { Draft } from "./delta/index.ts";
 export { isJsonValue } from "./json.ts";
 export {
 	isRemoteServiceErrorCode,
@@ -46,8 +47,8 @@ export {
 	type WireServiceProviderUpdate,
 	type WireServiceSubscriptionSnapshot,
 } from "./services/wire.ts";
-export type { Draft } from "./state/draft.ts";
 export type {
+	AttachedReplicatedState,
 	Context,
 	ContextKey,
 	Facet,
@@ -66,6 +67,10 @@ export type {
 	RemoteServiceTransport,
 	ReplicatedState,
 	ReplicatedStateDelivery,
+	ReplicatedStateSource,
+	ReplicatedStateSourceAttachment,
+	ReplicatedStateSourceFrame,
+	ReplicatedStateSourceOptions,
 	Service,
 	ServiceCall,
 	ServiceCatalogueEntry,

@@ -240,7 +240,7 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 	});
 
 	describe("OpenAI Responses Provider", () => {
-		it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"] as const)(
+		it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol"] as const)(
 			"does not enable cache warming from the documented TTL alone for %s",
 			(modelId) => {
 				expect(getModel("openai", modelId).promptCache).toBeUndefined();
@@ -408,6 +408,8 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 		it.each([
 			["gpt-4o-mini", "24h", undefined],
 			["gpt-6-astra", undefined, { ttl: "30m" }],
+			["gpt-6-sol", undefined, { ttl: "30m" }],
+			["gpt-6-luna", undefined, { ttl: "30m" }],
 		] as const)("should use the supported long cache field for %s", async (modelId, retention, cacheOptions) => {
 			const model = getModel("openai", modelId);
 			let capturedPayload: OpenAIResponsesCachePayload | undefined;

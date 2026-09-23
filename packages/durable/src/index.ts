@@ -1,4 +1,4 @@
-export { MemoryStorage } from "./memory-storage.ts";
+export { MemoryStorage } from "./storage/memory.ts";
 export type {
 	ContextEdit,
 	ConversationRecord,
@@ -19,10 +19,10 @@ export type {
 	Storage,
 	StorageWrite,
 	StoredDocument,
-	StoredError,
 	SubmissionCreate,
 	SubmissionRecord,
 	TaskOutcome,
+	TaskOutcomeError,
 	TaskQuery,
 	TaskRecord,
 	TaskState,

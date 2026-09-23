@@ -8,18 +8,11 @@ export type JsonObject = { [key: string]: JsonValue };
 /** Session-global identifier shared by every durable record table. */
 export type Id = number;
 
-/** Monotonic sequence assigned to one atomic storage commit. */
+/** Strictly increasing sequence assigned to one atomic storage commit; gaps are permitted. */
 export type Seq = number;
 
 /** The root conversation always uses this reserved ID. */
 export const ROOT_CONVERSATION_ID: Id = 1;
-
-/** JSON-safe error snapshot persisted instead of a runtime `Error` object. */
-export type StoredError = {
-	readonly message: string;
-	/** Optional structured diagnostic data for inspection or recovery. */
-	readonly detail?: JsonValue;
-};
 
 /** Immutable identity, history ancestry, and task ownership of a transcript scope. */
 export type ConversationRecord = {
@@ -158,6 +151,13 @@ export type SubmissionCreate = SubmissionRecord extends infer Record
 		: never
 	: never;
 
+/** JSON-safe error snapshot persisted instead of a runtime `Error` object. */
+export type TaskOutcomeError = {
+	readonly message: string;
+	/** Optional structured diagnostic data for inspection or recovery. */
+	readonly detail?: JsonValue;
+};
+
 /** Durable reason and optional result recorded when a task becomes terminal. */
 export type TaskOutcome<R> =
 	| {
@@ -169,7 +169,7 @@ export type TaskOutcome<R> =
 	/** Expected task or domain failure explicitly committed by its implementation. */
 	| {
 			readonly status: "failed";
-			readonly error: StoredError;
+			readonly error: TaskOutcomeError;
 			readonly result?: R;
 			readonly reason?: never;
 	  }
@@ -190,7 +190,7 @@ export type TaskOutcome<R> =
 	/** Runtime-detected contract failure, such as an uncaught throw or no durable progress. */
 	| {
 			readonly status: "faulted";
-			readonly error: StoredError;
+			readonly error: TaskOutcomeError;
 			readonly result?: never;
 			readonly reason?: never;
 	  };
@@ -388,11 +388,13 @@ export type StorageWrite =
  * Session serializes commits.
  */
 export interface Storage {
-	/** Atomically persist one batch and return the sequence assigned to that commit. */
+	/**
+	 * Atomically persist one batch and return its sequence. Once resolved, later reads through this storage observe it.
+	 */
 	commit(writes: readonly StorageWrite[], context: Context): Promise<Seq>;
 
 	/** Return a fresh candidate from the Session-global record ID namespace. */
-	mintId(): Id;
+	mintId(): Promise<Id>;
 
 	/** Look up one conversation by exact ID. */
 	conversation(id: Id, context: Context): Promise<ConversationRecord | undefined>;
@@ -445,7 +447,7 @@ export interface Storage {
 	/** Resolve the incarnation occupying one exact logical address at the selected point. */
 	findDocument(address: DocumentAddress, at: DocumentPoint, context: Context): Promise<DocumentRecord | undefined>;
 
-	/** Materialize one incarnation at the selected point without scanning unrelated documents. */
+	/** Materialize one specific incarnation by ID at the selected point without following a replacement at its address. */
 	document(id: Id, at: DocumentPoint, context: Context): Promise<StoredDocument | undefined>;
 
 	/** Scan incarnations alive in one exact scope at the selected point. */

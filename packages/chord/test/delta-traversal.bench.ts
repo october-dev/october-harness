@@ -53,18 +53,22 @@ function membrane<T extends object>(input: T): T {
 	};
 	return wrap(input) as T;
 }
-function setup(mode: Mode, input: Drawing): { state: Drawing; flush(): unknown } {
+function setup(mode: Mode, input: Drawing): { state: Drawing; finish(): void } {
 	if (mode === "delta") {
-		const t = track(input);
-		return { state: t.state, flush: () => t.flush() };
+		const tracker = track(input);
+		const change = tracker.beginChange();
+		return {
+			state: change.state,
+			finish() {
+				tracker.adopt(change.prepare());
+			},
+		};
 	}
-	return { state: mode === "proxy" ? membrane(input) : input, flush: () => null };
+	return { state: mode === "proxy" ? membrane(input) : input, finish() {} };
 }
-// Keep temporary raw inputs and initial wire batches out of the measuring frame.
+// Keep temporary raw inputs out of the measuring frame.
 function prepare(mode: Mode, strokes: number, points: number) {
-	const t = setup(mode, fixture(strokes, points));
-	t.flush();
-	return t;
+	return setup(mode, fixture(strokes, points));
 }
 function traverse(state: Drawing): number {
 	let sum = 0;
@@ -81,10 +85,18 @@ function traverse(state: Drawing): number {
 function warm(mode: Mode): void {
 	const t = prepare(mode, 10, 10);
 	for (let i = 0; i < 10; i++) traverse(t.state);
+	t.finish();
 }
 function sources() {
 	return Object.fromEntries(
-		["../src/delta/index.ts", "./delta-traversal.bench.ts"].map((path) => [
+		[
+			"../src/delta/index.ts",
+			"../src/delta/tracker.ts",
+			"../src/delta/draft.ts",
+			"../src/delta/diff.ts",
+			"../src/delta/value.ts",
+			"./delta-traversal.bench.ts",
+		].map((path) => [
 			path,
 			createHash("sha256")
 				.update(readFileSync(new URL(path, import.meta.url)))
@@ -120,6 +132,7 @@ async function measure(mode: Mode, strokes: number, points: number, trial: numbe
 	await gc();
 	const retained = process.memoryUsage().heapUsed;
 	assert.equal(t.state.strokes.length, strokes);
+	t.finish();
 	return {
 		mode,
 		strokes,

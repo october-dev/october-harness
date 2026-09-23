@@ -35,9 +35,16 @@ type DraftContext = {
 
 const RELEASED_BASE: Container = Object.freeze({});
 const ARRAY_MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"]);
+const MAX_NATIVE_ARRAY_INSERT_ITEMS = 10_000;
 
-/** Run a mutation recipe and return its value with transaction ownership metadata. */
-export function produceWithMetadata<T extends object>(base: T, recipe: (draft: Draft<T>) => void): ProduceMetadata<T> {
+export type DraftTransaction<T extends object> = {
+	readonly state: Draft<T>;
+	finish(): ProduceMetadata<T>;
+	abort(): void;
+};
+
+/** Create a revocable copy-on-write draft whose lifetime is controlled by its owner. */
+export function createDraftTransaction<T extends object>(base: T): DraftTransaction<T> {
 	const context: DraftContext = {
 		active: true,
 		created: [],
@@ -46,17 +53,8 @@ export function produceWithMetadata<T extends object>(base: T, recipe: (draft: D
 		states: new WeakMap<object, DraftState>(),
 	};
 	const root = getState(context, base as Container);
-	try {
-		const outcome = (recipe as (draft: Draft<T>) => unknown)(root.proxy as Draft<T>);
-		if (isPromiseLike(outcome)) {
-			void Promise.resolve(outcome).catch(() => undefined);
-			throw new TypeError("Replicated state change callbacks must be synchronous");
-		}
-		return {
-			value: finalize(root, new Set<DraftState>(), new WeakMap<DraftState, Container>()) as T,
-			owned: context.owned,
-		};
-	} finally {
+	const release = (): void => {
+		assertActive(context);
 		context.active = false;
 		for (const state of context.created) {
 			state.base = RELEASED_BASE;
@@ -68,10 +66,45 @@ export function produceWithMetadata<T extends object>(base: T, recipe: (draft: D
 		context.created.length = 0;
 		context.proxies = new WeakMap();
 		context.states = new WeakMap();
+	};
+	return {
+		state: root.proxy as Draft<T>,
+		finish() {
+			assertActive(context);
+			try {
+				return {
+					value: finalize(root, new Set<DraftState>(), new WeakMap<DraftState, Container>()) as T,
+					owned: context.owned,
+				};
+			} finally {
+				release();
+			}
+		},
+		abort: release,
+	};
+}
+
+/** @internal Compatibility helper for the existing replicated-state service. */
+export function produceWithMetadata<T extends object>(base: T, recipe: (draft: Draft<T>) => void): ProduceMetadata<T> {
+	const transaction = createDraftTransaction(base);
+	try {
+		const outcome = (recipe as (draft: Draft<T>) => unknown)(transaction.state);
+		if (isPromiseLike(outcome)) {
+			void Promise.resolve(outcome).catch(() => undefined);
+			throw new TypeError("Replicated state change callbacks must be synchronous");
+		}
+		return transaction.finish();
+	} catch (error) {
+		try {
+			transaction.abort();
+		} catch {
+			// finish() already released the transaction before propagating an error.
+		}
+		throw error;
 	}
 }
 
-/** Run a mutation recipe against a copy-on-write draft of `base`. */
+/** @internal Compatibility helper for the existing replicated-state service. */
 export function produce<T extends object>(base: T, recipe: (draft: Draft<T>) => void): T {
 	return produceWithMetadata(base, recipe).value;
 }
@@ -238,11 +271,14 @@ function mutateArray(state: DraftState, target: unknown[], property: string, arg
 			return draftValue(context, Reflect.apply(Array.prototype.shift, target, []));
 		case "unshift": {
 			const items = cloneArrayItems(args, context);
-			if (hasInheritedGrowthIndex(target, target.length + items.length)) {
-				spliceArray(target, items, 0, 0, context);
-				return target.length;
+			if (
+				items.length <= MAX_NATIVE_ARRAY_INSERT_ITEMS &&
+				!hasInheritedGrowthIndex(target, target.length + items.length)
+			) {
+				return Reflect.apply(Array.prototype.unshift, target, items);
 			}
-			return Reflect.apply(Array.prototype.unshift, target, items);
+			spliceArray(target, items, 0, 0, context);
+			return target.length;
 		}
 		case "splice": {
 			const length = target.length;
@@ -255,12 +291,14 @@ function mutateArray(state: DraftState, target: unknown[], property: string, arg
 						: Math.min(Math.max(toIntegerOrInfinity(args[1]), 0), length - start);
 			const items = cloneArrayItems(args.slice(2), context);
 			if (
+				items.length <= MAX_NATIVE_ARRAY_INSERT_ITEMS &&
 				!mayRunCoercionCode(args[0]) &&
 				!mayRunCoercionCode(args[1]) &&
 				!hasInheritedGrowthIndex(target, length - remove + items.length)
 			) {
-				const removed = Reflect.apply(Array.prototype.splice, target, [start, remove, ...items]) as unknown[];
-				return removed.map((item) => draftValue(context, item));
+				return Reflect.apply(Array.prototype.splice, target, [start, remove, ...items]).map((item) =>
+					draftValue(context, item),
+				);
 			}
 			return spliceArray(target, items, start, remove, context, length);
 		}
@@ -570,8 +608,14 @@ function assertDenseArray(value: unknown[]): void {
 		throw new TypeError("Draft arrays must be dense and contain only indexed entries");
 	}
 	for (let index = 0; index < value.length; index++) {
-		if (!Object.hasOwn(value, index) || value[index] === undefined) {
-			throw new TypeError("Draft arrays cannot contain holes or undefined entries");
+		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+		if (
+			descriptor === undefined ||
+			!descriptor.enumerable ||
+			!("value" in descriptor) ||
+			descriptor.value === undefined
+		) {
+			throw new TypeError("Draft arrays must contain enumerable indexed data properties with defined values");
 		}
 	}
 }

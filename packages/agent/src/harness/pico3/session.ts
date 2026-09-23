@@ -1,7 +1,8 @@
 import { type Context, isJsonValue } from "@earendil-works/chord";
 import { createContextKey, withContextValue, withoutAbortSignal } from "@earendil-works/chord/context";
-import { isBase, type Op, type Tracker, track } from "@earendil-works/chord/delta";
+import { isBase, type Op } from "@earendil-works/chord/delta";
 import { deriveContext } from "./context.ts";
+import { type Tracker, track } from "./legacy-tracker.ts";
 import { Membrane } from "./membrane.ts";
 import {
 	type AnyKind,
@@ -509,7 +510,7 @@ class TxImpl implements CoreTx {
 	snapshot(ref: { doc: "session" }): SessionState;
 	snapshot(ref: DocRef): object {
 		if (ref.doc !== "session") this.assertScope(ref.conversationId, "snapshot");
-		const value = structuredClone(this.doc(ref).target) as JsonObject;
+		const value = plain(this.doc(ref).state) as JsonObject;
 		if (ref.doc !== "session") {
 			this.defaults.fill(ref.doc, value);
 			if (this.invoker.type === "task") {
@@ -637,8 +638,8 @@ class TxImpl implements CoreTx {
 			get: (key: string) => {
 				this.assertSurfaceActive();
 				const { doc, fallback } = definition(key);
-				const document = this.doc({ doc, conversationId }).target as JsonObject;
-				return key in document ? structuredClone(document[key]) : structuredClone(fallback);
+				const document = this.doc({ doc, conversationId }).state as JsonObject;
+				return key in document ? plain(document[key]) : fallback === undefined ? undefined : plain(fallback);
 			},
 			set: (key: string, value: JsonValue) => {
 				this.assertSurfaceActive();
