@@ -39,22 +39,33 @@ It exists to be the open reference harness for **multiplayer-native development*
 
 Pi optimizes for a small, extensible core. October Harness keeps that foundation and makes a different product choice: multiplayer behavior is part of the first-party runtime, not an afterthought bolted onto a `send_message()` function.
 
-## Compared with OpenCode and Cline
+## Compared with other harnesses
 
-October's focus is built-in October Bus support: discovering other agents, exchanging durable messages, and coordinating shared tasks. OpenCode and Cline also support working with multiple agents; the difference is how they connect and coordinate.
+October's focus is built-in October Bus support: discovering other agents, exchanging durable messages, and coordinating shared tasks. Other harnesses also support multi-agent work, either built in or through extensions. The difference is how they connect and coordinate.
 
-| Area | October Harness | OpenCode | Cline |
-| --- | --- | --- | --- |
-| Interfaces | [Terminal, print/JSON, RPC, embedded SDK](#standalone-usage) | [Terminal, desktop, IDE](https://opencode.ai/docs/); [headless CLI](https://opencode.ai/docs/cli/), [HTTP server/client SDK](https://opencode.ai/docs/sdk/) | [IDE extensions, CLI, desktop, embedded SDK](https://github.com/cline/cline#readme) |
-| Collaboration | [Bus peers, durable messages, shared tasks](#two-harnesses-one-bus) | [Primary agents and subagents](https://opencode.ai/docs/agents/) | [Persistent teams with a task board and mailbox](https://docs.cline.bot/cli/agent-teams) in CLI, SDK, and Kanban; not yet in IDE extensions |
-| Customization | [TypeScript extensions, skills, prompts, themes, packages](#extensions-and-customization) | [Plugins](https://opencode.ai/docs/plugins/), [skills](https://opencode.ai/docs/skills/), [MCP servers](https://opencode.ai/docs/mcp-servers/) | [Skills](https://docs.cline.bot/customization/skills), [MCP servers](https://github.com/cline/cline#readme); [plugins](https://docs.cline.bot/customization/plugins) in CLI, SDK, and Kanban |
-| Permissions | [`ask`, `accept-edits`, `bypass`](#tool-permissions); default is `bypass` | [Per-tool `allow`, `ask`, `deny` rules](https://opencode.ai/docs/permissions/) | [Tool approvals and configurable auto-approve](https://docs.cline.bot/features/auto-approve) |
+| Harness | Interfaces | Collaboration |
+| --- | --- | --- |
+| October Harness | [Terminal, print/JSON, RPC, embedded SDK](#standalone-usage) | [Bus peers, durable messages, shared tasks](#two-harnesses-one-bus) |
+| Pi | [Terminal, print/JSON, RPC, embedded SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md) | [Subagents through extensions, packages, or separate Pi processes](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md#philosophy) |
+| OpenCode | [Terminal, desktop, IDE](https://opencode.ai/docs/); [headless CLI](https://opencode.ai/docs/cli/), [HTTP server/client SDK](https://opencode.ai/docs/sdk/) | [Primary agents and subagents](https://opencode.ai/docs/agents/) |
+| Cline | [IDE extensions, CLI, desktop, embedded SDK](https://github.com/cline/cline#readme) | [Persistent teams with a task board and mailbox](https://docs.cline.bot/cli/agent-teams) in CLI, SDK, and Kanban; not yet in IDE extensions |
+| Claude Code | [Terminal/headless, IDE, desktop, web](https://code.claude.com/docs/en/overview); [Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) | [Subagents and cross-session messaging](https://code.claude.com/docs/en/features-overview); [agent teams](https://code.claude.com/docs/en/agent-teams) are experimental and opt-in |
+| Codex | [CLI, IDE, desktop, cloud](https://learn.chatgpt.com/docs/glossary); [SDK and app server](https://learn.chatgpt.com/docs/codex-sdk) | [Parallel subagents with separate threads and custom roles](https://learn.chatgpt.com/docs/agent-configuration/subagents) |
+
+| Harness | Customization | Permissions |
+| --- | --- | --- |
+| October Harness | [TypeScript extensions, skills, prompts, themes, packages](#extensions-and-customization) | [`ask`, `accept-edits`, `bypass`](#tool-permissions); default is `bypass` |
+| Pi | [TypeScript extensions, skills, prompts, themes, packages](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md#customization) | [Project trust and extension-defined tool approvals](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md); [no built-in sandbox](https://github.com/earendil-works/pi/security) |
+| OpenCode | [Plugins](https://opencode.ai/docs/plugins/), [skills](https://opencode.ai/docs/skills/), [MCP servers](https://opencode.ai/docs/mcp-servers/) | [Per-tool `allow`, `ask`, `deny` rules](https://opencode.ai/docs/permissions/) |
+| Cline | [Skills](https://docs.cline.bot/customization/skills), [MCP servers](https://github.com/cline/cline#readme); [plugins](https://docs.cline.bot/customization/plugins) in CLI, SDK, and Kanban | [Tool approvals and configurable auto-approve](https://docs.cline.bot/features/auto-approve) |
+| Claude Code | [Skills, hooks, MCP servers, plugins](https://code.claude.com/docs/en/features-overview) | [Tool rules and approval modes](https://code.claude.com/docs/en/permissions); optional [OS-enforced Bash sandbox](https://code.claude.com/docs/en/sandboxing) on supported platforms |
+| Codex | [Skills, MCP servers, hooks; plugins in desktop and CLI, not IDE](https://learn.chatgpt.com/docs/plugins) | [OS-enforced sandbox with filesystem/network restrictions and separate approval settings](https://learn.chatgpt.com/docs/agent-approvals-security) |
 
 This is not a complete feature list. Documentation checked September 10, 2026; availability varies by version and interface. October's approval controls are not an OS sandbox; see [Security](#security).
 
 ## Contents
 
-- [Compared with OpenCode and Cline](#compared-with-opencode-and-cline)
+- [Compared with other harnesses](#compared-with-other-harnesses)
 - [Five-minute quickstart](#five-minute-quickstart)
 - [Update October Harness](#update-october-harness)
 - [Authentication, models, and providers](#authentication-models-and-providers)
