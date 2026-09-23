@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.87.1-october.1] - 2026-09-23
+
 ### Added
 
 - Added October Pro and Max paid OpenRouter models from the October gateway catalog. The model picker shows their prices, the footer shows remaining harness credit, and plan, credit, capacity, and request errors are rewritten as actionable messages that do not trigger re-authentication.
