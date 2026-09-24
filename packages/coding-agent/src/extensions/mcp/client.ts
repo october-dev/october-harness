@@ -15,7 +15,12 @@ export interface DiscoveredMcpTool {
 	inputSchema?: unknown;
 }
 
-export type GenericMcpContentPart = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+export type GenericMcpContentPart =
+	| { type: "text"; text: string }
+	| { type: "image"; data: string; mimeType: string }
+	| { type: "resource"; uri: string; text?: string; blob?: string; mimeType?: string }
+	| { type: "resource_link"; uri: string; name?: string; description?: string; mimeType?: string }
+	| { type: "unsupported"; contentType: string };
 
 export interface GenericMcpToolResult {
 	content: GenericMcpContentPart[];
@@ -36,10 +41,40 @@ export class GenericMcpConnection {
 
 	async connect(signal?: AbortSignal): Promise<DiscoveredMcpTool[]> {
 		this.transport = this.createTransport();
-		await this.client.connect(this.transport, {
-			signal,
-			timeout: this.settings.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+		const timeoutMs = this.settings.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+		const connectController = new AbortController();
+		let rejectBoundary: (reason: Error) => void = () => {};
+		const boundary = new Promise<never>((_resolve, reject) => {
+			rejectBoundary = reject;
 		});
+		let boundaryClosed = false;
+		const stopConnection = (reason: Error): void => {
+			if (boundaryClosed) return;
+			boundaryClosed = true;
+			connectController.abort(reason);
+			void this.client.close().catch(() => {});
+			rejectBoundary(reason);
+		};
+		const onAbort = (): void => {
+			const reason = signal?.reason;
+			stopConnection(reason instanceof Error ? reason : new Error("MCP connection aborted"));
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		const timer = setTimeout(
+			() => stopConnection(new Error(`MCP connection timed out after ${timeoutMs}ms`)),
+			timeoutMs,
+		);
+		if (signal?.aborted) onAbort();
+		try {
+			await Promise.race([
+				this.client.connect(this.transport, { signal: connectController.signal, timeout: timeoutMs }),
+				boundary,
+			]);
+		} finally {
+			boundaryClosed = true;
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+		}
 
 		const tools: DiscoveredMcpTool[] = [];
 		let cursor: string | undefined;
@@ -72,6 +107,7 @@ export class GenericMcpConnection {
 			if (!part || typeof part !== "object" || !("type" in part)) continue;
 			if (part.type === "text" && "text" in part && typeof part.text === "string") {
 				content.push({ type: "text", text: part.text });
+				continue;
 			}
 			if (
 				part.type === "image" &&
@@ -81,7 +117,36 @@ export class GenericMcpConnection {
 				typeof part.mimeType === "string"
 			) {
 				content.push({ type: "image", data: part.data, mimeType: part.mimeType });
+				continue;
 			}
+			if (part.type === "resource" && "resource" in part && part.resource && typeof part.resource === "object") {
+				const resource = part.resource;
+				if ("uri" in resource && typeof resource.uri === "string") {
+					content.push({
+						type: "resource",
+						uri: resource.uri,
+						...("text" in resource && typeof resource.text === "string" ? { text: resource.text } : {}),
+						...("blob" in resource && typeof resource.blob === "string" ? { blob: resource.blob } : {}),
+						...("mimeType" in resource && typeof resource.mimeType === "string"
+							? { mimeType: resource.mimeType }
+							: {}),
+					});
+					continue;
+				}
+			}
+			if (part.type === "resource_link" && "uri" in part && typeof part.uri === "string") {
+				content.push({
+					type: "resource_link",
+					uri: part.uri,
+					...("name" in part && typeof part.name === "string" ? { name: part.name } : {}),
+					...("description" in part && typeof part.description === "string"
+						? { description: part.description }
+						: {}),
+					...("mimeType" in part && typeof part.mimeType === "string" ? { mimeType: part.mimeType } : {}),
+				});
+				continue;
+			}
+			content.push({ type: "unsupported", contentType: typeof part.type === "string" ? part.type : "unknown" });
 		}
 		return {
 			content,
@@ -91,6 +156,22 @@ export class GenericMcpConnection {
 	}
 
 	async close(): Promise<void> {
+		const transport = this.transport;
+		if (transport instanceof StreamableHTTPClientTransport) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				await Promise.race([
+					transport.terminateSession(),
+					new Promise<void>((resolve) => {
+						timer = setTimeout(resolve, this.settings.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS);
+					}),
+				]);
+			} catch {
+				// MCP servers may reject or omit DELETE session termination.
+			} finally {
+				if (timer) clearTimeout(timer);
+			}
+		}
 		await this.client.close();
 		this.transport = undefined;
 	}

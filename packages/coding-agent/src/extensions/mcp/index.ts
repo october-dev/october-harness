@@ -1,9 +1,8 @@
+import { createHash } from "node:crypto";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type TSchema, Type } from "typebox";
-import { getAgentDir } from "../../config.ts";
-import type { ExtensionAPI } from "../../core/extensions/types.ts";
-import { SettingsManager } from "../../core/settings-manager.ts";
+import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
 import { GenericMcpConnection, type GenericMcpToolResult } from "./client.ts";
 import { createSecretRedactor, parseMcpServers } from "./config.ts";
 
@@ -21,13 +20,15 @@ function segment(value: string): string {
 		value
 			.toLowerCase()
 			.replace(/[^a-z0-9_-]+/gu, "_")
-			.replace(/^_+|_+$/gu, "")
-			.slice(0, 48) || "unnamed"
+			.replace(/^_+|_+$/gu, "") || "unnamed"
 	);
 }
 
 export function mcpToolName(serverName: string, remoteName: string): string {
-	return `mcp__${segment(serverName)}__${segment(remoteName)}`;
+	const fullName = `mcp__${segment(serverName)}__${segment(remoteName)}`;
+	if (fullName.length <= 64) return fullName;
+	const suffix = createHash("sha256").update(fullName).digest("hex").slice(0, 12);
+	return `${fullName.slice(0, 50)}__${suffix}`;
 }
 
 function resultText(result: GenericMcpToolResult): string {
@@ -41,17 +42,43 @@ function schemaFor(value: unknown): TSchema {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? Type.Unsafe(value) : Type.Object({});
 }
 
-function mapContent(result: GenericMcpToolResult): (TextContent | ImageContent)[] {
+export function mapMcpContent(result: GenericMcpToolResult): (TextContent | ImageContent)[] {
 	const content: (TextContent | ImageContent)[] = [];
 	for (const part of result.content) {
-		if (part.type === "text") content.push({ type: "text", text: part.text });
+		if (part.type === "text") {
+			content.push({ type: "text", text: part.text });
+			continue;
+		}
 		if (part.type === "image") content.push({ type: "image", data: part.data, mimeType: part.mimeType });
+		if (part.type === "resource") {
+			if (part.text !== undefined) {
+				content.push({ type: "text", text: `MCP resource ${part.uri}:\n${part.text}` });
+			} else {
+				const mediaType = part.mimeType ? ` (${part.mimeType})` : "";
+				content.push({
+					type: "text",
+					text: `MCP resource ${part.uri}${mediaType} contains binary content that October cannot render.`,
+				});
+			}
+		}
+		if (part.type === "resource_link") {
+			const label = part.name ?? "MCP resource";
+			const description = part.description ? ` — ${part.description}` : "";
+			content.push({ type: "text", text: `${label}: ${part.uri}${description}` });
+		}
+		if (part.type === "unsupported") {
+			content.push({ type: "text", text: `MCP returned unsupported ${part.contentType} content.` });
+		}
 	}
 	if (content.length === 0 && result.structuredContent !== undefined) {
 		content.push({ type: "text", text: JSON.stringify(result.structuredContent) });
 	}
 	if (content.length === 0) content.push({ type: "text", text: "" });
 	return content;
+}
+
+export function mcpServersFromContext(ctx: Pick<ExtensionContext, "settings">): ReturnType<typeof parseMcpServers> {
+	return parseMcpServers(ctx.settings.mcpServers);
 }
 
 export default function generalMcpExtension(pi: ExtensionAPI): void {
@@ -71,12 +98,9 @@ export default function generalMcpExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		const settings = SettingsManager.create(ctx.cwd, getAgentDir(), {
-			projectTrusted: ctx.isProjectTrusted(),
-		}).getSettings();
 		let servers: ReturnType<typeof parseMcpServers>;
 		try {
-			servers = parseMcpServers(settings.mcpServers);
+			servers = mcpServersFromContext(ctx);
 		} catch (error) {
 			status = `MCP configuration error: ${error instanceof Error ? error.message : String(error)}`;
 			ctx.ui.notify(status, "error");
@@ -156,7 +180,7 @@ export default function generalMcpExtension(pi: ExtensionAPI): void {
 						);
 						if (result.isError) throw new Error(resultText(result) || "MCP tool returned an error");
 						return {
-							content: mapContent(result),
+							content: mapMcpContent(result),
 							details: { server: tool.serverName, tool: tool.remoteName },
 						};
 					} catch (error) {

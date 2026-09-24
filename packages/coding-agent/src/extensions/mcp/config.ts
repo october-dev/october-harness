@@ -90,6 +90,8 @@ export function createSecretRedactor(servers: ReadonlyMap<string, McpServerSetti
 			server.transport === "stdio" ? Object.values(server.env ?? {}) : Object.values(server.headers ?? {});
 		for (const value of values) {
 			if (value.length >= 4) secrets.add(value);
+			const bearer = /^Bearer\s+(\S+)$/iu.exec(value);
+			if (bearer?.[1] && bearer[1].length >= 4) secrets.add(bearer[1]);
 		}
 	}
 	return (message) => {
