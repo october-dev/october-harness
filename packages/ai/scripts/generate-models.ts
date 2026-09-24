@@ -20,6 +20,7 @@ import type {
 	KnownProvider,
 	Model,
 	ModelCost,
+	ModelPromptCache,
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 } from "../src/types.ts";
@@ -32,6 +33,11 @@ import {
 	validateGeneratedModelData,
 	validateModelDataDirectory,
 } from "./model-data.ts";
+import {
+	DEFAULT_RADIUS_GATEWAY,
+	getRadiusModelsFromConfig,
+	loadRadiusGatewayConfig,
+} from "../src/providers/radius-config.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -287,6 +293,16 @@ const DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP = {
 	...DEEPSEEK_V4_THINKING_LEVEL_MAP,
 	low: "low",
 } as const;
+// Verified against Fireworks Messages raw_output on 2026-09-10 (#9323).
+// Fall back to verified support when models.dev omits effort metadata; this is
+// not an allowlist. Any Fireworks Messages model advertising effort uses adaptive thinking.
+const FIREWORKS_ADAPTIVE_THINKING_FALLBACK_MODELS = new Set([
+	"accounts/fireworks/models/deepseek-v4-flash-0731",
+	"accounts/fireworks/models/deepseek-v4-flash-vision-exp",
+	"accounts/fireworks/models/deepseek-v4-pro-0813",
+	"accounts/fireworks/models/qwen3p8-max",
+	"accounts/fireworks/models/qwen3p8-2p4t-a95b",
+]);
 const QWEN_TOKEN_PLAN_FALLBACK_THINKING_LEVEL_MAP = {
 	minimal: null,
 	low: null,
@@ -355,17 +371,18 @@ const OPENAI_TOOL_SEARCH_MODEL_IDS = new Set([
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
 	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 ]);
-// Public OpenAI documents additional_tools for applications that load tools
-// outside the normal tool-search flow. Codex currently uses the input item for
-// its Responses Lite GPT-5.6 models.
-// https://developers.openai.com/api/docs/guides/tools-tool-search#add-tools-at-a-specific-point-in-the-input
 const OPENAI_ADDITIONAL_TOOLS_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
+const OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS = OPENAI_TOOL_SEARCH_MODEL_IDS;
 const OPENAI_CODEX_ADDITIONAL_TOOLS_MODEL_IDS = new Set([
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
 	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 ]);
 const OPENAI_LONG_CONTEXT_INPUT_THRESHOLD = 272000;
 const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
@@ -375,6 +392,8 @@ const OPENAI_SHORT_CONTEXT_CAPPED_MODEL_IDS = new Set([
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
 	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 ]);
 const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-5.4",
@@ -385,7 +404,19 @@ const OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS = new Set([
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
 	"gpt-6-astra",
+	"gpt-6-sol",
+	"gpt-6-luna",
 ]);
+
+// Keep the generated default no less restrictive than coding-agent's historical
+// image preprocessing. Provider limits can narrow this profile, but unknown
+// providers retain the cache-safe 2000px / 4.5 MiB behavior.
+const DEFAULT_IMAGE_RESIZE = {
+	maxWidth: 2000,
+	maxHeight: 2000,
+	maxBytes: 4.5 * 1024 * 1024,
+	jpegQuality: 80,
+} as const;
 
 function withOpenAiLongContextPricing(cost: Model<Api>["cost"]): Model<Api>["cost"] {
 	return {
@@ -402,12 +433,16 @@ function withOpenAiLongContextPricing(cost: Model<Api>["cost"]): Model<Api>["cos
 	};
 }
 
-// OpenAI reduced GPT-5.6 Terra and Luna prices on 2026-07-30. Keep these
-// authoritative values until models.dev and passthrough catalogs catch up.
+// Keep current OpenAI prices authoritative until models.dev and passthrough
+// catalogs catch up.
 // https://developers.openai.com/api/docs/pricing
-const OPENAI_GPT_56_STANDARD_COSTS: Record<string, ModelCost> = {
+const OPENAI_STANDARD_COSTS: Record<string, ModelCost> = {
 	"gpt-5.6-luna": { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+	"gpt-5.6-sol": { input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 },
 	"gpt-5.6-terra": { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2.5 },
+	"gpt-6-astra": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+	"gpt-6-luna": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+	"gpt-6-sol": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
 };
 
 const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
@@ -421,6 +456,8 @@ const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
+	"gpt-6-sol",
+	"gpt-6-luna",
 ]);
 const XAI_BUILTIN_EXCLUDED_MODEL_IDS = new Set([
 	"grok-3",
@@ -451,11 +488,15 @@ const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS = new Set([
 	"claude-opus-4.7",
 	"claude-opus-4.8",
 	"claude-opus-5",
+	"claude-opus-5.5",
 	"claude-sonnet-4.6",
 	"claude-sonnet-5",
 	"gpt-5.3-codex",
 	"gpt-5.4",
 	"gpt-5.5",
+	"gpt-6-astra",
+	"gpt-6-luna",
+	"gpt-6-sol",
 ]);
 
 // Checked manually against the authenticated GitHub Copilot /models endpoint on 2026-06-15.
@@ -534,13 +575,13 @@ function supportsOpenAiXhigh(modelId: string): boolean {
 		modelId.includes("gpt-5.4") ||
 		modelId.includes("gpt-5.5") ||
 		modelId.includes("gpt-5.6") ||
-		modelId.includes("gpt-6-astra")
+		modelId.includes("gpt-6")
 	);
 }
 
 function supportsOpenAiMax(model: Model<Api>): boolean {
 	return (
-		(model.id.includes("gpt-5.6") || model.id.includes("gpt-6-astra")) &&
+		(model.id.includes("gpt-5.6") || model.id.includes("gpt-6")) &&
 		(model.api === "openai-responses" ||
 			model.api === "azure-openai-responses" ||
 			model.api === "openai-codex-responses" ||
@@ -548,17 +589,24 @@ function supportsOpenAiMax(model: Model<Api>): boolean {
 	);
 }
 
-function isGoogleThinkingApi(model: Model<any>): boolean {
-	return model.api === "google-generative-ai" || model.api === "google-vertex";
-}
-
 const VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS = new Set(["anthropic", "openrouter"]);
+// OpenRouter rejects `configuration_update` system messages on Opus 5 ("Mid-conversation
+// reasoning effort (configuration_update) is not supported on anthropic/claude-opus-5-20260723")
+// while accepting them on Fable 5.1, so gate that model there.
+const MID_CONVO_EFFORT_UNSUPPORTED_ANTHROPIC_MODELS = new Set(["openrouter:anthropic/claude-opus-5"]);
 
 function supportsAnthropicMidConvoEffort(modelId: string): boolean {
 	const id = modelId.toLowerCase().replace(/^~?anthropic\//, "");
 	return (
-		/^claude-opus-5(?:-\d{8})?$/.test(id) ||
+		/^claude-opus-(?:5|5[.-]5)(?:-\d{8})?$/.test(id) ||
 		/^claude-(?:fable|mythos)-5(?:[.-]1)(?:-\d{8})?$/.test(id)
+	);
+}
+
+function supportsAnthropicMidConvoSystemMessages(modelId: string): boolean {
+	return (
+		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(modelId) ||
+		/^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$/.test(modelId)
 	);
 }
 
@@ -610,18 +658,19 @@ const OPENAI_COMPLETIONS_DEFAULT_COMPAT = {
 	chatTemplateKwargs: {},
 	chatTemplateArgs: {},
 	zaiToolStream: false,
-	supportsStrictMode: true,
+	supportsStrictMode: false,
 	supportsOpenAIGrammarTools: false,
+	supportsMidConvoSystemMessages: false,
+	supportsMidConvoToolAdditions: false,
 	sendSessionAffinityHeaders: false,
 	supportsLongCacheRetention: true,
 } satisfies Required<
 	Omit<
 		OpenAICompletionsCompat,
-		"cacheControlFormat" | "deferredToolsMode" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
+		"cacheControlFormat" | "supportsThinkingTokenBudget" | "thinkingTokenBudgetField"
 	>
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
-	deferredToolsMode?: OpenAICompletionsCompat["deferredToolsMode"];
 };
 
 type OpenAICompletionsResolvedCompat = typeof OPENAI_COMPLETIONS_DEFAULT_COMPAT & {
@@ -649,13 +698,13 @@ function detectOpenAICompletionsCompat(model: Model<"openai-completions">): Open
 	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrl.includes("gateway.ai.cloudflare.com");
 	const isNvidia = provider === "nvidia" || baseUrl.includes("integrate.api.nvidia.com");
 	const isAntLing = provider === "ant-ling" || baseUrl.includes("api.ant-ling.com");
+	const isCerebras = provider === "cerebras" || baseUrl.includes("cerebras.ai");
 	const isTogetherReasoningOnly = isTogether && TOGETHER_REASONING_ONLY_MODELS.has(model.id);
 	const isDeepSeek = provider === "deepseek" || baseUrl.toLowerCase().includes("deepseek.com");
 
 	const isNonStandard =
 		isNvidia ||
-		provider === "cerebras" ||
-		baseUrl.includes("cerebras.ai") ||
+		isCerebras ||
 		provider === "xai" ||
 		baseUrl.includes("api.x.ai") ||
 		isTogether ||
@@ -713,10 +762,13 @@ function detectOpenAICompletionsCompat(model: Model<"openai-completions">): Open
 		chatTemplateKwargs: {},
 		chatTemplateArgs: {},
 		zaiToolStream: false,
-		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia,
+		// Preserve built-in behavior as explicit metadata against the conservative runtime default.
+		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia && !isCerebras,
 		supportsOpenAIGrammarTools: false,
+		supportsMidConvoSystemMessages: false,
+		supportsMidConvoToolAdditions: false,
 		...(cacheControlFormat ? { cacheControlFormat } : {}),
-		sendSessionAffinityHeaders: false,
+		sendSessionAffinityHeaders: isOpenRouter,
 		supportsLongCacheRetention: !(
 			isTogether ||
 			isCloudflareWorkersAI ||
@@ -844,6 +896,59 @@ function applyOpenAIToolSearchMetadata(model: Model<Api>): void {
 	};
 }
 
+// Moonshot Kimi K2.6/K2.7 accept system text after the conversation starts but reject
+// tool-bearing system messages. Kimi K3 accepts both forms; Fireworks and OpenCode pass
+// its tool-bearing form through. GitHub Copilot forwards K3 text but silently drops its
+// tool-bearing message. DeepSeek V4 Pro and OpenAI models behind OpenRouter also accept
+// plain system text in place.
+function applyOpenAICompletionsTranscriptMetadata(model: Model<Api>): void {
+	if (model.api !== "openai-completions") return;
+	const isKimiK3 =
+		(model.provider.startsWith("moonshot") && model.id === "kimi-k3") ||
+		(model.provider === "fireworks" && model.id.includes("kimi-k3")) ||
+		((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "kimi-k3");
+	const isMoonshotKimiK2 =
+		model.provider.startsWith("moonshot") &&
+		(model.id === "kimi-k2.6" || model.id === "kimi-k2.7-code" || model.id === "kimi-k2.7-code-highspeed");
+	const isTextOnly =
+		isMoonshotKimiK2 ||
+		(model.provider === "github-copilot" && model.id === "kimi-k3") ||
+		(model.provider === "deepseek" && model.id === "deepseek-v4-pro") ||
+		(model.provider === "openrouter" &&
+			model.id.startsWith("openai/") &&
+			OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS.has(model.id.slice("openai/".length)));
+	if (!isKimiK3 && !isTextOnly) return;
+	model.compat = {
+		...(model.compat as OpenAICompletionsCompat | undefined),
+		supportsMidConvoSystemMessages: true,
+		...(isKimiK3 ? { supportsMidConvoToolAdditions: true } : {}),
+	};
+}
+
+// Newer OpenAI Responses models accept developer messages after the conversation has started.
+// OpenCode Zen, OpenCode Go, and GitHub Copilot pass both those messages and
+// `additional_tools` items through to OpenAI unchanged; tool search is not verified
+// through those proxies.
+const OPENAI_RESPONSES_PROXY_PROVIDERS = new Set(["opencode", "opencode-go", "github-copilot"]);
+
+function applyOpenAIResponsesTranscriptMetadata(model: Model<Api>): void {
+	const isOpenAIResponses = model.provider === "openai" && model.api === "openai-responses";
+	const isOpenAICodex = model.provider === "openai-codex" && model.api === "openai-codex-responses";
+	const isProxiedResponses =
+		OPENAI_RESPONSES_PROXY_PROVIDERS.has(model.provider) && model.api === "openai-responses";
+	if (
+		!(isOpenAIResponses || isOpenAICodex || isProxiedResponses) ||
+		!OPENAI_MID_CONVO_SYSTEM_MESSAGE_MODEL_IDS.has(model.id)
+	) {
+		return;
+	}
+	model.compat = {
+		...(model.compat as OpenAIResponsesCompat | undefined),
+		supportsMidConvoSystemMessages: true,
+		...(isProxiedResponses ? { supportsAdditionalTools: true } : {}),
+	};
+}
+
 // OpenAI charges prompt-cache writes starting with the GPT-5.6 family, and exactly
 // those models accept `prompt_cache_options`; older models reject the parameter.
 // https://developers.openai.com/api/docs/guides/prompt-caching
@@ -856,17 +961,63 @@ function applyOpenAIExplicitPromptCacheMetadata(model: Model<Api>): void {
 	};
 }
 
-function isGemini3ProModel(modelId: string): boolean {
-	return /gemini-3(?:\.\d+)?-pro/.test(modelId.toLowerCase());
+// Anthropic ephemeral entries have a hard five-minute lifetime; `ttl: "1h"`
+// extends it to one hour. Only direct Anthropic is annotated so cache warming
+// does not assume equivalent behavior through proxies.
+// https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+const ANTHROPIC_PROMPT_CACHE: ModelPromptCache = { short: 300, long: 3600 };
+
+function applyPromptCacheMetadata(model: Model<Api>): void {
+	if (model.provider === "anthropic" && model.api === "anthropic-messages") {
+		model.promptCache = ANTHROPIC_PROMPT_CACHE;
+	}
+	// Do not add OpenAI lifetimes yet. Before enabling warming for explicit
+	// OpenAI caches, re-evaluate it using observed expiry, replay, and billing
+	// behavior; a documented TTL alone does not establish full cache loss.
 }
 
-function isGemini3FlashModel(modelId: string): boolean {
-	const id = modelId.toLowerCase();
-	return /gemini-3(?:\.\d+)?-flash/.test(id) || id === "gemini-flash-latest" || id === "gemini-flash-lite-latest";
+function applyImageInputMetadata(model: Model<Api>): void {
+	if (!model.input.includes("image")) return;
+
+	const providerLimits: Model<Api>["inputLimits"] =
+		model.provider === "anthropic"
+			? {
+					maxRequestBytes: 32 * 1024 * 1024,
+					images: { maxPerRequest: model.contextWindow === 200000 ? 100 : 600 },
+				}
+			: model.provider === "amazon-bedrock"
+				? { images: { maxPerMessage: 20 } }
+				: model.provider === "openai"
+					? { maxRequestBytes: 512 * 1024 * 1024, images: { maxPerRequest: 1500 } }
+					: model.provider === "google"
+						? { maxRequestBytes: 20 * 1024 * 1024, images: { maxPerRequest: 3600 } }
+						: undefined;
+	const configuredImages = model.inputLimits?.images;
+	model.inputLimits = {
+		...providerLimits,
+		...model.inputLimits,
+		images: {
+			...providerLimits?.images,
+			...configuredImages,
+			resize: { ...DEFAULT_IMAGE_RESIZE, ...configuredImages?.resize },
+		},
+	};
 }
 
 function isGemma4Model(modelId: string): boolean {
 	return /gemma-?4/.test(modelId.toLowerCase());
+}
+
+function getGoogleThinkingLevelMap(
+	modelId: string,
+	reasoningOptions: readonly ModelsDevReasoningOption[],
+): NonNullable<Model<Api>["thinkingLevelMap"]> | undefined {
+	const effortMap = getEffortThinkingLevelMap(reasoningOptions);
+	if (effortMap) return effortMap;
+	if (isGemma4Model(modelId)) {
+		return { off: null, minimal: "MINIMAL", low: null, medium: null, high: "HIGH" };
+	}
+	return undefined;
 }
 
 function applyThinkingLevelMetadata(model: Model<any>): void {
@@ -877,13 +1028,13 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		mergeThinkingLevelMap(model, { off: null });
 	}
 	if (
-		model.id === "gpt-6-astra" &&
+		(model.id === "gpt-6-astra" || model.id === "gpt-6-sol" || model.id === "gpt-6-luna") &&
 		(model.api === "openai-responses" ||
 			model.api === "azure-openai-responses" ||
 			model.api === "openai-codex-responses")
 	) {
 		mergeThinkingLevelMap(model, {
-			off: null,
+			off: model.id === "gpt-6-astra" ? null : "none",
 			minimal: null,
 			low: "low",
 			medium: "medium",
@@ -951,7 +1102,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.api === "anthropic-messages" && isAnthropicTemperatureUnsupportedModel(model.id)) {
 		mergeAnthropicMessagesCompat(model, { supportsTemperature: false });
 	}
-	if (model.api === "openai-completions" && model.id.includes("deepseek-v4")) {
+	if (
+		model.api === "openai-completions" &&
+		model.id.includes("deepseek-v4") &&
+		model.thinkingLevelMap === undefined
+	) {
 		mergeThinkingLevelMap(
 			model,
 			model.provider === "openrouter"
@@ -961,15 +1116,6 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 					? DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP
 					: DEEPSEEK_V4_THINKING_LEVEL_MAP,
 		);
-	}
-	if (isGoogleThinkingApi(model) && isGemini3ProModel(model.id)) {
-		mergeThinkingLevelMap(model, { off: null, minimal: null, low: "LOW", medium: null, high: "HIGH" });
-	}
-	if (isGoogleThinkingApi(model) && isGemini3FlashModel(model.id)) {
-		mergeThinkingLevelMap(model, { off: null });
-	}
-	if (isGoogleThinkingApi(model) && isGemma4Model(model.id)) {
-		mergeThinkingLevelMap(model, { off: null, minimal: "MINIMAL", low: null, medium: null, high: "HIGH" });
 	}
 	if (model.provider === "groq" && model.id === "qwen/qwen3.6-27b") {
 		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });
@@ -996,8 +1142,36 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.provider === "openrouter" && model.id === "z-ai/glm-5.2") {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
-	if (model.provider === "fireworks" && model.id.includes("glm-5p2")) {
-		mergeThinkingLevelMap(model, { off: "none", minimal: null, low: "high", medium: "high", max: "max" });
+	if (model.provider === "fireworks") {
+		if (model.api === "anthropic-messages" && model.compat?.forceAdaptiveThinking) {
+			// Qwen Max currently advertises only a toggle. Prefer upstream effort
+			// metadata once available instead of replacing it with this fallback.
+			if (model.id === "accounts/fireworks/models/qwen3p8-max" && !model.thinkingLevelMap) {
+				model.thinkingLevelMap = getEffortThinkingLevelMap([
+					{ type: "effort", values: ["low", "medium", "xhigh"] },
+				]);
+			}
+			const reasoningOptions = modelsDevReasoningOptions.get(getModelKey(model));
+			if (
+				reasoningOptions?.some((option) => option.type === "toggle") ||
+				// The 2.4T alias omits the verified toggle in models.dev.
+				model.id === "accounts/fireworks/models/qwen3p8-2p4t-a95b"
+			) {
+				mergeThinkingLevelMap(model, { off: "none" });
+			}
+			if (model.id === "accounts/fireworks/models/deepseek-v4-pro-0813") {
+				mergeThinkingLevelMap(model, { low: "low" });
+			}
+		}
+		if (model.id.includes("glm-5p2")) {
+			// GLM 5.2 and its fast router support off/high/max. Fireworks maps low
+			// and medium to high, so do not expose those aliases as distinct levels.
+			mergeThinkingLevelMap(model, { off: "none", minimal: null, low: null, medium: null, max: "max" });
+		}
+		if (model.id.includes("kimi-k3")) {
+			// Fireworks maps medium to high on both APIs; do not expose it as a distinct level.
+			mergeThinkingLevelMap(model, { medium: null });
+		}
 	}
 	if (model.provider === "opencode-go" && model.id === "glm-5.2") {
 		mergeThinkingLevelMap(model, OPENCODE_GO_GLM52_THINKING_LEVEL_MAP);
@@ -1026,9 +1200,19 @@ function getAnthropicMessagesCompat(provider: string, modelId: string): Anthropi
 	const compat: AnthropicMessagesCompat = {};
 	if (
 		VERIFIED_ANTHROPIC_MID_CONVO_EFFORT_PROVIDERS.has(provider) &&
-		supportsAnthropicMidConvoEffort(modelId)
+		supportsAnthropicMidConvoEffort(modelId) &&
+		!MID_CONVO_EFFORT_UNSUPPORTED_ANTHROPIC_MODELS.has(`${provider}:${modelId}`)
 	) {
 		compat.supportsMidConvoEffort = true;
+	}
+	if (provider === "anthropic" && supportsAnthropicMidConvoSystemMessages(modelId)) {
+		compat.supportsMidConvoSystemMessages = true;
+		compat.supportsMidConvoToolChanges = true;
+	}
+	// OpenCode Zen and GitHub Copilot forward mid-conversation system messages but reject
+	// `tool_addition`/`tool_removal` blocks, so tool changes stay top-level there.
+	if ((provider === "opencode" || provider === "github-copilot") && supportsAnthropicMidConvoSystemMessages(modelId)) {
+		compat.supportsMidConvoSystemMessages = true;
 	}
 	if (EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS.has(`${provider}:${modelId}`)) {
 		compat.supportsEagerToolInputStreaming = false;
@@ -1164,6 +1348,21 @@ async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 	}
 }
 
+async function fetchRadiusModels(): Promise<Model<"pi-messages">[]> {
+	try {
+		console.log("Fetching models from Radius API...");
+		const config = await loadRadiusGatewayConfig(DEFAULT_RADIUS_GATEWAY);
+		const models = getRadiusModelsFromConfig("radius", config);
+		if (models.length === 0) throw new Error("Radius API returned no models");
+		console.log(`Fetched ${models.length} models from Radius`);
+		return models;
+	} catch (error) {
+		console.error("Failed to fetch Radius models:", error);
+		if (generatorOptions.strict) throw error;
+		return [];
+	}
+}
+
 async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from Vercel AI Gateway API...");
@@ -1204,6 +1403,7 @@ async function fetchAiGatewayModels(): Promise<Model<any>[]> {
 				provider: "vercel-ai-gateway",
 				reasoning: tags.includes("reasoning"),
 				input,
+				compat: { allowEmptySignature: true },
 				cost: {
 					input: inputCost,
 					output: outputCost,
@@ -1295,6 +1495,10 @@ function processBasetenModels(provider: ModelsDevProvider | undefined): Model<Ap
 		supportsUsageInStreaming: true,
 		maxTokensField: "max_tokens",
 		supportsStrictMode: true,
+		// Baseten automatic prompt caching needs session affinity so related
+		// requests land on the same replica. See:
+		// https://docs.baseten.co/inference/model-apis/pricing-and-limits
+		sendSessionAffinityHeaders: true,
 		supportsLongCacheRetention: false,
 	};
 	const reasoningEffortCompat: OpenAICompletionsCompat = {
@@ -1380,10 +1584,89 @@ function processBasetenModels(provider: ModelsDevProvider | undefined): Model<Ap
 	return models;
 }
 
+function processGoogleModels(data: ModelsDevCatalog): Model<Api>[] {
+	const models: Model<Api>[] = [];
+	const googleModels = data.google?.models;
+	if (googleModels) {
+		for (const [modelId, model] of Object.entries(googleModels)) {
+			if (model.tool_call !== true) continue;
+			const source =
+				modelId === "gemini-flash-latest"
+					? (googleModels["gemini-3.5-flash"] ?? model)
+					: modelId === "gemini-flash-lite-latest"
+						? (googleModels["gemini-3.1-flash-lite"] ?? model)
+						: model;
+			const thinkingLevelMap = getGoogleThinkingLevelMap(modelId, source.reasoning_options ?? []);
+
+			models.push({
+				id: modelId,
+				name: model.name || modelId,
+				api: "google-generative-ai",
+				provider: "google",
+				baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+				reasoning: source.reasoning === true,
+				...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+				input: source.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+				cost: {
+					input: source.cost?.input || 0,
+					output: source.cost?.output || 0,
+					cacheRead: source.cost?.cache_read || 0,
+					cacheWrite: source.cost?.cache_write || 0,
+				},
+				contextWindow: source.limit?.context || 4096,
+				maxTokens: source.limit?.output || 4096,
+			});
+		}
+	}
+
+	// The google-vertex models.dev catalog also includes Claude, OpenAI, and other
+	// MaaS models that do not use the @google/genai Gemini streaming path.
+	const vertexModels = data["google-vertex"]?.models;
+	if (vertexModels) {
+		for (const [modelId, model] of Object.entries(vertexModels)) {
+			if (model.tool_call !== true || !modelId.startsWith("gemini-")) continue;
+			if (modelId === "gemini-3.1-flash-lite-preview") continue;
+			const source =
+				modelId === "gemini-flash-latest"
+					? (vertexModels["gemini-3.5-flash"] ?? model)
+					: modelId === "gemini-flash-lite-latest"
+						? (vertexModels["gemini-3.1-flash-lite"] ?? model)
+						: model;
+			const thinkingLevelMap = getGoogleThinkingLevelMap(modelId, source.reasoning_options ?? []);
+			// models.dev reports Vertex cache_read/cache_write values for Gemini 2.5 Flash that
+			// do not match the official Gemini API standard pricing table. pi only accounts
+			// cachedContentTokenCount as cacheRead.
+			const cacheRead = modelId === "gemini-2.5-flash" ? 0.03 : source.cost?.cache_read || 0;
+
+			models.push({
+				id: modelId,
+				name: model.name || modelId,
+				api: "google-vertex",
+				provider: "google-vertex",
+				baseUrl: VERTEX_BASE_URL,
+				reasoning: source.reasoning === true,
+				...(thinkingLevelMap ? { thinkingLevelMap } : {}),
+				input: source.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+				cost: {
+					input: source.cost?.input || 0,
+					output: source.cost?.output || 0,
+					cacheRead,
+					cacheWrite: 0,
+				},
+				contextWindow: source.limit?.context || 4096,
+				maxTokens: source.limit?.output || 4096,
+			});
+		}
+	}
+
+	return models;
+}
+
 function processFireworksModels(provider: ModelsDevProvider | undefined): Model<Api>[] {
 	if (!provider?.models) return [];
 
 	const anthropicCompat: AnthropicMessagesCompat = {
+		allowEmptySignature: true,
 		sendSessionAffinityHeaders: true,
 		supportsEagerToolInputStreaming: false,
 		supportsCacheControlOnTools: false,
@@ -1399,7 +1682,6 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
 		...openAICompat,
 		requiresReasoningContentOnAssistantMessages: true,
 		thinkingFormat: "openai",
-		deferredToolsMode: "kimi",
 	};
 	const models: Model<Api>[] = [];
 
@@ -1449,7 +1731,15 @@ function processFireworksModels(provider: ModelsDevProvider | undefined): Model<
 				// x-session-affinity routes requests to the same replica for cache hits.
 				// cache_control on tools and eager_input_streaming are not supported.
 				// See: https://docs.fireworks.ai/tools-sdks/anthropic-compatibility
-				compat: anthropicCompat,
+				// Use adaptive thinking for cataloged effort controls, with verified
+				// fallbacks where models.dev is incomplete. New models need no allowlist entry.
+				compat: {
+					...anthropicCompat,
+					...(model.reasoning_options?.some((option) => option.type === "effort") ||
+					FIREWORKS_ADAPTIVE_THINKING_FALLBACK_MODELS.has(modelId)
+						? { forceAdaptiveThinking: true }
+						: {}),
+				},
 			});
 		}
 		recordModelsDevReasoningOptions("fireworks", modelId, model);
@@ -1536,81 +1826,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			}
 		}
 
-		// Process Google models
-		if (data.google?.models) {
-			for (const [modelId, model] of Object.entries(data.google.models)) {
-				const m = model as ModelsDevModel;
-				if (m.tool_call !== true) continue;
-				let source = m;
-				if (modelId === "gemini-flash-latest") {
-					source = (data.google.models["gemini-3.5-flash"] as ModelsDevModel | undefined) ?? m;
-				}
-				if (modelId === "gemini-flash-lite-latest") {
-					source = (data.google.models["gemini-3.1-flash-lite"] as ModelsDevModel | undefined) ?? m;
-				}
-
-				models.push({
-					id: modelId,
-					name: m.name || modelId,
-					api: "google-generative-ai",
-					provider: "google",
-					baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-					reasoning: source.reasoning === true,
-					input: source.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
-					cost: {
-						input: source.cost?.input || 0,
-						output: source.cost?.output || 0,
-						cacheRead: source.cost?.cache_read || 0,
-						cacheWrite: source.cost?.cache_write || 0,
-					},
-					contextWindow: source.limit?.context || 4096,
-					maxTokens: source.limit?.output || 4096,
-				});
-				recordModelsDevReasoningOptions("google", modelId, source);
-			}
-		}
-
-		// Process Google Vertex Gemini models. The google-vertex models.dev catalog also includes
-		// Claude, OpenAI, and other MaaS models that do not use the @google/genai Gemini streaming
-		// path implemented by our google-vertex provider.
-		if (data["google-vertex"]?.models) {
-			for (const [modelId, model] of Object.entries(data["google-vertex"].models)) {
-				const m = model as ModelsDevModel;
-				if (m.tool_call !== true) continue;
-				if (!modelId.startsWith("gemini-")) continue;
-				if (modelId === "gemini-3.1-flash-lite-preview") continue;
-				let source = m;
-				if (modelId === "gemini-flash-latest") {
-					source = (data["google-vertex"].models["gemini-3.5-flash"] as ModelsDevModel | undefined) ?? m;
-				}
-				if (modelId === "gemini-flash-lite-latest") {
-					source = (data["google-vertex"].models["gemini-3.1-flash-lite"] as ModelsDevModel | undefined) ?? m;
-				}
-
-				// models.dev reports Vertex cache_read/cache_write values for Gemini 2.5 Flash that
-				// do not match the official Gemini API standard pricing table. pi only accounts
-				// cachedContentTokenCount as cacheRead.
-				const cacheRead = modelId === "gemini-2.5-flash" ? 0.03 : source.cost?.cache_read || 0;
-				models.push({
-					id: modelId,
-					name: m.name || modelId,
-					api: "google-vertex",
-					provider: "google-vertex",
-					baseUrl: VERTEX_BASE_URL,
-					reasoning: source.reasoning === true,
-					input: source.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
-					cost: {
-						input: source.cost?.input || 0,
-						output: source.cost?.output || 0,
-						cacheRead,
-						cacheWrite: 0,
-					},
-					contextWindow: source.limit?.context || 4096,
-					maxTokens: source.limit?.output || 4096,
-				});
-				recordModelsDevReasoningOptions("google-vertex", modelId, source);
-			}
-		}
+		models.push(...processGoogleModels(data));
 
 		// Process OpenAI models
 		if (data.openai?.models) {
@@ -1832,6 +2048,28 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					compat: { ...XAI_RESPONSES_COMPAT },
 					reasoning: m.reasoning === true,
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
+					cost: getModelsDevCost(m.cost),
+					contextWindow: m.limit?.context || 4096,
+					maxTokens: m.limit?.output || 4096,
+				});
+				recordModelsDevReasoningOptions("xai", modelId, m);
+			}
+		}
+
+		// Process Meta models
+		if (data.meta?.models) {
+			for (const [modelId, model] of Object.entries(data.meta.models)) {
+				const m = model as ModelsDevModel;
+				if (m.tool_call !== true) continue;
+
+				models.push({
+					id: modelId,
+					name: m.name || modelId,
+					api: "openai-responses",
+					provider: "meta",
+					baseUrl: "https://api.meta.ai/v1",
+					reasoning: m.reasoning === true,
+					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
 						input: m.cost?.input || 0,
 						output: m.cost?.output || 0,
@@ -1841,7 +2079,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					contextWindow: m.limit?.context || 4096,
 					maxTokens: m.limit?.output || 4096,
 				});
-				recordModelsDevReasoningOptions("xai", modelId, m);
+				recordModelsDevReasoningOptions("meta", modelId, m);
 			}
 		}
 
@@ -2062,6 +2300,12 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					}
 				}
 
+				let thinkingLevelMap: NonNullable<Model<Api>["thinkingLevelMap"]> | undefined;
+				if (api === "google-generative-ai") {
+					thinkingLevelMap = getGoogleThinkingLevelMap(modelId, m.reasoning_options ?? []);
+				} else if (variant.provider === "opencode-go" && modelId === "deepseek-v4.1-flash") {
+					thinkingLevelMap = getEffortThinkingLevelMap(m.reasoning_options ?? []);
+				}
 				models.push({
 					id: modelId,
 					name: m.name || modelId,
@@ -2069,6 +2313,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 					provider: variant.provider,
 					baseUrl,
 					reasoning: m.reasoning === true,
+					...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 					input: m.modalities?.input?.includes("image") ? ["text", "image"] : ["text"],
 					cost: {
 						input: m.cost?.input || 0,
@@ -2093,11 +2338,11 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 
 				// Claude 4.x and 5.x models route to Anthropic Messages API
 				const isCopilotClaude = /^claude-(haiku|sonnet|opus|fable)-[45]([.\-]|$)/.test(modelId);
-				// Grok, gpt-5, oswe, and MAI-Code models are only served through
+				// GPT, Grok, OSWE, and MAI-Code models are only served through
 				// the Copilot /responses endpoint.
 				const needsResponsesApi =
+					modelId.startsWith("gpt-") ||
 					modelId.startsWith("grok-") ||
-					modelId.startsWith("gpt-5") ||
 					modelId.startsWith("oswe") ||
 					modelId.startsWith("mai-");
 
@@ -2174,8 +2419,8 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 		}
 
 		// Process Kimi For Coding models
-		if (data["kimi-for-coding"]?.models) {
-			const kimiModels = data["kimi-for-coding"].models as Record<string, ModelsDevModel>;
+		if (data["kimi-code-plan-global"]?.models) {
+			const kimiModels = data["kimi-code-plan-global"].models as Record<string, ModelsDevModel>;
 			const hasCanonicalModel = Object.prototype.hasOwnProperty.call(kimiModels, "kimi-for-coding");
 
 			const kimiAliases = new Set(["k2p5", "k2p6", "k2p7"]);
@@ -2249,7 +2494,6 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				const compat = isKimiK3 ? { ...moonshotCompat } : moonshotCompat;
 				if (isKimiK3) {
 					compat.requiresReasoningContentOnAssistantMessages = true;
-					compat.deferredToolsMode = "kimi";
 					compat.thinkingFormat = "openai";
 					compat.supportsReasoningEffort = true;
 				}
@@ -2419,25 +2663,114 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 }
 
 async function generateModels() {
-	// Fetch models from both sources
-	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras
-	// OpenRouter: xAI and other providers (excluding Anthropic, Google, OpenAI)
+	// Fetch models from all upstream catalogs.
+	// models.dev: Anthropic, Google, OpenAI, Groq, Cerebras, and others
+	// OpenRouter: its tool-capable routed catalog
 	// AI Gateway: OpenAI-compatible catalog with tool-capable models
+	// Radius: its unauthenticated public catalog; authenticated clients overlay it at runtime
 	const modelsDevModels = await loadModelsDevData();
 	const openRouterModels = await fetchOpenRouterModels();
 	const aiGatewayModels = await fetchAiGatewayModels();
+	const radiusModels = await fetchRadiusModels();
 
-	// Combine models (models.dev has priority)
-	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels].filter(
+	// Combine models (models.dev has priority where sources overlap).
+	const allModels = [...modelsDevModels, ...openRouterModels, ...aiGatewayModels, ...radiusModels].filter(
 		(model) =>
 			!(model.provider === "xai" && XAI_BUILTIN_EXCLUDED_MODEL_IDS.has(model.id)) &&
 			!((model.provider === "opencode" || model.provider === "opencode-go") && model.id === "gpt-5.3-codex-spark"),
 	);
 
+	// Add Claude Opus 5.5 until models.dev includes it.
+	// https://platform.claude.com/docs/en/models/opus-5-5/overview
+	if (!allModels.some((model) => model.provider === "anthropic" && model.id === "claude-opus-5-5")) {
+		allModels.push({
+			id: "claude-opus-5-5",
+			name: "Claude Opus 5.5",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			baseUrl: "https://api.anthropic.com",
+			reasoning: true,
+			thinkingLevelMap: {
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: "max",
+			},
+			input: ["text", "image"],
+			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		});
+	}
+
+	// The authenticated Copilot catalog advertised these models on 2026-09-22,
+	// but models.dev did not include them yet.
+	const missingCopilotModels: Model<Api>[] = [
+		{
+			id: "claude-opus-5.5",
+			name: "Claude Opus 5.5",
+			api: "anthropic-messages",
+			provider: "github-copilot",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			reasoning: true,
+			thinkingLevelMap: {
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: "max",
+			},
+			input: ["text", "image"],
+			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+			contextWindow: 1000000,
+			maxTokens: 128000,
+			headers: { ...COPILOT_STATIC_HEADERS },
+		},
+		...(["gpt-6-sol", "gpt-6-luna"] as const).map((id) => ({
+			id,
+			name: id === "gpt-6-sol" ? "GPT-6 Sol" : "GPT-6 Luna",
+			api: "openai-responses" as const,
+			provider: "github-copilot" as const,
+			baseUrl: "https://api.individual.githubcopilot.com",
+			reasoning: true,
+			input: ["text", "image"] as ("text" | "image")[],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS[id]),
+			contextWindow: 1000000,
+			maxTokens: 128000,
+			headers: { ...COPILOT_STATIC_HEADERS },
+		})),
+	];
+	for (const model of missingCopilotModels) {
+		if (!allModels.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) {
+			allModels.push(model);
+		}
+	}
+
 	// Temporary overrides until upstream model metadata is corrected.
 	for (const candidate of allModels) {
 		if (candidate.provider === "github-copilot" && GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS.has(candidate.id)) {
 			candidate.contextWindow = 1000000;
+		}
+
+		// models.dev may list Opus 5.5 before its effort metadata is complete.
+		if (
+			(candidate.provider === "anthropic" && candidate.id === "claude-opus-5-5") ||
+			(candidate.provider === "github-copilot" && candidate.id === "claude-opus-5.5")
+		) {
+			mergeThinkingLevelMap(candidate, {
+				off: null,
+				minimal: null,
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: "max",
+			});
 		}
 
 		if (
@@ -2470,12 +2803,12 @@ async function generateModels() {
 			candidate.maxTokens = 128000;
 		}
 		if (candidate.provider === "openai" && OPENAI_LONG_CONTEXT_PRICING_MODEL_IDS.has(candidate.id)) {
-			const standardCost = OPENAI_GPT_56_STANDARD_COSTS[candidate.id];
+			const standardCost = OPENAI_STANDARD_COSTS[candidate.id];
 			candidate.cost = withOpenAiLongContextPricing(standardCost ?? candidate.cost);
 		}
 		// Cloudflare AI Gateway passes OpenAI usage through at OpenAI list prices.
 		if (candidate.provider === "cloudflare-ai-gateway") {
-			const standardCost = OPENAI_GPT_56_STANDARD_COSTS[candidate.id];
+			const standardCost = OPENAI_STANDARD_COSTS[candidate.id];
 			if (standardCost) candidate.cost = withOpenAiLongContextPricing(standardCost);
 		}
 		// models.dev reports gpt-5-pro output as 272000 (a duplicate of the input sub-limit);
@@ -2521,7 +2854,31 @@ async function generateModels() {
 			provider: "openai",
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-astra"]),
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+			maxTokens: 128000,
+		},
+		{
+			id: "gpt-6-sol",
+			name: "GPT-6 Sol",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-sol"]),
+			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
+			maxTokens: 128000,
+		},
+		{
+			id: "gpt-6-luna",
+			name: "GPT-6 Luna",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-luna"]),
 			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
@@ -2533,7 +2890,7 @@ async function generateModels() {
 			provider: "openai",
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-sol"]),
 			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
@@ -2545,7 +2902,7 @@ async function generateModels() {
 			provider: "openai",
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing(OPENAI_GPT_56_STANDARD_COSTS["gpt-5.6-terra"]),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-terra"]),
 			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
@@ -2557,7 +2914,7 @@ async function generateModels() {
 			provider: "openai",
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing(OPENAI_GPT_56_STANDARD_COSTS["gpt-5.6-luna"]),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-luna"]),
 			contextWindow: OPENAI_LONG_CONTEXT_INPUT_THRESHOLD,
 			maxTokens: 128000,
 		},
@@ -2589,37 +2946,21 @@ async function generateModels() {
 		requiresReasoningContentOnAssistantMessages: true,
 		thinkingFormat: "deepseek",
 	};
-	const deepseekV4Models: Model<"openai-completions">[] = [
+	const deepseekModels: Model<"openai-completions">[] = [
 		{
-			id: "deepseek-v4-flash",
-			name: "DeepSeek V4 Flash",
+			id: "deepseek-flash",
+			name: "DeepSeek V4.1 Flash",
 			api: "openai-completions",
 			baseUrl: "https://api.deepseek.com",
 			provider: "deepseek",
 			reasoning: true,
-			input: ["text"],
-			cost: {
-				input: 0.14,
-				output: 0.28,
-				cacheRead: 0.0028,
-				cacheWrite: 0,
-			},
-			contextWindow: 1000000,
-			maxTokens: 384000,
-			compat: deepseekCompat,
-		},
-		{
-			id: "deepseek-v4-flash-vision-exp",
-			name: "DeepSeek V4 Flash Vision Exp",
-			api: "openai-completions",
-			baseUrl: "https://api.deepseek.com",
-			provider: "deepseek",
-			reasoning: true,
+			thinkingLevelMap: DEEPSEEK_V4_FLASH_THINKING_LEVEL_MAP,
 			input: ["text", "image"],
 			cost: {
-				input: 0.14,
-				output: 0.28,
-				cacheRead: 0.0028,
+				// DeepSeek also offers time-based off-peak rates, which the cost schema cannot represent yet.
+				input: 0.3,
+				output: 1.2,
+				cacheRead: 0.006,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
@@ -2635,9 +2976,10 @@ async function generateModels() {
 			reasoning: true,
 			input: ["text"],
 			cost: {
-				input: 0.435,
-				output: 0.87,
-				cacheRead: 0.003625,
+				// DeepSeek also offers time-based off-peak rates, which the cost schema cannot represent yet.
+				input: 1.32,
+				output: 3.96,
+				cacheRead: 0.044,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
@@ -2645,7 +2987,7 @@ async function generateModels() {
 			compat: deepseekCompat,
 		},
 	];
-	allModels.push(...deepseekV4Models);
+	allModels.push(...deepseekModels);
 
 	const antLingCompat: OpenAICompletionsCompat = {
 		supportsStore: false,
@@ -2730,7 +3072,7 @@ async function generateModels() {
 
 	// OpenAI Codex (ChatGPT OAuth) models
 	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
-	// Older model limits are based on observed server behavior; GPT-5.6 and GPT-6 Astra use Codex's 272k default catalog limit.
+	// Older model limits are based on observed server behavior; GPT-5.6 and GPT-6 use Codex's 272k default catalog limit.
 	const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 	const CODEX_CONTEXT = 272000;
 	const CODEX_GPT_56_CONTEXT = 272000;
@@ -2745,7 +3087,31 @@ async function generateModels() {
 			baseUrl: CODEX_BASE_URL,
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-astra"]),
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
+		{
+			id: "gpt-6-sol",
+			name: "GPT-6 Sol",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-sol"]),
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
+		{
+			id: "gpt-6-luna",
+			name: "GPT-6 Luna",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-6-luna"]),
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
@@ -2759,30 +3125,6 @@ async function generateModels() {
 			input: ["text"],
 			cost: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
 			contextWindow: CODEX_SPARK_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-5.4",
-			name: "GPT-5.4",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing({ input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 }),
-			contextWindow: CODEX_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-5.4-mini",
-			name: "GPT-5.4 mini",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
-			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
 		{
@@ -2805,7 +3147,7 @@ async function generateModels() {
 			baseUrl: CODEX_BASE_URL,
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing(OPENAI_GPT_56_STANDARD_COSTS["gpt-5.6-luna"]),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-luna"]),
 			contextWindow: CODEX_GPT_56_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
@@ -2817,7 +3159,7 @@ async function generateModels() {
 			baseUrl: CODEX_BASE_URL,
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 }),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-sol"]),
 			contextWindow: CODEX_GPT_56_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
@@ -2829,7 +3171,7 @@ async function generateModels() {
 			baseUrl: CODEX_BASE_URL,
 			reasoning: true,
 			input: ["text", "image"],
-			cost: withOpenAiLongContextPricing(OPENAI_GPT_56_STANDARD_COSTS["gpt-5.6-terra"]),
+			cost: withOpenAiLongContextPricing(OPENAI_STANDARD_COSTS["gpt-5.6-terra"]),
 			contextWindow: CODEX_GPT_56_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
@@ -2940,7 +3282,11 @@ async function generateModels() {
 		applyStrictToolCompatMetadata(model);
 		applyOpenAIGrammarToolCompatMetadata(model);
 		applyOpenAIToolSearchMetadata(model);
+		applyOpenAICompletionsTranscriptMetadata(model);
+		applyOpenAIResponsesTranscriptMetadata(model);
 		applyOpenAIExplicitPromptCacheMetadata(model);
+		applyPromptCacheMetadata(model);
+		applyImageInputMetadata(model);
 	}
 	applyAnthropicAllowedFallbackModelMetadata(allModels.filter(isAnthropicFallbackMetadataModel));
 

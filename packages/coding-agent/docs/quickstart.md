@@ -1,21 +1,132 @@
 # Quickstart
 
-This page gets you from install to a useful first October session.
+October runs in your terminal and works with files on your machine. Use October inference, another supported provider, or a local model. Connect October Bus when you want agents to collaborate.
 
-## Install
+For native Windows setup, read [Windows Setup](windows.md). For Android, read [Termux Setup](termux.md).
 
-October is distributed as an npm package:
+## 1. Install October
+
+October is distributed as an npm package and requires Node.js 22.19 or newer:
 
 ```bash
 npm install -g --ignore-scripts @october-dev/october
+october --version
 ```
 
-`--ignore-scripts` disables dependency lifecycle scripts during install. October does not require install scripts for normal npm installs. Node.js `>=22.19.0` is required.
+`--ignore-scripts` disables dependency lifecycle scripts. October does not require install scripts for normal npm installations.
 
-### Uninstall
+## 2. Start October
+
+Change to the folder you want October to work with, then start it:
 
 ```bash
-# npm install -g
+cd /path/to/project
+october
+```
+
+The working folder controls resource discovery and groups saved sessions. The interface shows your conversation, an editor for prompts and commands, and a footer with the folder, model, and session status. See [Interactive usage](usage.md) for files, commands, and queued messages.
+
+## 3. Connect a model
+
+A **model** generates responses. A **provider** is the service or account used to access that model.
+
+Run `/login` inside October, or optionally `october login` in your shell. Both offer **October account**, **Another provider account**, and **API key**. Existing credentials are reused. Use `/login <provider>` or `october login <provider>` to go directly to a provider's authentication methods.
+
+### October account
+
+Select **October account** to open the October website. Sign in, confirm that the code matches your terminal, and click **Approve CLI**. The CLI stores an inference-only token in `~/.october/agent/auth.json`; it does not receive your browser session or password. Inside October Desktop, the app injects the session, so no separate login is required.
+
+For SSH or a terminal without a browser, run `october login --no-browser` and open the printed link on another device. Codes expire after ten minutes; run the command again if needed. Only approve a code from a login you started yourself.
+
+Logging in again saves the new credential before revoking the previous CLI token. Concurrent login and logout operations use the credential-store lock so logout cannot erase a later login.
+
+Run `october logout` to revoke this installation's tokens and remove the local credential. If revocation fails, the command reports failure and retains the credential and pending cleanup for retry. Do not delete `auth.json.october-pending.json`: it is an owner-only file containing tokens awaiting cleanup. A later login retries cleanup before issuing another token; `october logout` retries all pending revocations.
+
+If local persistence and remote revocation both fail, October prints the path to a private recovery file and an `october logout --recovery-file <path>` command. Keep that file until recovery succeeds. This command revokes only those uncommitted tokens without changing your current login. If no recovery file can be written either, October reports that account-side token cleanup is required.
+
+These lifecycle protections also apply to interactive `/login` and `/logout` with the built-in credential store. SDK in-memory `AuthStorage` retains pending cleanup only for that store's lifetime; custom credential-store implementations remain responsible for their own token lifecycle. Desktop's current JWT continues to take precedence for discovery and inference without replacing a saved standalone credential.
+
+### Another provider account
+
+Select **Another provider account**, then a provider. Built-in subscription logins include Claude Pro/Max, ChatGPT Plus/Pro (Codex), and GitHub Copilot.
+
+### API key
+
+Select **API key** in `/login` to store a provider key in `~/.october/agent/auth.json`, or set an environment variable before launching October:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+october
+```
+
+Use `/model` to choose a model. See [Models](models.md) and [Providers](providers.md) for provider authentication, local models, and custom endpoints.
+
+## 4. Give October a task
+
+October shows the file reads, commands, and edits it performs. The default permission mode is `bypass`; use `--permission-mode ask` or `--permission-mode accept-edits` for tool approvals. Permission prompts are not an operating-system sandbox. See [Tool permissions](../README.md#tool-permissions).
+
+Enter a task that matches your work:
+
+```text
+Summarize @meeting-notes.md and save the action items to action-items.md.
+```
+
+```text
+Explain how this repository is structured and how to run its checks.
+```
+
+```text
+Compare @previous.csv with @current.csv and summarize the important changes.
+```
+
+Type `@` to search for a file. When October finishes, review its response and any changed files. Use version control or backups for important work. For untrusted or unattended work, use a container or another sandbox. See [Security](security.md).
+
+## Work with other agents
+
+Launch October from the same project in two terminals:
+
+```bash
+october --team
+```
+
+October can then discover peers, exchange messages, delegate work, and coordinate shared tasks through October Bus. The launcher installs the pinned Bus runtime when needed. See [Two harnesses, one Bus](../README.md#two-harnesses-one-bus) for identities, scopes, and permissions.
+
+## Continue later
+
+October saves sessions automatically. Resume the most recent session for the same working folder with:
+
+```bash
+october --continue
+```
+
+Use `/resume` to choose another saved session. See [Sessions](sessions.md) for naming, branching, compaction, export, and sharing.
+
+## Next steps
+
+- [Interactive usage](usage.md) for input, commands, shortcuts, and queued messages.
+- [Configuration](configuration.md#context-files) for persistent instructions.
+- [Models](models.md) for model and provider selection.
+
+### Choose how to customize October
+
+Start with the least powerful mechanism that meets your need:
+
+| Need | Start with |
+|---|---|
+| Give October persistent instructions for a folder | [`AGENTS.md`](configuration.md#context-files) |
+| Reuse a prompt from the `/` menu | [Prompt template](prompt-templates.md) |
+| Add task-specific instructions and supporting files | [Skill](skills.md) |
+| Add executable tools, commands, or event handlers | [Extension](extensions.md) |
+| Build a custom terminal component | [Terminal UI](tui.md) |
+| Connect an unsupported model service | [Custom provider](custom-provider.md) |
+| Install or distribute several resources | [Package](packages.md) |
+
+## Uninstall October
+
+Use the package manager that installed October:
+
+```bash
+# npm
 npm uninstall -g @october-dev/october
 
 # pnpm
@@ -28,156 +139,4 @@ yarn global remove @october-dev/october
 bun uninstall -g @october-dev/october
 ```
 
-Uninstalling October leaves settings, credentials, sessions, and installed packages in `~/.october/agent/`.
-
-Then start October in the project directory you want it to work on:
-
-```bash
-cd /path/to/project
-october
-```
-
-## Authenticate
-
-Run `october login` in your shell, or `/login` inside the harness. Both offer the same choices: **October account**, **Another provider account**, and **API key**. You can also use `october login <provider>` or `/login <provider>` to go directly to a provider's authentication methods.
-
-### Option 1: October account (recommended)
-
-```bash
-october login
-```
-
-Select **October account** to open the October website. Sign in to your October account, confirm that the code matches your terminal, and click **Approve CLI**. The CLI stores an inference-only token in `~/.october/agent/auth.json`; it does not receive your browser session or password. Inside the October app you can skip this — Desktop injects the session.
-
-For SSH or a terminal without a browser, run `october login --no-browser` and open the printed link on another device. Codes expire after ten minutes; run the command again if needed. Only approve a code from a login you started yourself.
-
-Logging in again saves the new credential before revoking the previous CLI token. Concurrent login and logout operations use the credential-store lock so logout cannot erase a later login.
-
-Run `october logout` to revoke this installation's tokens and remove the local credential. If revocation fails, the command reports failure and retains the credential and pending cleanup for retry. Do not delete `auth.json.october-pending.json`: it is an owner-only file containing tokens awaiting cleanup. A later login retries cleanup before issuing another token; `october logout` retries all pending revocations.
-
-If local persistence and remote revocation both fail, October prints the path to a private recovery file and an `october logout --recovery-file <path>` command. Keep that file until recovery succeeds. This command revokes only those uncommitted tokens without changing your current login. If no recovery file can be written either, October reports that account-side token cleanup is required.
-
-These lifecycle protections also apply to interactive `/login` and `/logout` with the built-in credential store. SDK in-memory `AuthStorage` retains pending cleanup only for that store's lifetime; custom credential-store implementations remain responsible for their own token lifecycle. Desktop's current JWT continues to take precedence for discovery and inference without replacing a saved standalone credential.
-
-### Option 2: another provider account
-
-Start October and run:
-
-```text
-/login
-```
-
-Select **Another provider account**, then a provider. The same picker is available from `october login` in your shell. Built-in subscription logins include Claude Pro/Max, ChatGPT Plus/Pro (Codex), and GitHub Copilot.
-
-### Option 3: API key
-
-Set an API key before launching October:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-october
-```
-
-You can also run `october login` or `/login`, select **API key**, and choose a provider to store the key in `~/.october/agent/auth.json`.
-
-See [Providers](providers.md) for all supported providers, environment variables, and cloud-provider setup.
-
-## First session
-
-Once pi starts, type a request and press Enter:
-
-```text
-Summarize this repository and tell me how to run its checks.
-```
-
-By default, pi gives the model four tools:
-
-- `read` - read files
-- `write` - create or overwrite files
-- `edit` - patch files
-- `bash` - run shell commands
-
-Additional built-in read-only tools (`grep`, `find`, `ls`) are available through tool options. Pi runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
-
-## Give pi project instructions
-
-Pi loads context files at startup. Add an `AGENTS.md` file to tell it how to work in a project:
-
-```markdown
-# Project Instructions
-
-- Run `npm run check` after code changes.
-- Do not run production migrations locally.
-- Keep responses concise.
-```
-
-Pi loads:
-
-- `~/.pi/agent/AGENTS.md` for global instructions
-- `AGENTS.md` or `CLAUDE.md` from parent directories and the current directory
-
-If a directory contains `AGENTS.override.md`, Pi loads it instead of `AGENTS.md` or `CLAUDE.md` from that directory.
-
-Restart pi, or run `/reload`, after changing context files.
-
-## Common things to try
-
-### Reference files
-
-Type `@` in the editor to fuzzy-search files, or pass files on the command line:
-
-```bash
-pi @README.md "Summarize this"
-pi @src/app.ts @src/app.test.ts "Review these together"
-```
-
-Images or text can be pasted with Ctrl+V (Alt+V on Windows); images can also be dragged into supported terminals.
-
-### Run shell commands
-
-In interactive mode:
-
-```text
-!npm run lint
-```
-
-The command output is sent to the model. Use `!!command` to run a command without adding its output to the model context.
-
-### Switch models
-
-Use `/model` or Ctrl+L to choose a model for the current session. Press Ctrl+S in the model picker to save the highlighted model as the startup default. Use `/thinking` to choose a thinking level for the current session, or Ctrl+S in that picker to save the startup default thinking level. Use Shift+Tab to cycle thinking level. Use Ctrl+P / Shift+Ctrl+P to cycle through scoped models.
-
-### Continue later
-
-Sessions are saved automatically:
-
-```bash
-pi -c                  # Continue most recent session
-pi -r                  # Browse previous sessions
-pi --name "my task"    # Set session display name at startup
-pi --session <path|id> # Open a specific session
-```
-
-Inside pi, use `/resume`, `/new`, `/tree`, `/fork`, and `/clone` to manage sessions.
-
-### Non-interactive mode
-
-For one-shot prompts:
-
-```bash
-pi -p "Summarize this codebase"
-cat README.md | pi -p "Summarize this text"
-pi -p @screenshot.png "What's in this image?"
-```
-
-Use `--mode json` for JSON event output or `--mode rpc` for process integration.
-
-## Next steps
-
-- [Using Pi](usage.md) - interactive mode, slash commands, sessions, context files, and CLI reference.
-- [Providers](providers.md) - authentication and model setup.
-- [Settings](settings.md) - global and project configuration.
-- [Keybindings](keybindings.md) - shortcuts and customization.
-- [Pi Packages](packages.md) - install shared extensions, skills, prompts, and themes.
-
-Platform notes: [Windows](windows.md), [Termux](termux.md), [tmux](tmux.md), [Terminal setup](terminal-setup.md), [Shell aliases](shell-aliases.md).
+Uninstalling leaves configuration, credentials, sessions, and installed packages in `~/.october/agent/`.

@@ -39,22 +39,33 @@ It exists to be the open reference harness for **multiplayer-native development*
 
 Pi optimizes for a small, extensible core. October Harness keeps that foundation and makes a different product choice: multiplayer behavior is part of the first-party runtime, not an afterthought bolted onto a `send_message()` function.
 
-## Compared with OpenCode and Cline
+## Compared with other harnesses
 
-October's focus is built-in October Bus support: discovering other agents, exchanging durable messages, and coordinating shared tasks. OpenCode and Cline also support working with multiple agents; the difference is how they connect and coordinate.
+October's focus is built-in October Bus support: discovering other agents, exchanging durable messages, and coordinating shared tasks. Other harnesses also support multi-agent work, either built in or through extensions. The difference is how they connect and coordinate.
 
-| Area | October Harness | OpenCode | Cline |
-| --- | --- | --- | --- |
-| Interfaces | [Terminal, print/JSON, RPC, embedded SDK](#standalone-usage) | [Terminal, desktop, IDE](https://opencode.ai/docs/); [headless CLI](https://opencode.ai/docs/cli/), [HTTP server/client SDK](https://opencode.ai/docs/sdk/) | [IDE extensions, CLI, desktop, embedded SDK](https://github.com/cline/cline#readme) |
-| Collaboration | [Bus peers, durable messages, shared tasks](#two-harnesses-one-bus) | [Primary agents and subagents](https://opencode.ai/docs/agents/) | [Persistent teams with a task board and mailbox](https://docs.cline.bot/cli/agent-teams) in CLI, SDK, and Kanban; not yet in IDE extensions |
-| Customization | [TypeScript extensions, skills, prompts, themes, packages](#extensions-and-customization) | [Plugins](https://opencode.ai/docs/plugins/), [skills](https://opencode.ai/docs/skills/), [MCP servers](https://opencode.ai/docs/mcp-servers/) | [Skills](https://docs.cline.bot/customization/skills), [MCP servers](https://github.com/cline/cline#readme); [plugins](https://docs.cline.bot/customization/plugins) in CLI, SDK, and Kanban |
-| Permissions | [`ask`, `accept-edits`, `bypass`](#tool-permissions); default is `bypass` | [Per-tool `allow`, `ask`, `deny` rules](https://opencode.ai/docs/permissions/) | [Tool approvals and configurable auto-approve](https://docs.cline.bot/features/auto-approve) |
+| Harness | Interfaces | Collaboration |
+| --- | --- | --- |
+| October Harness | [Terminal, print/JSON, RPC, embedded SDK](#standalone-usage) | [Bus peers, durable messages, shared tasks](#two-harnesses-one-bus) |
+| Pi | [Terminal, print/JSON, RPC, embedded SDK](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md) | [Subagents through extensions, packages, or separate Pi processes](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md#philosophy) |
+| OpenCode | [Terminal, desktop, IDE](https://opencode.ai/docs/); [headless CLI](https://opencode.ai/docs/cli/), [HTTP server/client SDK](https://opencode.ai/docs/sdk/) | [Primary agents and subagents](https://opencode.ai/docs/agents/) |
+| Cline | [IDE extensions, CLI, desktop, embedded SDK](https://github.com/cline/cline#readme) | [Persistent teams with a task board and mailbox](https://docs.cline.bot/cli/agent-teams) in CLI, SDK, and Kanban; not yet in IDE extensions |
+| Claude Code | [Terminal/headless, IDE, desktop, web](https://code.claude.com/docs/en/overview); [Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) | [Subagents and cross-session messaging](https://code.claude.com/docs/en/features-overview); [agent teams](https://code.claude.com/docs/en/agent-teams) are experimental and opt-in |
+| Codex | [CLI, IDE, desktop, cloud](https://learn.chatgpt.com/docs/glossary); [SDK and app server](https://learn.chatgpt.com/docs/codex-sdk) | [Parallel subagents with separate threads and custom roles](https://learn.chatgpt.com/docs/agent-configuration/subagents) |
+
+| Harness | Customization | Permissions |
+| --- | --- | --- |
+| October Harness | [TypeScript extensions, skills, prompts, themes, packages](#extensions-and-customization) | [`ask`, `accept-edits`, `bypass`](#tool-permissions); default is `bypass` |
+| Pi | [TypeScript extensions, skills, prompts, themes, packages](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md#customization) | [Project trust and extension-defined tool approvals](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md); [no built-in sandbox](https://github.com/earendil-works/pi/security) |
+| OpenCode | [Plugins](https://opencode.ai/docs/plugins/), [skills](https://opencode.ai/docs/skills/), [MCP servers](https://opencode.ai/docs/mcp-servers/) | [Per-tool `allow`, `ask`, `deny` rules](https://opencode.ai/docs/permissions/) |
+| Cline | [Skills](https://docs.cline.bot/customization/skills), [MCP servers](https://github.com/cline/cline#readme); [plugins](https://docs.cline.bot/customization/plugins) in CLI, SDK, and Kanban | [Tool approvals and configurable auto-approve](https://docs.cline.bot/features/auto-approve) |
+| Claude Code | [Skills, hooks, MCP servers, plugins](https://code.claude.com/docs/en/features-overview) | [Tool rules and approval modes](https://code.claude.com/docs/en/permissions); optional [OS-enforced Bash sandbox](https://code.claude.com/docs/en/sandboxing) on supported platforms |
+| Codex | [Skills, MCP servers, hooks; plugins in desktop and CLI, not IDE](https://learn.chatgpt.com/docs/plugins) | [OS-enforced sandbox with filesystem/network restrictions and separate approval settings](https://learn.chatgpt.com/docs/agent-approvals-security) |
 
 This is not a complete feature list. Documentation checked September 10, 2026; availability varies by version and interface. October's approval controls are not an OS sandbox; see [Security](#security).
 
 ## Contents
 
-- [Compared with OpenCode and Cline](#compared-with-opencode-and-cline)
+- [Compared with other harnesses](#compared-with-other-harnesses)
 - [Five-minute quickstart](#five-minute-quickstart)
 - [Update October Harness](#update-october-harness)
 - [Authentication, models, and providers](#authentication-models-and-providers)
@@ -77,10 +88,10 @@ October Harness requires Node.js 22.19 or newer.
 
 ```bash
 npm install -g --ignore-scripts @october-dev/october
-october login
-cd /path/to/your/project
 october
 ```
+
+Run `october` from your project's directory. If you need to sign in, enter `/login` inside October and choose **October account**, **Another provider account**, or **API key**. Existing credentials are reused; a separate shell login is not required.
 
 Ask for a quick orientation:
 
@@ -90,35 +101,43 @@ Summarize this repository, explain how to run its checks, and suggest the highes
 
 October can read, write, and edit files, run shell commands, inspect the repository, and retain the session so you can continue later.
 
-Already have another provider account? Start `october`, run `/login`, select the provider, then use `/model` to choose a model.
+Use `/model` inside October to choose or change your model.
 
 ## Update October Harness
 
-For a global npm installation, install the latest release and verify the version:
+From your shell, use the built-in updater for a supported global installation:
+
+```bash
+october update
+october --version
+```
+
+For a global npm installation, you can also install the latest published release directly:
+
+If an older version prints `Could not determine latest october version`, use this npm command once to replace the updater that depended on the unavailable website feed. The fixed updater reads the published version directly from npm.
 
 ```bash
 npm install -g --ignore-scripts @october-dev/october@latest
 october --version
 ```
 
-Restart running harness sessions to use the update. Your saved credentials, settings, and sessions are preserved. October Desktop manages its own harness version; this command updates only the standalone npm installation.
+Restart running harness sessions after updating. Your saved credentials, settings, and sessions are preserved. `october update` updates the harness only; use `october update --all` to update the harness and installed extensions together.
+
+October Desktop manages its own harness version. Updating the standalone CLI does not change a Desktop-pinned installation.
 
 ## Authentication, models, and providers
 
 ### October inference
 
-```bash
-october login
-```
+Start `october`, enter `/login`, and choose **October account**. October opens the browser for approval, then returns you to the terminal session. You can optionally sign in before launching the session with `october login` from your shell.
 
 Standalone login uses a device-code flow and stores a revocable credential under `~/.october/agent/`. Inside October Desktop, the app injects and refreshes the signed-in session, so no separate login is required.
 
-The built-in October provider refreshes its model catalog from the October inference gateway. Its offline seed catalog includes:
-
-- `october/Qwen/Qwen3.6-35B-A3B-FP8`: the recommended default, with text input and reasoning;
-- `october/Kimi-K2.7-Code`: a text-and-image model retained for deployments that provide access.
+The built-in October provider refreshes its model catalog from the October inference gateway. Before the first refresh, its offline seed catalog contains only `october/Qwen/Qwen3.6-35B-A3B-FP8`, the recommended default, with text input and reasoning. Paused models such as `october/Kimi-K2.7-Code` appear only when the gateway lists them.
 
 Existing saved model choices are preserved. If a session still selects Kimi and receives `model use not permitted`, use `/model` to select Qwen3.6 or pass `--provider october --model october/Qwen/Qwen3.6-35B-A3B-FP8`.
+
+October Pro and Max plans also include paid OpenRouter models, listed under `openrouter/` (for example `openrouter/anthropic/claude-sonnet-5`). They are billed at cost from your monthly harness credit. The `/model` picker shows each paid model's price and marks the others as free. While an October model is selected, the footer shows your remaining credit. Paid models accept text only; images are replaced with a placeholder before the request is sent. On the Free plan, or when your credit runs out, October explains how to upgrade or top up and suggests a free model; it does not ask you to sign in again.
 
 Use `/model` in the TUI or inspect available models from the shell:
 

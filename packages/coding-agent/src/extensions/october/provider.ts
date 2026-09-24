@@ -2,6 +2,7 @@ import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "../../core/extensions/types.ts";
 import { buildOctoberOAuth, OCTOBER_PROVIDER_ID } from "./auth.ts";
 import { logOctoberDebug } from "./bus/log.ts";
+import { type OctoberPricing, parseOctoberPricing, setOctoberPricing } from "./pricing.ts";
 
 export { OCTOBER_PROVIDER_ID };
 /** Production OpenAI-compatible root. Overridable via OCTOBER_INFERENCE_BASE_URL for tests. */
@@ -14,6 +15,10 @@ const DEFAULT_CONTEXT_WINDOW = 128000;
 // Safe output ceiling per the handover. These models spend budget on a reasoning trace first, so a
 // small cap yields empty content — pi's own internal requests must keep a floor well above this.
 const DEFAULT_MAX_TOKENS = 32000;
+// Credit-billed OpenRouter models reject max_tokens above their own output limit with a 400. Use the
+// catalogue's limit when present; otherwise a value most current models accept. The gateway holds
+// credit for min(max_tokens, 4096), so a larger value does not enlarge the pre-request hold.
+const PAID_DEFAULT_MAX_TOKENS = 16384;
 
 // The gateway hides the upstream provider and URL from Pi's auto-detection.
 // Keep these settings aligned with Pi's direct NVIDIA handling.
@@ -45,7 +50,9 @@ const MODEL_META: Record<string, OctoberModelMeta> = {
 
 /** The first entry is what bare `--provider october` selects. */
 export const OCTOBER_DEFAULT_MODEL_ID = "october/Qwen/Qwen3.6-35B-A3B-FP8";
-const SEED_ORDER: readonly string[] = [OCTOBER_DEFAULT_MODEL_ID, "october/Kimi-K2.7-Code"];
+// Seed only models known to be served. Paused models (e.g. Kimi) keep their metadata above and
+// appear once the live catalogue lists them.
+const SEED_ORDER: readonly string[] = [OCTOBER_DEFAULT_MODEL_ID];
 
 function isLoopbackUrl(raw: string): boolean {
 	try {
@@ -87,17 +94,28 @@ function seedFallback(reason: string): ProviderModelConfig[] {
 	return OCTOBER_SEED_MODELS;
 }
 
-/** Build a model entry for an id, applying known metadata and conservative defaults for the rest. */
-function modelFor(id: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW): ProviderModelConfig {
+/**
+ * Build a model entry for an id, applying known metadata and conservative defaults for the rest.
+ * Credit-billed models accept text only (the gateway rejects other parts with a 400), so their
+ * images are downgraded to placeholders before the request is sent.
+ */
+function modelFor(
+	id: string,
+	contextWindow: number = DEFAULT_CONTEXT_WINDOW,
+	pricing?: OctoberPricing,
+	maxOutputTokens?: number,
+): ProviderModelConfig {
 	const meta = MODEL_META[id] ?? DEFAULT_META;
 	return {
 		id,
 		name: meta.name.length > 0 ? meta.name : id,
 		reasoning: meta.reasoning,
-		input: meta.input,
-		cost: ZERO_COST,
+		input: pricing ? ["text"] : meta.input,
+		cost: pricing
+			? { input: pricing.inputUsdPerMillion, output: pricing.outputUsdPerMillion, cacheRead: 0, cacheWrite: 0 }
+			: ZERO_COST,
 		contextWindow,
-		maxTokens: DEFAULT_MAX_TOKENS,
+		maxTokens: maxOutputTokens ?? (pricing ? PAID_DEFAULT_MAX_TOKENS : DEFAULT_MAX_TOKENS),
 		...(id.startsWith("nvidia/") ? { compat: OCTOBER_NVIDIA_COMPAT } : {}),
 	};
 }
@@ -126,6 +144,16 @@ function contextWindowFromEntry(entry: Record<string, unknown>): number {
 		}
 	}
 	return DEFAULT_CONTEXT_WINDOW;
+}
+
+function maxOutputTokensFromEntry(entry: Record<string, unknown>): number | undefined {
+	for (const key of ["max_output_tokens", "max_completion_tokens"] as const) {
+		const value = entry[key];
+		if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+			return value;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -165,11 +193,15 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 		}
 
 		const live: ProviderModelConfig[] = [];
+		const pricing = new Map<string, OctoberPricing>();
 		for (const entry of data) {
 			if (!entry || typeof entry !== "object") continue;
-			const id = (entry as { id?: unknown }).id;
+			const fields = entry as Record<string, unknown>;
+			const id = fields.id;
 			if (typeof id !== "string" || id.length === 0) continue;
-			live.push(modelFor(id, contextWindowFromEntry(entry as Record<string, unknown>)));
+			const entryPricing = parseOctoberPricing(fields.pricing);
+			if (entryPricing) pricing.set(id, entryPricing);
+			live.push(modelFor(id, contextWindowFromEntry(fields), entryPricing, maxOutputTokensFromEntry(fields)));
 		}
 
 		const byId = new Map(live.map((model) => [model.id, model]));
@@ -181,14 +213,19 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 				byId.delete(seedId);
 			}
 		}
-		for (const model of live) {
-			if (byId.has(model.id)) {
-				ordered.push(model);
+		// Free models first, then credit-billed ones, each in gateway order.
+		for (const paid of [false, true]) {
+			for (const model of live) {
+				if (byId.has(model.id) && pricing.has(model.id) === paid) {
+					ordered.push(model);
+				}
 			}
 		}
 		// An empty live catalogue ({"data":[]}, or only entries without ids) must not wipe the seed
 		// list — otherwise `--provider october` has no models until the next successful refresh.
-		return ordered.length ? ordered : seedFallback("empty catalogue");
+		if (!ordered.length) return seedFallback("empty catalogue");
+		setOctoberPricing(pricing);
+		return ordered;
 	} catch (error) {
 		return seedFallback(`throw: ${error instanceof Error ? error.message : String(error)}`);
 	}

@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel } from "../src/compat.ts";
+import { getModel, normalizeContext } from "../src/compat.ts";
 import type { Model } from "../src/types.ts";
 
 type CapturedHeaders = Headers | string[][] | Record<string, string | readonly string[]> | undefined;
@@ -53,10 +53,10 @@ async function captureOpenAIResponseHeaders(
 
 	const stream = streamOpenAIResponses(
 		model,
-		{
+		normalizeContext({
 			systemPrompt: "sys",
 			messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-		},
+		}),
 		{ apiKey: "test-key", ...options },
 	);
 
@@ -85,10 +85,10 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
 				apiKey: "test-key",
 				onPayload: (payload) => {
@@ -119,7 +119,7 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			getModel("openai", "gpt-5.4"),
-			{
+			normalizeContext({
 				messages: [
 					{
 						role: "user",
@@ -134,7 +134,7 @@ describe("openai-responses provider defaults", () => {
 						parameters: Type.Object({ value: Type.String() }),
 					},
 				],
-			},
+			}),
 			{
 				apiKey: "test-key",
 				toolChoice: "required",
@@ -167,7 +167,7 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				messages: [{ role: "user", content: "Use a tool.", timestamp: Date.now() }],
 				tools: [
 					{
@@ -185,7 +185,7 @@ describe("openai-responses provider defaults", () => {
 						constrainedSampling: { type: "json_schema", strict: "prefer" },
 					},
 				],
-			},
+			}),
 			{
 				apiKey: "test-key",
 				onPayload: (payload) => {
@@ -216,6 +216,8 @@ describe("openai-responses provider defaults", () => {
 		"gpt-5.6-sol",
 		"gpt-5.6-terra",
 		"gpt-5.6-luna",
+		"gpt-6-sol",
+		"gpt-6-luna",
 	] as const)("sends none reasoning effort for OpenAI %s when no reasoning is requested", async (modelId) => {
 		const model = getModel("openai", modelId);
 		let capturedPayload: unknown;
@@ -229,10 +231,10 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
 				apiKey: "test-key",
 				onPayload: (payload) => {
@@ -265,10 +267,10 @@ describe("openai-responses provider defaults", () => {
 
 			const stream = streamOpenAIResponses(
 				model,
-				{
+				normalizeContext({
 					systemPrompt: "sys",
 					messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-				},
+				}),
 				{
 					apiKey: "test-key",
 					onPayload: (payload) => {
@@ -306,10 +308,10 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			getModel("openai", "gpt-5.4"),
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
 				apiKey: "test-key",
 				sessionId,
@@ -508,10 +510,10 @@ describe("openai-responses provider defaults", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{ apiKey: "test-key", serviceTier },
 		);
 
@@ -540,10 +542,10 @@ describe("openai-responses max_output_tokens compat", () => {
 
 		const stream = streamOpenAIResponses(
 			getModel("openai", "gpt-5.4"),
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
 				apiKey: "test-key",
 				maxTokens: 1024,
@@ -577,10 +579,10 @@ describe("openai-responses max_output_tokens compat", () => {
 
 		const stream = streamOpenAIResponses(
 			model,
-			{
+			normalizeContext({
 				systemPrompt: "sys",
 				messages: [{ role: "user", content: "hi", timestamp: Date.now() }],
-			},
+			}),
 			{
 				apiKey: "test-key",
 				maxTokens: 1024,

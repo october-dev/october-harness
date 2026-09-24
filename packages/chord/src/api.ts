@@ -1,8 +1,9 @@
 import { FacetKernel } from "./facets/host.ts";
 import { disposeLoadedFacets } from "./facets/loader.ts";
 import { RemoteServiceBindingImpl } from "./services/consumer.ts";
-import { MutableReplicatedStateImpl } from "./services/state.ts";
+import { attachReplicatedStateSource, MutableReplicatedStateImpl } from "./services/state.ts";
 import type {
+	AttachedReplicatedState,
 	Facet,
 	FacetHost,
 	FacetLoader,
@@ -12,6 +13,8 @@ import type {
 	RemoteServiceBinding,
 	RemoteServiceBindingOptions,
 	RemoteServiceContract,
+	ReplicatedStateSource,
+	ReplicatedStateSourceOptions,
 	Service,
 } from "./types.ts";
 
@@ -85,6 +88,19 @@ export function createRemoteServiceBinding(options: RemoteServiceBindingOptions)
 	return new RemoteServiceBindingImpl(options);
 }
 
-export function replicatedState<T extends object>(initial: T): MutableReplicatedState<T> {
-	return new MutableReplicatedStateImpl(initial);
+export function replicatedState<T>(
+	source: ReplicatedStateSource<T>,
+	options?: ReplicatedStateSourceOptions,
+): AttachedReplicatedState<T>;
+export function replicatedState<T extends object>(initial: T): MutableReplicatedState<T>;
+export function replicatedState(
+	initialOrSource: object | ReplicatedStateSource<unknown>,
+	options?: ReplicatedStateSourceOptions,
+): MutableReplicatedState<object> | AttachedReplicatedState<unknown> {
+	if (isReplicatedStateSource(initialOrSource)) return attachReplicatedStateSource(initialOrSource, options);
+	return new MutableReplicatedStateImpl(initialOrSource);
+}
+
+function isReplicatedStateSource(value: object): value is ReplicatedStateSource<unknown> {
+	return typeof (value as { readonly attach?: unknown }).attach === "function";
 }

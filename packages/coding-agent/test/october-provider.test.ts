@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+import type { ProviderConfig, ProviderModelConfig } from "../src/core/extensions/types.ts";
 import { findInitialModel, resolveCliModel } from "../src/core/model-resolver.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
@@ -21,6 +22,19 @@ import {
 } from "../src/extensions/october/provider.ts";
 
 const servers: Server[] = [];
+
+// Kimi is paused and no longer seeded; these fixtures model a catalogue that still lists it.
+const CATALOG_KIMI: ProviderModelConfig = {
+	...OCTOBER_SEED_MODELS[0]!,
+	id: "october/Kimi-K2.7-Code",
+	name: "Kimi K2.7 Code",
+	reasoning: false,
+	input: ["text", "image"],
+};
+
+function providerConfigWithKimi(): ProviderConfig {
+	return { ...createOctoberProviderConfig(), refreshModels: async () => [...OCTOBER_SEED_MODELS, CATALOG_KIMI] };
+}
 
 async function listen(
 	handler: (request: IncomingMessage, response: ServerResponse) => void,
@@ -75,18 +89,10 @@ describe("october inference provider", () => {
 		expect(runtime.pendingProviderRegistrations.map((entry) => entry.name)).toEqual([OCTOBER_PROVIDER_ID]);
 	});
 
-	it("defaults to production Qwen3.6 while preserving Kimi metadata for explicit selection", () => {
+	it("defaults to production Qwen3.6 and seeds no paused models", () => {
 		expect(OCTOBER_DEFAULT_MODEL_ID).toBe("october/Qwen/Qwen3.6-35B-A3B-FP8");
 		expect(createOctoberProviderConfig().models?.[0]?.id).toBe(OCTOBER_DEFAULT_MODEL_ID);
-		expect(OCTOBER_SEED_MODELS.map((model) => model.id)).toEqual([
-			"october/Qwen/Qwen3.6-35B-A3B-FP8",
-			"october/Kimi-K2.7-Code",
-		]);
-		const kimi = OCTOBER_SEED_MODELS[1];
-		expect(kimi?.name).not.toContain("recommended");
-		expect(kimi?.input).toEqual(["text", "image"]);
-		expect(kimi?.contextWindow).toBe(128000);
-		expect(kimi?.maxTokens).toBe(32000);
+		expect(OCTOBER_SEED_MODELS.map((model) => model.id)).toEqual(["october/Qwen/Qwen3.6-35B-A3B-FP8"]);
 		const qwen = OCTOBER_SEED_MODELS[0];
 		expect(qwen?.name).toContain("recommended");
 		expect(qwen?.reasoning).toBe(true);
@@ -99,7 +105,7 @@ describe("october inference provider", () => {
 			modelsPath: null,
 			refreshOnCreate: false,
 		});
-		runtime.registerProvider(OCTOBER_PROVIDER_ID, createOctoberProviderConfig());
+		runtime.registerProvider(OCTOBER_PROVIDER_ID, providerConfigWithKimi());
 		await runtime.refresh({ allowNetwork: false });
 		// Isolate initial selection from other providers configured in the test runner's environment.
 		vi.spyOn(runtime, "getAvailableSnapshot").mockReturnValue(runtime.getModels("october"));
@@ -228,7 +234,10 @@ describe("october inference provider", () => {
 		expect(seenAuth).toEqual(["Bearer test-token"]);
 		expect(models.map((model) => model.id)).toEqual(["october/Kimi-K2.7-Code", "october/Some_Custom-Model"]);
 		expect(models[0]?.name).toBe("Kimi K2.7 Code");
+		expect(models[0]?.name).not.toContain("recommended");
+		expect(models[0]?.input).toEqual(["text", "image"]);
 		expect(models[0]?.contextWindow).toBe(262144);
+		expect(models[0]?.maxTokens).toBe(32000);
 		// An id not in the metadata table is still exposed with conservative defaults.
 		expect(models[1]?.id).toBe("october/Some_Custom-Model");
 		expect(models[1]?.name).toBe("october/Some_Custom-Model");
@@ -243,7 +252,7 @@ describe("october inference provider", () => {
 			modelsPath: null,
 			allowModelNetwork: false,
 		});
-		runtime.registerProvider(OCTOBER_PROVIDER_ID, createOctoberProviderConfig());
+		runtime.registerProvider(OCTOBER_PROVIDER_ID, providerConfigWithKimi());
 		await runtime.refresh({ allowNetwork: false });
 
 		const withProvider = resolveCliModel({
@@ -273,7 +282,7 @@ describe("october inference provider", () => {
 		expect(multiSlash.model?.id).toBe("october/Qwen/Qwen3.6-35B-A3B-FP8");
 
 		// Without --provider the leading `october/` is first treated as a provider prefix, then
-		// rematched against the raw catalog id — so a current seed still resolves. Desktop still
+		// rematched against the raw catalog id — so a listed catalog model still resolves. Desktop still
 		// pins `--provider october` so a stale/custom fallback cannot emit bare `Kimi-K2.7-Code`.
 		const inferred = resolveCliModel({
 			cliModel: "october/Kimi-K2.7-Code",
@@ -451,8 +460,7 @@ describe("october inference provider", () => {
 					properties: { value: { type: "string" } },
 					required: ["value"],
 				});
-				if (nvidia) expect(tool.function).not.toHaveProperty("strict");
-				else expect(tool.function.strict).toBe(false);
+				expect(tool.function).not.toHaveProperty("strict");
 			}
 			if (nvidia) {
 				// Keep October's route settings aligned with upstream Pi's direct NVIDIA handling.

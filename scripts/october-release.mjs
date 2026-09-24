@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { gt, valid } from "semver";
 import { installCodingAgentConsumer, packReleasePackages, smokeTestCodingAgentConsumer } from "./coding-agent-consumer.mjs";
@@ -57,10 +58,36 @@ export function prepareOctoberRelease(output) {
 }
 
 async function registryVersion(version) {
-	const response = await fetch(`https://registry.npmjs.org/@october-dev%2foctober/${encodeURIComponent(version)}`, { signal: AbortSignal.timeout(30_000) });
+	const response = await fetch(`https://registry.npmjs.org/@october-dev%2foctober/${encodeURIComponent(version)}`, {
+		headers: { "cache-control": "no-cache" }, signal: AbortSignal.timeout(30_000),
+	});
 	if (response.status === 404) return undefined;
 	if (!response.ok) throw new Error(`npm metadata query failed: HTTP ${response.status}`);
 	return response.json();
+}
+
+export async function verifyPublishedOctoberTarball(artifact, { lookup = registryVersion, wait = delay, attempts = 41, delayMs = 30_000 } = {}) {
+	let lastError;
+	for (let attempt = 0; attempt < attempts; attempt++) {
+		let published;
+		try {
+			published = await lookup(artifact.version);
+		} catch (error) {
+			lastError = error;
+		}
+		if (published) {
+			if (published.name !== octoberPackageName || published.version !== artifact.version) throw new Error("Unexpected published package identity");
+			if (published.dist?.integrity) {
+				if (published.dist.integrity !== artifact.integrity) throw new Error("Version already exists with different contents; never overwrite or silently skip it");
+				return published;
+			}
+		}
+		if (attempt + 1 < attempts) {
+			console.log(`Waiting for npm metadata for ${octoberPackageName}@${artifact.version}; lookup ${attempt + 2}/${attempts} in ${delayMs}ms`);
+			await wait(delayMs);
+		}
+	}
+	throw new Error("Published integrity could not be verified; inspect npm before retrying", { cause: lastError });
 }
 
 async function publishOctoberTarball(tarball) {
@@ -71,14 +98,14 @@ async function publishOctoberTarball(tarball) {
 	const published = await registryVersion(artifact.version);
 	if (published) {
 		if (published.dist?.integrity !== artifact.integrity) throw new Error("Version already exists with different contents; never overwrite or silently skip it");
+		if (published.name !== octoberPackageName || published.version !== artifact.version) throw new Error("Unexpected published package identity");
 		console.log(`Already published: ${octoberPackageName}@${artifact.version}`);
 		return;
 	}
 	const latest = await registryVersion("latest");
 	if (latest && gt(latest.version, artifact.version)) throw new Error("Refusing to move latest backwards");
 	console.log(run("npm", ["publish", tarball, "--access", "public", "--tag", "latest", "--provenance", "--ignore-scripts"]));
-	const verified = await registryVersion(artifact.version);
-	if (verified?.dist?.integrity !== artifact.integrity) throw new Error("Published integrity could not be verified; inspect npm before retrying");
+	await verifyPublishedOctoberTarball(artifact);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

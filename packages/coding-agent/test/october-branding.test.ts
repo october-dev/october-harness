@@ -10,7 +10,11 @@ import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 const packageJsonPath = join(dirname(fileURLToPath(import.meta.url)), "../package.json");
 
 describe("October package branding", () => {
-	it.each([{ selectedTools: [] }, { selectedTools: ["read", "bash", "edit", "write"] }])(
+	it.each([
+		{ selectedTools: [] },
+		{ selectedTools: ["read", "bash", "edit", "write"] },
+		{ selectedTools: ["read", "bash", "list_peers", "message_peer", "add_task"] },
+	])(
 		"keeps the default identity October-first despite project context with tools $selectedTools",
 		({ selectedTools }) => {
 			const prompt = buildSystemPrompt({
@@ -23,8 +27,22 @@ describe("October package branding", () => {
 					},
 				],
 			});
-			expect(prompt).toContain("running in October Harness, October's coding agent");
-			expect(prompt).toContain("answer directly: \"I'm October Harness, October's coding agent.\"");
+			expect(prompt).toContain("running in October Harness, October's open, multiplayer-first coding agent");
+			expect(prompt).toContain('When asked "who are you?" or "what harness are you?"');
+			expect(prompt).toContain(
+				"lead with: \"I'm October Harness, October's open, multiplayer-first coding agent.\"",
+			);
+			expect(prompt).toContain("In introductions and capability summaries, mention both coding assistance");
+			expect(prompt).toContain(
+				"Through October Bus, connected agents can discover peers, exchange messages, delegate work, and coordinate shared tasks",
+			);
+			expect(prompt).toContain("Distinguish product capabilities from what is available in this session");
+			expect(prompt).toContain(
+				"Only claim you can contact other agents or coordinate work now when the corresponding Bus tools are available",
+			);
+			expect(prompt).toContain("do not assume other agents are connected");
+			expect(prompt).toContain("Without those tools, describe collaboration as supported rather than active");
+			expect(prompt).toContain("users can launch multiplayer mode with october --team");
 			expect(prompt).toContain(
 				"Do not volunteer implementation ancestry in introductions or routine identity answers",
 			);
@@ -63,6 +81,8 @@ describe("October package branding", () => {
 		expect(prompt).toContain("Additional application instructions.");
 		expect(prompt).toContain("Project instructions.");
 		expect(prompt).not.toContain("Harness identity:");
+		expect(prompt).not.toContain("multiplayer-first");
+		expect(prompt).not.toContain("october --team");
 	});
 
 	it("owns package metadata and runtime identity", () => {

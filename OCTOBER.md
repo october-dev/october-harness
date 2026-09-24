@@ -513,7 +513,43 @@ discard October's commits.
 | 2026-08-14 | `b1efcf7d7c5d7394fbb12ede0174e04d39ee7004` | 0.84.2 |
 | 2026-08-17 | `d3ab2af969d64997338253c9151190aa1bc33580` | 0.84.2 |
 | 2026-09-03 | `e44d75c20a51142abc056c243b13c1d7bb4be687` | 0.84.4 |
-| 2026-09-05 (pending commit) | `da840b6216578c2a571d0374ac6a2091a83f9d91` | 0.85.1 |
+| 2026-09-05 | `da840b6216578c2a571d0374ac6a2091a83f9d91` | 0.85.1 |
+| 2026-09-22 | `95fbc04997eaee961eb673fa7923e9220609ebd5` | 0.87.0 |
+| 2026-09-22 (follow-up) | `d201760ffee16564aa8d9a759e0c85b70db33674` | 0.87.0 |
+
+2026-09-22 follow-up: merged the two additional upstream commits through `d201760ff`
+(`8158b0321` and the upstream merge commit). These add versioned document storage in
+`packages/durable`; October-specific runtime code is unchanged. Updated the repository
+and npm-package READMEs to launch with `october`, authenticate with `/login` inside the
+session, and document `october update` with the direct npm update alternative. Shell
+`october login` remains optional. No package version, release tag, or Desktop pin changed.
+
+2026-09-22: merged 198 upstream commits through `95fbc0499`. Inherited packages and
+runtime dependencies now track Pi 0.87.0, including structured system-prompt sections,
+canonical session context, deferred post-settlement prompts, provider updates, and TUI fixes.
+October's identity and working guidance live in the new prompt sections; project-context
+updates do not replace them. Auth and Desktop credential precedence, recommended models,
+permissions, native and public Bus delivery, CLI/config names, update endpoints, telemetry
+defaults, product documentation, and open contribution policy remain October-owned.
+
+The replacement eval harness imports `@october-dev/october` and isolates the October
+configuration directory, including its container runtime. Bus fixtures use upstream's JSON
+argument types and wait for the matching completed tool call when a prompt is deferred during
+settlement. Model-selection tests cover asynchronous catalog discovery without replacing a
+user's intervening model choice. The root lockfile, publish shrinkwrap, and installer lock were
+regenerated without dependency lifecycle scripts. Undici 8.10.2 release notes were reviewed:
+dispatcher/proxy and WebSocket fixes apply to inherited transports; October does not use its
+cache or decompression interceptors.
+
+This is a source sync, not an npm release. The October package version remains
+`0.85.1-october.7`; no release tag, publication, or Desktop managed-runtime pin is changed.
+
+Validation: `npm run build:offline`, `npm run check`, and the credential-isolated `./test.sh`
+passed (with the existing `fd` binary on `PATH`). The opt-in public Bus integration also passed
+against an isolated local protocol-0.1 development daemon, covering discovery, durable messages,
+correlated replies, acknowledgements, task dependencies, and replaced-credential rejection.
+Built CLI `--version` and `--help` smoke checks passed offline. Live model-provider tests and
+the Docker documentation evals were not run; no paid inference credentials were supplied.
 
 2026-09-03: merged 435 upstream commits through `e44d75c20`, including the Chord application
 runtime, the durable session/runtime overhaul, source-resolved workspace tests, and current TUI and
