@@ -49,6 +49,41 @@ Use a single file for a small extension and a directory for a multi-file impleme
 
 Reload replaces the extension runtime, so code after `await ctx.reload()` must not reuse state from the old runtime. Only personal and explicit command-line extensions can participate in the `project_trust` event that runs before project extensions load.
 
+## Declare capabilities
+
+An extension can declare the host capabilities it expects in a capability manifest. Pi reads and validates the manifest **before** it loads the extension's code. If the manifest is invalid, the extension does not load, and the error names each problem field. An extension without a manifest loads as *unclassified*, which is not treated as safe.
+
+Put the manifest in one place:
+
+- For a package, in its `package.json`, next to `pi.extensions`:
+
+  ```json
+  {
+    "pi": {
+      "extensions": ["./index.ts"],
+      "capabilities": { "manifestVersion": 1, "network": ["api.example.com"] }
+    }
+  }
+  ```
+
+- For a single-file or directory extension, in a sidecar file beside the entry point: `my-ext.ts` uses `my-ext.capabilities.json`, and `my-ext/index.ts` uses `my-ext/index.capabilities.json`.
+
+Declaring the same extension in both places is an error.
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `manifestVersion` | `1` | Required. Unknown versions are rejected. |
+| `filesystem.read`, `filesystem.write` | `"none"`, `"project"`, `"any"` | Files the extension expects to read or write. |
+| `shell` | boolean | Runs shell commands. |
+| `network` | host names, optionally with `*.` or a port, or `["*"]` | Hosts it contacts. |
+| `environment` | variable names | Environment variables it reads. |
+| `credentials` | credential identifiers | Credentials it asks the host for. |
+| `octoberBus` | boolean | Uses October Bus. |
+
+Unknown fields are rejected, so typos surface instead of being ignored. An omitted field means *not declared* and is shown that way; declare an empty list or `false` to state that the extension uses none.
+
+A manifest is disclosure metadata written by the extension author. It is not a sandbox and does not prove what the code does. See [Security](security.md#extension-capability-manifests).
+
 <a id="understand-the-lifecycle"></a>
 
 ## Respect the runtime lifecycle

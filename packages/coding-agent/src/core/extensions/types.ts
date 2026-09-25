@@ -88,6 +88,7 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../tools/index.ts";
+import type { CapabilityDisclosure } from "./capabilities.ts";
 
 export type { ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions, NormalizedBuildSystemPromptOptions } from "../system-prompt.ts";
@@ -1905,6 +1906,8 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	/** Capability disclosure read before the extension's code ran. Absent for inline factories. */
+	capabilities?: CapabilityDisclosure;
 }
 
 /** Result of loading extensions. */

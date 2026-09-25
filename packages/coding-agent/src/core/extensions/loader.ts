@@ -18,6 +18,7 @@ import { execCommand } from "../exec.ts";
 import { readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
+import { readCapabilityManifest } from "./capabilities.ts";
 import type {
 	EntryRenderer,
 	Extension,
@@ -563,6 +564,15 @@ async function loadExtension(
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
+	// Read and validate the capability manifest before any extension code runs (#7).
+	const capabilities = readCapabilityManifest(resolvedPath);
+	if (capabilities.status === "invalid") {
+		return {
+			extension: null,
+			error: `Invalid capability manifest for ${extensionPath} (${capabilities.source}): ${capabilities.errors.join("; ")}`,
+		};
+	}
+
 	try {
 		const factory = await loadExtensionModule(resolvedPath, cacheToken);
 		time(`${extensionPath} module import`, "extensions");
@@ -571,6 +581,7 @@ async function loadExtension(
 		}
 
 		const extension = await initializeExtension(factory, extensionPath, resolvedPath, cwd, eventBus, runtime);
+		extension.capabilities = capabilities;
 
 		return { extension, error: null };
 	} catch (err) {
