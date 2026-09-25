@@ -53,7 +53,9 @@ export type PackageCommand = "install" | "remove" | "update" | "list";
 
 type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string } | { type: "models" };
 
-const DEFAULT_INSTALLER_API_BASE = "https://pi.dev/api/installer/releases";
+// October has no public installer release API. The inherited default served upstream Pi release
+// manifests, so managed updates now require an explicit PI_INSTALLER_API_BASE.
+const MANAGED_RELEASES_URL = "https://github.com/october-dev/october-harness/releases/latest";
 const MANAGED_INSTALL_MARKER = "managed-install.json";
 const MANAGED_RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
@@ -194,10 +196,14 @@ async function runManagedSelfUpdate(managedRoot: string, version: string): Promi
 	let stageDir: string | undefined;
 	try {
 		cleanupManagedStaging(managedRoot);
-		const installerApiBase = (process.env.PI_INSTALLER_API_BASE?.trim() || DEFAULT_INSTALLER_API_BASE).replace(
-			/\/+$/,
-			"",
-		);
+		const configuredInstallerApiBase = process.env.PI_INSTALLER_API_BASE?.trim();
+		if (!configuredInstallerApiBase) {
+			throw new Error(
+				`Managed ${APP_NAME} updates need PI_INSTALLER_API_BASE to name an October installer release API. ` +
+					`Download ${APP_NAME} from ${MANAGED_RELEASES_URL} instead.`,
+			);
+		}
+		const installerApiBase = configuredInstallerApiBase.replace(/\/+$/, "");
 		const releaseUrl = `${installerApiBase}/${encodeURIComponent(version)}`;
 		const stagingRoot = join(managedRoot, "staging");
 		const releasesRoot = join(managedRoot, "releases");
