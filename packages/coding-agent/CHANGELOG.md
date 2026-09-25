@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added six community Pi packages that October installs by default, pinned to reviewed versions: `pi-mcp-adapter` (MCP servers), `pi-web-access` (web search and fetching), `@juicesharp/rpiv-ask-user-question` (structured questions), `@juicesharp/rpiv-todo` (todo list), `@narumitw/pi-plan-mode` (`/plan`), and `pi-lens` (LSP and linter feedback). They are added to the `packages` setting once, can be removed with `october remove`, and are skipped for Desktop-managed and offline runs.
+
 ## [0.87.1-october.1] - 2026-09-23
 
 ### Added

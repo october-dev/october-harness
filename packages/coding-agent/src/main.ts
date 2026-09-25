@@ -63,6 +63,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
+import { seedOctoberDefaultPackages } from "./extensions/october/default-packages.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
@@ -706,6 +707,17 @@ export async function main(args: string[], options?: MainOptions) {
 	if (appMode === "interactive" && !parsed.help && parsed.listModels === undefined && shouldRunFirstTimeSetup()) {
 		await showFirstTimeSetup(startupSettingsManager);
 		time("firstTimeSetup");
+	}
+
+	// Seed October's default packages only when a session will load extensions, so help, model
+	// listing, and package/config commands never trigger the first-run package install.
+	if (!parsed.help && parsed.listModels === undefined && !parsed.noExtensions) {
+		const seededPackages = seedOctoberDefaultPackages(startupSettingsManager);
+		if (seededPackages.length > 0) {
+			console.error(
+				`${APP_NAME}: added default packages ${seededPackages.join(", ")}. They install automatically; remove any with \`${APP_NAME} remove <source>\`.`,
+			);
+		}
 	}
 
 	if (appMode === "interactive" && parsed.useTheme !== undefined) {

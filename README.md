@@ -344,6 +344,23 @@ October is designed to be changed at the edges:
 
 Start with the [documentation index](packages/coding-agent/docs/index.md), then explore [extensions](packages/coding-agent/docs/extensions.md), [skills](packages/coding-agent/docs/skills.md), [prompt templates](packages/coding-agent/docs/prompt-templates.md), [themes](packages/coding-agent/docs/themes.md), the [RPC protocol](packages/coding-agent/docs/rpc.md), and the [SDK](packages/coding-agent/docs/sdk.md).
 
+### Included packages
+
+October adds these community Pi packages to your `packages` setting on first run. Each is pinned to a reviewed version and installs automatically, which adds about a minute to the first start:
+
+| Package | What it adds |
+| --- | --- |
+| [`pi-mcp-adapter`](https://www.npmjs.com/package/pi-mcp-adapter) | Connect any MCP server (`/mcp`) |
+| [`pi-web-access`](https://www.npmjs.com/package/pi-web-access) | Web search, page and PDF fetching, and GitHub repo cloning |
+| [`@juicesharp/rpiv-ask-user-question`](https://www.npmjs.com/package/@juicesharp/rpiv-ask-user-question) | Structured questions with typed options instead of guesses |
+| [`@juicesharp/rpiv-todo`](https://www.npmjs.com/package/@juicesharp/rpiv-todo) | A live todo list that survives reloads and compaction (`/todos`) |
+| [`@narumitw/pi-plan-mode`](https://www.npmjs.com/package/@narumitw/pi-plan-mode) | A read-only planning mode (`/plan`) |
+| [`pi-lens`](https://www.npmjs.com/package/pi-lens) | LSP, linter, formatter, and type-check feedback while editing |
+
+They are ordinary packages: `october list` shows them, `october remove <source>` removes one for good, and a version you install yourself takes precedence. October Desktop-managed sessions and offline runs skip this step. These packages are maintained by their authors, not by October.
+
+Also worth a look, installed with `october install npm:<name>`: `pi-subagents` for scripted multi-agent workflows, `pi-background-tasks` for durable background shell tasks, `pi-goal-x` for tracked `/goal` planning, and observability integrations such as `@langfuse/pi-observability-plugin` and `@braintrust/pi-extension`.
+
 ## What changed from Pi
 
 October Harness is a real downstream product, not a renamed Pi binary. We continue to inherit and credit substantial upstream work while maintaining October-specific behavior in this repository.
