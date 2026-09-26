@@ -199,8 +199,7 @@ async function runManagedSelfUpdate(managedRoot: string, version: string): Promi
 		const configuredInstallerApiBase = process.env.PI_INSTALLER_API_BASE?.trim();
 		if (!configuredInstallerApiBase) {
 			throw new Error(
-				`Managed ${APP_NAME} updates need PI_INSTALLER_API_BASE to name an October installer release API. ` +
-					`Download ${APP_NAME} from ${MANAGED_RELEASES_URL} instead.`,
+				`Managed ${APP_NAME} self-update is not supported. Download ${APP_NAME} from ${MANAGED_RELEASES_URL} instead.`,
 			);
 		}
 		const installerApiBase = configuredInstallerApiBase.replace(/\/+$/, "");

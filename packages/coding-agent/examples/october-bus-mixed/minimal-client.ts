@@ -73,8 +73,8 @@ async function main(): Promise<void> {
 
 	await call("PATCH", "/v1/me/heartbeat", { lifecycle: "idle", ready: true });
 
-	const peersResult = (await call("GET", "/v1/peers")) as { peers?: { id: string }[] } | { id: string }[];
-	const peers = Array.isArray(peersResult) ? peersResult : (peersResult.peers ?? []);
+	// Bus 0.1.0-rc.4 returns the linked peers as an array of agents.
+	const peers = (await call("GET", "/v1/peers")) as { id: string }[];
 	assert(
 		peers.some((peer) => peer.id === "planner"),
 		"Discovery must find the October Harness planner",

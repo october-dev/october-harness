@@ -69,7 +69,7 @@ test("reports an upstream update feed or changelog", () => {
 
 test("passes when self-update refuses every upstream package", () => {
 	const refusingPlan = (release, options) => {
-		if (release.packageName !== options.packageName) throw new Error("refused");
+		if (release.packageName !== options.packageName) throw new Error(`Refusing to install ${release.packageName}`);
 	};
 	assert.deepEqual(checkSelfUpdateRefusesUpstream(refusingPlan), []);
 });
@@ -79,6 +79,15 @@ test("fails when self-update would install an upstream package over October", ()
 	const problems = checkSelfUpdateRefusesUpstream(permissivePlan);
 	assert.equal(problems.length, UPSTREAM_PACKAGE_NAMES.length);
 	assert.ok(problems.every((problem) => problem.includes(OCTOBER_PACKAGE_NAME)));
+});
+
+test("does not count an unrelated error as a refusal", () => {
+	const brokenPlan = () => {
+		throw new TypeError("Cannot read properties of undefined");
+	};
+	const problems = checkSelfUpdateRefusesUpstream(brokenPlan);
+	assert.equal(problems.length, UPSTREAM_PACKAGE_NAMES.length);
+	assert.ok(problems.every((problem) => problem.includes("without refusing it")));
 });
 
 test("flags upstream release endpoints in update code with their location", () => {

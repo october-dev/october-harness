@@ -28,6 +28,7 @@ const OCTOBER_OWNED_URL_PREFIXES = [
 export const UPSTREAM_PACKAGE_NAMES = ["@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"];
 
 // Files that decide where October updates come from. Upstream hosts must not appear in them.
+// This list is fixed: a new file that decides update sources is not scanned until it is added here.
 export const UPDATE_SURFACE_FILES = [
 	"packages/coding-agent/src/config.ts",
 	"packages/coding-agent/src/package-manager-cli.ts",
@@ -87,15 +88,21 @@ export function checkRuntimeIdentity(runtime) {
 	return problems;
 }
 
-/** Self-update must refuse to replace October with an upstream package. */
+/**
+ * Self-update must refuse to replace October with an upstream package. Only the planner's own
+ * "Refusing to install" error counts as a refusal, so an unrelated exception cannot pass the check.
+ */
 export function checkSelfUpdateRefusesUpstream(plan) {
 	const problems = [];
 	for (const packageName of UPSTREAM_PACKAGE_NAMES) {
 		try {
 			plan({ version: "999.0.0", packageName }, { force: true, currentVersion: "0.0.1", packageName: OCTOBER_PACKAGE_NAME });
 			problems.push(`self-update planned an install of ${packageName} over ${OCTOBER_PACKAGE_NAME}`);
-		} catch {
-			// Refusal is the required behavior.
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (!message.startsWith("Refusing to install")) {
+				problems.push(`self-update failed for ${packageName} without refusing it: ${message}`);
+			}
 		}
 	}
 	return problems;
