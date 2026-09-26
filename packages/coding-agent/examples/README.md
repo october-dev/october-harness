@@ -20,6 +20,9 @@ Programmatic usage via `createAgentSession()`. Shows how to customize models, pr
 ### [october-bus/](october-bus/)
 Deterministic, credential-free multiplayer exchange between two real SDK worker processes and an isolated local October Bus, with correlated replies, acknowledgement evidence, and automatic teardown.
 
+### [october-bus-mixed/](october-bus-mixed/)
+Mixed-harness exchange: October Harness delegates to a minimal second client that uses only the public Bus HTTP contract, with discovery, correlated success and error responses, and a deterministic smoke run.
+
 ### [extensions/](extensions/)
 Example extensions demonstrating:
 - Lifecycle event handlers (tool interception, safety gates, context modifications)
