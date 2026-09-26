@@ -134,7 +134,8 @@ Resource paths in user settings resolve from the agent directory. Paths in proje
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| `packages` | array | `[]` | npm, git, or local Pi package sources. See [Pi Packages](packages.md). |
+| `packages` | array | October defaults | npm, git, or local Pi package sources. October adds its pinned default packages here once; see the README's "Included packages". See [Pi Packages](packages.md). |
+| `octoberDefaultPackagesVersion` | number | unset | Highest October default-packages version already added to `packages`. Managed by October; delete it to add the current defaults again. |
 | `extensions` | `string[]` | `[]` | Extension files or directories. |
 | `skills` | `string[]` | `[]` | Skill files or directories. |
 | `prompts` | `string[]` | `[]` | Prompt-template files or directories. |

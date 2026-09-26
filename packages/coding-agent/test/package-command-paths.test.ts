@@ -747,6 +747,31 @@ if (process.platform !== "win32") fs.chmodSync(binPath, 0o755);
 		expect(process.exitCode).toBe(1);
 	});
 
+	// #1: the inherited installer default pointed at upstream Pi release manifests.
+	it("refuses a managed update without an explicit installer API instead of using an upstream default", async () => {
+		const targetVersion = getNewerPatchVersion();
+		const { managedRoot, npmRecordPath } = prepareManagedInstall(targetVersion);
+		vi.stubEnv("PI_INSTALLER_API_BASE", "");
+		const fetchMock = vi.fn(async (input: string | URL | Request) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === LATEST_VERSION_URL) return Response.json({ name: PACKAGE_NAME, version: targetVersion });
+			throw new Error(`Unexpected fetch: ${url}`);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
+
+		expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([LATEST_VERSION_URL]);
+		expect(errorSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+			"github.com/october-dev/october-harness/releases",
+		);
+		expect(readFileSync(join(managedRoot, "current-version"), "utf8")).toBe(`${VERSION}\n`);
+		expect(existsSync(npmRecordPath)).toBe(false);
+		expect(process.exitCode).toBe(1);
+	});
+
 	it("keeps npm self-updates non-managed when the managed environment is inherited", async () => {
 		const globalPrefix = join(tempDir, "global-prefix");
 		const projectPrefix = join(tempDir, "project-prefix");

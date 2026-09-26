@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.ts";
+import { isOctoberDefaultPackageSource } from "../extensions/october/default-packages.ts";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 
@@ -50,17 +51,22 @@ const HOST_PROVIDED_EXTENSION_PACKAGES = new Set([
 	"typebox",
 ]);
 
+// The extension loader aliases these to the host copy, so a reviewed October default package that
+// lists only these in `dependencies` cannot create a duplicate runtime. Its warning would repeat on
+// every startup without anything the user can do about it.
+const LOADER_ALIASED_TYPEBOX_PACKAGES = new Set(["@sinclair/typebox", "typebox"]);
+
 function collectExtensionPackageWarnings(
 	extensionPaths: string[],
 	metadataByPath: Map<string, PathMetadata>,
 ): Array<{ path: string; warning: string }> {
 	const warnings: Array<{ path: string; warning: string }> = [];
-	const packageRoots = new Set(
-		extensionPaths
-			.map((extensionPath) => metadataByPath.get(extensionPath)?.packageRoot)
-			.filter((packageRoot): packageRoot is string => packageRoot !== undefined),
-	);
-	for (const packageRoot of packageRoots) {
+	const sourceByPackageRoot = new Map<string, string>();
+	for (const extensionPath of extensionPaths) {
+		const metadata = metadataByPath.get(extensionPath);
+		if (metadata?.packageRoot !== undefined) sourceByPackageRoot.set(metadata.packageRoot, metadata.source);
+	}
+	for (const [packageRoot, source] of sourceByPackageRoot) {
 		const packageJsonPath = join(packageRoot, "package.json");
 		if (!existsSync(packageJsonPath)) continue;
 		const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { dependencies?: unknown };
@@ -75,6 +81,12 @@ function collectExtensionPackageWarnings(
 			.filter((name) => HOST_PROVIDED_EXTENSION_PACKAGES.has(name))
 			.sort();
 		if (hostDependencies.length === 0) continue;
+		if (
+			isOctoberDefaultPackageSource(source) &&
+			hostDependencies.every((name) => LOADER_ALIASED_TYPEBOX_PACKAGES.has(name))
+		) {
+			continue;
+		}
 		warnings.push({
 			path: packageJsonPath,
 			warning: `Host-provided extension packages must be declared in peerDependencies with a "*" range, not dependencies: ${hostDependencies.join(", ")}. Installed copies can bypass the extension loader and create duplicate runtime modules.`,

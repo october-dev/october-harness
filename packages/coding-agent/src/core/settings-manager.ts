@@ -151,6 +151,7 @@ export interface Settings {
 	enableAnalytics?: boolean; // default: false - opt-in analytics data sharing
 	trackingId?: string; // analytics tracking identifier, generated when analytics is enabled
 	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
+	octoberDefaultPackagesVersion?: number; // highest October default-packages version already added to packages
 	extensions?: string[]; // Array of local extension file paths or directories
 	skills?: string[]; // Array of local skill file paths or directories
 	prompts?: string[]; // Array of local prompt template paths or directories
@@ -1119,6 +1120,16 @@ export class SettingsManager {
 			this.globalSettings.trackingId = randomUUID();
 			this.markModified("trackingId");
 		}
+		this.save();
+	}
+
+	getOctoberDefaultPackagesVersion(): number | undefined {
+		return this.globalSettings.octoberDefaultPackagesVersion;
+	}
+
+	setOctoberDefaultPackagesVersion(version: number): void {
+		this.globalSettings.octoberDefaultPackagesVersion = version;
+		this.markModified("octoberDefaultPackagesVersion");
 		this.save();
 	}
 
