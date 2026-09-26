@@ -102,6 +102,10 @@
               "path": "extensions.md"
             },
             {
+              "title": "Connect MCP Servers",
+              "path": "mcp.md"
+            },
+            {
               "title": "Add Custom Providers",
               "path": "custom-provider.md"
             },

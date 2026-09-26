@@ -238,6 +238,23 @@ describe("SettingsManager", () => {
 	});
 
 	describe("project trust", () => {
+		// Regression coverage for October Harness issue #8.
+		it("should load project MCP servers only after project trust", () => {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ mcpServers: { global: { transport: "http", url: "https://global.invalid/mcp" } } }),
+			);
+			writeFileSync(
+				join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+				JSON.stringify({ mcpServers: { project: { transport: "stdio", command: "synthetic-server" } } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir, { projectTrusted: false });
+
+			expect(Object.keys(manager.getSettings().mcpServers ?? {})).toEqual(["global"]);
+			manager.setProjectTrusted(true);
+			expect(Object.keys(manager.getSettings().mcpServers ?? {}).sort()).toEqual(["global", "project"]);
+		});
+
 		it("should skip project settings when project is not trusted", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "global" }));
 			writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({ theme: "project" }));

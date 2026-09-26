@@ -25,6 +25,7 @@ If October is already installed, choose what you want to do:
 
 October can reuse prompts, load specialized instructions, add executable integrations, change its terminal interface, connect model services, and distribute these resources as packages.
 Use the [Quickstart customization chooser](quickstart.md#choose-how-to-customize-october) to select the smallest mechanism that meets your need.
+Connect local or remote tools through [third-party MCP servers](mcp.md).
 
 ## Automate or embed October
 
