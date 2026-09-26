@@ -2191,7 +2191,6 @@ export class InteractiveMode {
 			mode: "tui",
 			hasUI: true,
 			cwd: this.sessionManager.getCwd(),
-			settings: this.settingsManager.getSettings(),
 			sessionManager: this.sessionManager,
 			modelRegistry: extensionRunner.getModelRegistry(),
 			model: this.session.model,

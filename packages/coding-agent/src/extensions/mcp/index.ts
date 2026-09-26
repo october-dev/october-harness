@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type TSchema, Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext } from "../../core/extensions/types.ts";
+import type { ExtensionAPI } from "../../core/extensions/types.ts";
+import type { Settings } from "../../core/settings-manager.ts";
 import { GenericMcpConnection, type GenericMcpToolResult } from "./client.ts";
 import { createSecretRedactor, parseMcpServers } from "./config.ts";
 
@@ -77,11 +78,10 @@ export function mapMcpContent(result: GenericMcpToolResult): (TextContent | Imag
 	return content;
 }
 
-export function mcpServersFromContext(ctx: Pick<ExtensionContext, "settings">): ReturnType<typeof parseMcpServers> {
-	return parseMcpServers(ctx.settings.mcpServers);
-}
-
-export default function generalMcpExtension(pi: ExtensionAPI): void {
+export default function generalMcpExtension(
+	pi: ExtensionAPI,
+	getMcpServers: () => Settings["mcpServers"] = () => undefined,
+): void {
 	let status = "not initialized";
 	let connections: GenericMcpConnection[] = [];
 	let redact = (message: string): string => message;
@@ -100,7 +100,7 @@ export default function generalMcpExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		let servers: ReturnType<typeof parseMcpServers>;
 		try {
-			servers = mcpServersFromContext(ctx);
+			servers = parseMcpServers(getMcpServers());
 		} catch (error) {
 			status = `MCP configuration error: ${error instanceof Error ? error.message : String(error)}`;
 			ctx.ui.notify(status, "error");

@@ -7,7 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { afterEach, describe, expect, it } from "vitest";
 import { GenericMcpConnection } from "../src/extensions/mcp/client.ts";
 import { createSecretRedactor, parseMcpServers } from "../src/extensions/mcp/config.ts";
-import { mapMcpContent, mcpServersFromContext, mcpToolName } from "../src/extensions/mcp/index.ts";
+import { mapMcpContent, mcpToolName } from "../src/extensions/mcp/index.ts";
 import { classifyTool } from "../src/extensions/october/permissions.ts";
 
 type McpHttpRequest = Parameters<StreamableHTTPServerTransport["handleRequest"]>[0];
@@ -73,18 +73,6 @@ describe("general MCP client extension", () => {
 		expect(longName).toHaveLength(64);
 		expect(longName).toBe(mcpToolName("a".repeat(100), "b".repeat(100)));
 		expect(longName).not.toBe(mcpToolName("a".repeat(100), `${"b".repeat(99)}c`));
-	});
-
-	it("uses the settings owned by the active SDK session", () => {
-		const servers = mcpServersFromContext({
-			settings: {
-				mcpServers: {
-					isolated: { transport: "stdio", command: "session-owned-server" },
-				},
-			},
-		});
-
-		expect([...servers]).toEqual([["isolated", { transport: "stdio", command: "session-owned-server" }]]);
 	});
 
 	it("renders embedded and unsupported result content explicitly", () => {

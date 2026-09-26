@@ -68,7 +68,10 @@ export interface HarnessOptions {
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
 	resourceLoader?: ResourceLoader;
-	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
+	extensionFactories?:
+		| Array<InlineExtension | CreateTestExtensionsResultInput>
+		| ((settingsManager: SettingsManager) => Array<InlineExtension | CreateTestExtensionsResultInput>);
+	settingsManager?: SettingsManager;
 	withConfiguredAuth?: boolean;
 	modelsJson?: Record<string, unknown>;
 }
@@ -109,7 +112,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
 	const sessionManager = SessionManager.inMemory();
-	const settingsManager = SettingsManager.inMemory(options.settings);
+	const settingsManager = options.settingsManager ?? SettingsManager.inMemory(options.settings);
 
 	const authStorage = AuthStorage.inMemory();
 	if (withConfiguredAuth) {
@@ -173,8 +176,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 			return runner.emitContext(messages);
 		},
 	});
-	const extensionsResult = options.extensionFactories
-		? await createTestExtensionsResult(options.extensionFactories, tempDir)
+	const extensionFactories =
+		typeof options.extensionFactories === "function"
+			? options.extensionFactories(settingsManager)
+			: options.extensionFactories;
+	const extensionsResult = extensionFactories
+		? await createTestExtensionsResult(extensionFactories, tempDir)
 		: undefined;
 	const resourceLoader =
 		options.resourceLoader ?? createTestResourceLoader(extensionsResult ? { extensionsResult } : undefined);

@@ -78,4 +78,12 @@ project-owned definitions load; it is not a sandbox.
 
 Connection, protocol negotiation, timeout, and malformed-response failures are
 reported by server name. One unavailable server does not prevent independent,
-non-colliding servers from registering.
+non-colliding servers from registering. Connections are attempted concurrently,
+but session startup waits for every configured server to finish discovery or
+reach its `timeoutMs` deadline before registering the complete, collision-checked
+tool set.
+
+The October Bus adapter remains a separate protocol-specific client. Moving it
+to the official SDK is possible future work, but is not part of the general MCP
+client because its public task compatibility and October credential handling
+have different lifecycle requirements.
