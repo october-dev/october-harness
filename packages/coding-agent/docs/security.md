@@ -32,6 +32,12 @@ Project trust is not a complete startup boundary. Pi reads the project `sessionD
 
 Project trust does not limit what tool calls can access or affect. After Pi starts, enabled tools still use the operating-system permissions of the Pi process. Instructions and other content in the folder can also influence the model.
 
+### Extension capability manifests
+
+Extensions may ship a [capability manifest](extensions.md#declare-capabilities) that declares expected filesystem, shell, network, environment, credential, and October Bus use. Pi validates the manifest before running any extension code and refuses to load an extension whose manifest is malformed. Extensions without a manifest are unclassified.
+
+A manifest is written by the extension author. It is disclosure, not enforcement: Pi does not sandbox extensions, and a manifest does not prove what the code does. An extension runs with the same operating-system permissions as the Pi process whatever it declares.
+
 ### Resources protected by project trust
 
 Pi requires a project-trust decision when it finds any of these resources from the current working directory:
