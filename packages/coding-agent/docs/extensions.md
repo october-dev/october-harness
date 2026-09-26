@@ -51,11 +51,11 @@ Reload replaces the extension runtime, so code after `await ctx.reload()` must n
 
 ## Declare capabilities
 
-An extension can declare the host capabilities it expects in a capability manifest. Pi reads and validates the manifest **before** it loads the extension's code. If the manifest is invalid, the extension does not load, and the error names each problem field. An extension without a manifest loads as *unclassified*, which is not treated as safe.
+An extension can declare the host capabilities it expects in a capability manifest. Pi reads and validates the manifest **before** it loads the extension's code. If the manifest is invalid, the extension does not load, and the error names the problem fields. An extension without a manifest loads as *unclassified*, which is not treated as safe.
 
 Put the manifest in one place:
 
-- For a package, in its `package.json`, next to `pi.extensions`:
+- For a package, in its `package.json` as `pi.capabilities`. It applies to the entries in `pi.extensions`, or, when the package lists none, to its conventional `extensions/` directory:
 
   ```json
   {
@@ -80,7 +80,7 @@ Declaring the same extension in both places is an error.
 | `credentials` | credential identifiers | Credentials it asks the host for. |
 | `octoberBus` | boolean | Uses October Bus. |
 
-Unknown fields are rejected, so typos surface instead of being ignored. An omitted field means *not declared* and is shown that way; declare an empty list or `false` to state that the extension uses none.
+Unknown fields are rejected, so typos surface instead of being ignored. An omitted field means *not declared*; declare an empty list or `false` to state that the extension uses none.
 
 A manifest is disclosure metadata written by the extension author. It is not a sandbox and does not prove what the code does. See [Security](security.md#extension-capability-manifests).
 

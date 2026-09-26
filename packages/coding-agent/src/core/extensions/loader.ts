@@ -581,7 +581,6 @@ async function loadExtension(
 		}
 
 		const extension = await initializeExtension(factory, extensionPath, resolvedPath, cwd, eventBus, runtime);
-		extension.capabilities = capabilities;
 
 		return { extension, error: null };
 	} catch (err) {

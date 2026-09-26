@@ -3,12 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	formatCapabilitySummary,
 	getSidecarManifestPath,
 	readCapabilityManifest,
 	validateCapabilityManifest,
 } from "../src/core/extensions/capabilities.ts";
 import { discoverAndLoadExtensions } from "../src/core/extensions/loader.ts";
+import { DefaultPackageManager } from "../src/core/package-manager.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 
 // #7: extension capability manifests are read and validated before extension code runs.
 describe("extension capability manifests", () => {
@@ -56,36 +57,44 @@ describe("extension capability manifests", () => {
 			expect(validateCapabilityManifest({ manifestVersion: 1 })).toEqual({ manifest: { manifestVersion: 1 } });
 		});
 
-		it("reports every problem with its field", () => {
-			const result = validateCapabilityManifest({
-				manifestVersion: 2,
-				filesystem: { read: "everything", execute: "any" },
-				shell: "yes",
-				network: ["bad host!", "ok.example.com", "ok.example.com"],
-				environment: ["1BAD"],
-				credentials: [""],
-				octoberBus: 1,
-				sandbox: true,
-			});
-			expect(result.errors).toEqual(
+		it("reports problems by field", () => {
+			// TypeBox stops after its global maxErrors (8) raw errors, so problems are split across two manifests.
+			expect(
+				validateCapabilityManifest({
+					manifestVersion: 2,
+					filesystem: { read: "everything", execute: "any" },
+					shell: "yes",
+					sandbox: true,
+				}).errors,
+			).toEqual(
 				expect.arrayContaining([
 					"sandbox: unknown field",
-					"manifestVersion: must be 1, got 2",
+					"manifestVersion: must be 1",
 					"filesystem.read: must be one of none, project, any",
 					"filesystem.execute: unknown field",
-					"shell: must be a boolean",
-					"octoberBus: must be a boolean",
-					'network: invalid entry "bad host!"',
-					"network: contains duplicate entries",
-					'environment: invalid entry "1BAD"',
-					"credentials: must be an array of non-empty strings",
+					"shell: must be boolean",
 				]),
 			);
+			expect(
+				validateCapabilityManifest({
+					manifestVersion: 1,
+					network: ["bad host!", "ok.example.com", "ok.example.com"],
+					environment: ["1BAD"],
+					credentials: [""],
+					octoberBus: 1,
+				}).errors,
+			).toEqual([
+				'network.0: invalid entry "bad host!"',
+				"network: must not have duplicate items",
+				'environment.0: invalid entry "1BAD"',
+				"credentials.0: must not have fewer than 1 characters",
+				"octoberBus: must be boolean",
+			]);
 		});
 
 		it("rejects non-objects and a missing version", () => {
-			expect(validateCapabilityManifest([]).errors).toEqual(["manifest: must be an object"]);
-			expect(validateCapabilityManifest({}).errors).toEqual(["manifestVersion: must be 1, got null"]);
+			expect(validateCapabilityManifest([]).errors).toEqual(["manifest: must be object"]);
+			expect(validateCapabilityManifest({}).errors).toEqual(["manifestVersion: is required"]);
 		});
 	});
 
@@ -122,6 +131,18 @@ describe("extension capability manifests", () => {
 			expect(readCapabilityManifest(entry)).toEqual({ status: "unclassified" });
 		});
 
+		it("reads pi.capabilities for an entry in the conventional extensions/ directory", () => {
+			write("pkg/package.json", { name: "pkg", pi: { capabilities: fullManifest } });
+			const entry = write("pkg/extensions/foo.ts", "export default () => {}");
+			expect(readCapabilityManifest(entry)).toMatchObject({ status: "declared", manifest: fullManifest });
+		});
+
+		it("does not use the conventional directory when pi.extensions lists other entries", () => {
+			write("pkg/package.json", { name: "pkg", pi: { extensions: ["./src/main.ts"], capabilities: fullManifest } });
+			const entry = write("pkg/extensions/other.ts", "export default () => {}");
+			expect(readCapabilityManifest(entry)).toEqual({ status: "unclassified" });
+		});
+
 		it("treats a manifest declared in two places as invalid", () => {
 			write("pkg/package.json", { name: "pkg", pi: { extensions: ["./index.ts"], capabilities: fullManifest } });
 			const entry = write("pkg/index.ts", "export default () => {}");
@@ -145,39 +166,6 @@ describe("extension capability manifests", () => {
 		});
 	});
 
-	describe("presentation", () => {
-		it("summarizes declared capabilities and distinguishes omitted from none", () => {
-			const lines = formatCapabilitySummary({
-				status: "declared",
-				source: "x",
-				manifest: { manifestVersion: 1, filesystem: { read: "project" }, network: [], shell: true },
-			});
-			expect(lines).toEqual([
-				"Filesystem: read project, write not declared",
-				"Shell: runs commands",
-				"Network: none",
-				"Environment: not declared",
-				"Credentials: not declared",
-				"October Bus: not declared",
-				"Declared by the extension author; this is disclosure, not a sandbox.",
-			]);
-		});
-
-		it("marks extensions without a manifest as unclassified, not safe", () => {
-			expect(formatCapabilitySummary({ status: "unclassified" })).toEqual([
-				"Unclassified: no capability manifest. It may use any capability the host allows.",
-			]);
-		});
-
-		it("lists every validation problem for an invalid manifest", () => {
-			expect(formatCapabilitySummary({ status: "invalid", source: "m.json", errors: ["a: x", "b: y"] })).toEqual([
-				"Invalid capability manifest (m.json):",
-				"  a: x",
-				"  b: y",
-			]);
-		});
-	});
-
 	describe("loading", () => {
 		it("never executes an extension whose manifest is invalid", async () => {
 			const marker = path.join(tempDir, "executed.txt");
@@ -189,11 +177,11 @@ describe("extension capability manifests", () => {
 			expect(result.extensions).toHaveLength(0);
 			expect(result.errors).toHaveLength(1);
 			expect(result.errors[0].error).toContain("Invalid capability manifest");
-			expect(result.errors[0].error).toContain("shell: must be a boolean");
+			expect(result.errors[0].error).toContain("shell: must be boolean");
 			expect(fs.existsSync(marker)).toBe(false);
 		});
 
-		it("attaches a declared manifest to the loaded extension", async () => {
+		it("loads an extension whose manifest is valid", async () => {
 			const marker = path.join(tempDir, "executed.txt");
 			const entry = write("ext/declared.ts", markerExtension(marker));
 			write("ext/declared.capabilities.json", fullManifest);
@@ -201,17 +189,37 @@ describe("extension capability manifests", () => {
 			const result = await discoverAndLoadExtensions([entry], tempDir, path.join(tempDir, "agent"));
 
 			expect(result.errors).toHaveLength(0);
-			expect(result.extensions[0].capabilities).toMatchObject({ status: "declared", manifest: fullManifest });
+			expect(result.extensions).toHaveLength(1);
 			expect(fs.existsSync(marker)).toBe(true);
 		});
 
-		it("loads an extension without a manifest as unclassified", async () => {
-			const entry = write("ext/plain.ts", markerExtension(path.join(tempDir, "executed.txt")));
+		it("loads an extension without a manifest", async () => {
+			const marker = path.join(tempDir, "executed.txt");
+			const entry = write("ext/plain.ts", markerExtension(marker));
 
 			const result = await discoverAndLoadExtensions([entry], tempDir, path.join(tempDir, "agent"));
 
 			expect(result.errors).toHaveLength(0);
-			expect(result.extensions[0].capabilities).toEqual({ status: "unclassified" });
+			expect(result.extensions).toHaveLength(1);
+			expect(fs.existsSync(marker)).toBe(true);
+		});
+
+		it("keeps a convention-layout package's extensions when it declares pi.capabilities", async () => {
+			const pkgDir = path.join(tempDir, "pkg");
+			write("pkg/package.json", { name: "pkg", pi: { capabilities: { manifestVersion: 1, shell: false } } });
+			const entry = write("pkg/extensions/foo.ts", "export default () => {}");
+			const settingsManager = SettingsManager.inMemory();
+			settingsManager.setPackages([pkgDir]);
+			const packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir: path.join(tempDir, "agent"),
+				settingsManager,
+			});
+
+			const resolved = await packageManager.resolve();
+
+			expect(resolved.extensions.map((resource) => resource.path)).toEqual([entry]);
+			expect(readCapabilityManifest(entry)).toMatchObject({ status: "declared" });
 		});
 	});
 });

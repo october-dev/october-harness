@@ -43,7 +43,7 @@ import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
-import { type PiManifest, readPiManifest } from "./pi-manifest.ts";
+import { hasResourceEntries, type PiResourceField, readPiManifest } from "./pi-manifest.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 
 const NETWORK_TIMEOUT_MS = 10000;
@@ -2201,10 +2201,11 @@ export class DefaultPackageManager implements PackageManager {
 			return true;
 		}
 
+		// A `pi` field that lists no resources (for example only `pi.capabilities`) keeps the conventional layout.
 		const manifest = readPiManifest(join(packageRoot, "package.json"));
-		if (manifest) {
+		if (manifest && hasResourceEntries(manifest)) {
 			for (const resourceType of RESOURCE_TYPES) {
-				const entries = manifest[resourceType as keyof PiManifest];
+				const entries = manifest[resourceType as PiResourceField];
 				this.addManifestEntries(
 					entries,
 					packageRoot,
@@ -2238,7 +2239,7 @@ export class DefaultPackageManager implements PackageManager {
 		metadata: PathMetadata,
 	): void {
 		const manifest = readPiManifest(join(packageRoot, "package.json"));
-		const entries = manifest?.[resourceType as keyof PiManifest];
+		const entries = manifest?.[resourceType as PiResourceField];
 		if (entries) {
 			this.addManifestEntries(entries, packageRoot, resourceType, target, metadata);
 			return;
@@ -2307,7 +2308,7 @@ export class DefaultPackageManager implements PackageManager {
 		resourceType: ResourceType,
 	): { allFiles: string[]; enabledByManifest: Set<string> } {
 		const manifest = readPiManifest(join(packageRoot, "package.json"));
-		const entries = manifest?.[resourceType as keyof PiManifest];
+		const entries = manifest?.[resourceType as PiResourceField];
 		if (entries && entries.length > 0) {
 			const allFiles = this.collectFilesFromManifestEntries(entries, packageRoot, resourceType);
 			const manifestPatterns = entries.filter(isOverridePattern);
