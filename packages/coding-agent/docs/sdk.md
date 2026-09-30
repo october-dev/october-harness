@@ -59,6 +59,8 @@ See the checked [sessions example](../examples/sdk/11-sessions.ts) for creating,
 
 To move a session between machines or entry points, use [portable sessions](session-format.md#portable-sessions). `session.exportToJsonl(path)` writes the active branch and returns `{ path, diagnostics }`. `runtime.importPortable(path)` accepts only portable files and imports into the runtime's cwd. `runtime.importFromJsonl(path)` accepts both: portable files go through `importPortable()`, and other session files are copied into the session directory unchanged and opened with their header cwd. Without a runtime, `importPortableSession(path, { cwd, sessionDir })` writes the native session and returns its path for `SessionManager.open()`.
 
+To capture a redacted local recording of agent runs, open a `TraceRecorder`, `attach()` it to an idle session, and `close()` it when done. `replayTrace(readTrace(path))` replays the recorded model and tool boundaries offline. See [Execution Traces](traces.md).
+
 After a runtime replacement, subscriptions belong to the old `AgentSession` and must be rebound. See the [session runtime example](../examples/sdk/13-session-runtime.ts).
 
 ## Prompting

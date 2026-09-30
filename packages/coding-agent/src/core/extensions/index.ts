@@ -12,6 +12,8 @@ export {
 } from "./loader.ts";
 export type {
 	ExtensionErrorListener,
+	ExtensionHandlerObserver,
+	ExtensionHandlerOutcome,
 	ForkHandler,
 	NavigateTreeHandler,
 	NewSessionHandler,

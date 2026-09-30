@@ -68,6 +68,9 @@ import {
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
+import { formatTraceTimeline, readTrace } from "./core/trace/format.ts";
+import { TraceRecorder } from "./core/trace/recorder.ts";
+import { replayTrace } from "./core/trace/replay.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { createBuiltInExtensions } from "./extensions/index.ts";
 import { OCTOBER_PROVIDER_ID } from "./extensions/october/auth.ts";
@@ -744,12 +747,76 @@ async function promptForMissingSessionCwd(
 	]);
 }
 
+/**
+ * `--replay-trace`: validate a trace, print its timeline, and replay its runs without network,
+ * credentials, extensions, or tools. Returns the exit code.
+ */
+async function runTraceReplay(parsed: Args): Promise<number> {
+	const conflictingFlags = [
+		parsed.trace !== undefined ? "--trace" : undefined,
+		parsed.export !== undefined ? "--export" : undefined,
+		parsed.import !== undefined ? "--import" : undefined,
+		parsed.messages.length > 0 || parsed.fileArgs.length > 0 ? "prompt messages" : undefined,
+	].filter((flag): flag is string => flag !== undefined);
+	if (conflictingFlags.length > 0) {
+		console.error(chalk.red(`Error: --replay-trace cannot be combined with ${conflictingFlags.join(", ")}`));
+		return 1;
+	}
+	let trace: ReturnType<typeof readTrace>;
+	try {
+		trace = readTrace(resolvePath(parsed.replayTrace!));
+	} catch (error) {
+		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+		return 1;
+	}
+	for (const line of formatTraceTimeline(trace)) console.log(line);
+	for (const reason of trace.incomplete) console.log(`incomplete: ${reason}`);
+	const result = await replayTrace(trace);
+	for (const runId of result.incompleteRuns) console.log(`incomplete: run ${runId} was not replayed`);
+	for (const note of result.fidelity) console.log(`fidelity: ${note}`);
+	for (const mismatch of result.mismatches) {
+		console.log(
+			`mismatch: run ${mismatch.runId} seq ${mismatch.seq} ${mismatch.kind}: expected ${mismatch.expected}, got ${mismatch.actual}`,
+		);
+	}
+	console.log(
+		`replay: ${result.runs} runs, ${result.modelResponses} model responses, ${result.toolCalls} tool calls, ${result.mismatches.length} mismatches${result.complete ? "" : ", incomplete trace"}`,
+	);
+	return result.complete && result.mismatches.length === 0 ? 0 : 1;
+}
+
 export interface MainOptions {
 	extensionFactories?: InlineExtension[];
 }
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	// Trace flags are validated before any settings, extension, or auth bootstrap, and replay reads
+	// only the trace file, so a rejected or replay invocation has no startup side effects.
+	const optionArgs = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
+	if (optionArgs.includes("--trace") || optionArgs.includes("--replay-trace")) {
+		const parsed = parseArgs(args);
+		const outputMode = parsed.mode === "json" ? "json" : "text";
+		if (parsed.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			reportDiagnostics(parsed.diagnostics, outputMode);
+			process.exitCode = 1;
+			return;
+		}
+		if (parsed.replayTrace !== undefined) {
+			reportDiagnostics(parsed.diagnostics, outputMode);
+			process.exitCode = await runTraceReplay(parsed);
+			return;
+		}
+		if (parsed.trace !== undefined && (parsed.export !== undefined || parsed.import !== undefined)) {
+			console.error(
+				chalk.red(
+					`Error: --trace cannot be combined with ${parsed.export !== undefined ? "--export" : "--import"}`,
+				),
+			);
+			process.exitCode = 1;
+			return;
+		}
+	}
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
 		process.env.PI_OFFLINE = "1";
@@ -816,7 +883,6 @@ export async function main(args: string[], options?: MainOptions) {
 		process.exitCode = 1;
 		return;
 	}
-
 	if (parsed.export) {
 		let result: string;
 		try {
@@ -858,6 +924,34 @@ export async function main(args: string[], options?: MainOptions) {
 	validateForkFlags(parsed);
 	validateSessionIdFlags(parsed);
 	validateResumeIdFlags(parsed);
+
+	let traceRecorder: TraceRecorder | undefined;
+	if (parsed.trace !== undefined) {
+		try {
+			traceRecorder = TraceRecorder.open(resolvePath(parsed.trace));
+		} catch (error) {
+			console.error(
+				chalk.red(`Error: Cannot create trace file: ${error instanceof Error ? error.message : String(error)}`),
+			);
+			process.exit(1);
+		}
+	}
+	const reportTraceFailure = () => {
+		if (traceRecorder?.error)
+			console.error(chalk.yellow(`Warning: trace capture stopped: ${traceRecorder.error.message}`));
+	};
+	// Last-resort cleanup for modes that end with process.exit(). Writes are synchronous.
+	const closeTraceOnExit = () => {
+		traceRecorder?.close();
+		reportTraceFailure();
+	};
+	if (traceRecorder) process.on("exit", closeTraceOnExit);
+	const finishTrace = () => {
+		if (!traceRecorder) return;
+		process.off("exit", closeTraceOnExit);
+		traceRecorder.close();
+		reportTraceFailure();
+	};
 
 	// Run migrations (pass cwd for project-local migrations)
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd);
@@ -1081,6 +1175,17 @@ export async function main(args: string[], options?: MainOptions) {
 		if (created.session.model && cliThinkingOverride) {
 			created.session.setThinkingLevel(created.session.thinkingLevel);
 		}
+		if (traceRecorder) {
+			try {
+				traceRecorder.attach(created.session);
+			} catch (error) {
+				console.error(
+					chalk.yellow(
+						`Warning: trace capture could not attach: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				);
+			}
+		}
 
 		return {
 			...created,
@@ -1175,55 +1280,59 @@ export async function main(args: string[], options?: MainOptions) {
 			.finally(() => clearTimeout(timeout));
 	}
 
-	if (appMode === "rpc") {
-		printTimings();
-		await runRpcMode(runtime);
-	} else if (appMode === "interactive") {
-		const interactiveMode = new InteractiveMode(runtime, {
-			migratedProviders,
-			startupDiagnostics,
-			modelFallbackMessage,
-			autoTrustOnReloadCwd,
-			initialMessage,
-			initialImages,
-			initialMessages: parsed.messages,
-			verbose: parsed.verbose,
-			tuiMode: parsed.tuiMode,
-			initialThemeSetting: parsed.useTheme,
-		});
-		if (startupBenchmark) {
-			await interactiveMode.init();
-			time("interactiveMode.init");
-			// Give the TUI's stdin handler a brief chance to consume terminal query replies
-			// (Kitty keyboard protocol, device attributes, cell size) before restoring the terminal.
-			await new Promise((resolve) => setTimeout(resolve, 150));
-			interactiveMode.stop();
-			stopThemeWatcher();
+	try {
+		if (appMode === "rpc") {
 			printTimings();
-			if (process.stdout.writableLength > 0) {
-				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+			await runRpcMode(runtime);
+		} else if (appMode === "interactive") {
+			const interactiveMode = new InteractiveMode(runtime, {
+				migratedProviders,
+				startupDiagnostics,
+				modelFallbackMessage,
+				autoTrustOnReloadCwd,
+				initialMessage,
+				initialImages,
+				initialMessages: parsed.messages,
+				verbose: parsed.verbose,
+				tuiMode: parsed.tuiMode,
+				initialThemeSetting: parsed.useTheme,
+			});
+			if (startupBenchmark) {
+				await interactiveMode.init();
+				time("interactiveMode.init");
+				// Give the TUI's stdin handler a brief chance to consume terminal query replies
+				// (Kitty keyboard protocol, device attributes, cell size) before restoring the terminal.
+				await new Promise((resolve) => setTimeout(resolve, 150));
+				interactiveMode.stop();
+				stopThemeWatcher();
+				printTimings();
+				if (process.stdout.writableLength > 0) {
+					await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+				}
+				if (process.stderr.writableLength > 0) {
+					await new Promise<void>((resolve) => process.stderr.once("drain", resolve));
+				}
+				return;
 			}
-			if (process.stderr.writableLength > 0) {
-				await new Promise<void>((resolve) => process.stderr.once("drain", resolve));
+
+			printTimings();
+			await interactiveMode.run();
+		} else {
+			printTimings();
+			const exitCode = await runPrintMode(runtime, {
+				mode: toPrintOutputMode(appMode),
+				messages: parsed.messages,
+				initialMessage,
+				initialImages,
+			});
+			stopThemeWatcher();
+			restoreStdout();
+			if (exitCode !== 0) {
+				process.exitCode = exitCode;
 			}
 			return;
 		}
-
-		printTimings();
-		await interactiveMode.run();
-	} else {
-		printTimings();
-		const exitCode = await runPrintMode(runtime, {
-			mode: toPrintOutputMode(appMode),
-			messages: parsed.messages,
-			initialMessage,
-			initialImages,
-		});
-		stopThemeWatcher();
-		restoreStdout();
-		if (exitCode !== 0) {
-			process.exitCode = exitCode;
-		}
-		return;
+	} finally {
+		finishTrace();
 	}
 }
