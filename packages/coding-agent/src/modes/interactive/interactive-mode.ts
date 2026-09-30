@@ -404,6 +404,8 @@ export interface InteractiveModeOptions {
 	migratedProviders?: string[];
 	/** Diagnostics collected before the interactive TUI was initialized. */
 	startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
+	/** Shell runner policy, shown before command submission is enabled. */
+	shellRunnerNotice?: AgentSessionRuntimeDiagnostic;
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
 	/** Cwd to trust after reload if it gained a .pi directory during this implicitly trusted session. */
@@ -1027,6 +1029,21 @@ export class InteractiveMode {
 			this.headerContainer.addChild(this.builtInHeader);
 		}
 		this.ui.requestRender();
+
+		// Show the shell runner policy before `!` submission is enabled and before session_start
+		// handlers run, so no command can start before the user sees where it will run.
+		const shellRunnerNotice = this.options.shellRunnerNotice;
+		if (shellRunnerNotice) {
+			if (shellRunnerNotice.type === "warning") {
+				this.showWarning(shellRunnerNotice.message);
+			} else {
+				this.showStatus(shellRunnerNotice.message);
+				// A later status line must not replace the notice.
+				this.lastStatusSpacer = undefined;
+				this.lastStatusText = undefined;
+			}
+			this.ui.renderNow();
+		}
 
 		// Ensure fd and rg are available after mounting the TUI (downloads if missing, adds to PATH via getBinDir)
 		// so slow downloads do not make startup appear frozen.

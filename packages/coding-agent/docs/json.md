@@ -27,7 +27,7 @@ Warnings and errors found while starting, such as an unknown or unverified model
 {"type":"diagnostic","level":"error","code":"model_not_found","message":"Model \"openrouter/example\" is not offered by October (model_not_found). Use --list-models to see available models."}
 ```
 
-`level` is `info`, `warning`, or `error`. A startup error ends the process with exit code 1 and no session events.
+`level` is `info`, `warning`, or `error`. When a `shellRunner` is configured, the active runner is reported as an `info` record with `code` `shell_runner` (`warning` when the runner cannot be used and shell commands are blocked). A startup error ends the process with exit code 1 and no session events.
 
 ## Session header
 

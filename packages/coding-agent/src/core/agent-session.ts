@@ -119,6 +119,11 @@ import {
 } from "./session-manager.ts";
 import { exportPortableSession, type PortableSessionExportResult } from "./session-portable.ts";
 import type { CacheWarmingMode, SettingsManager } from "./settings-manager.ts";
+import {
+	createRejectingShellOperations,
+	POWERSHELL_UNAVAILABLE_MESSAGE,
+	type ShellRunnerSelection,
+} from "./shell-runner.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
 import {
@@ -249,6 +254,11 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * Where built-in bash and default `!`/`!!`/RPC bash commands run. Fixed for the session; reload
+	 * keeps it. Default: host. `baseToolsOverride` tools are not rerouted.
+	 */
+	shellRunner?: ShellRunnerSelection;
 }
 
 export interface ExtensionBindings {
@@ -363,7 +373,9 @@ export class AgentSession {
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
+	private readonly _bashTasks = new Set<Promise<BashResult>>();
 	private _pendingBashMessages: BashExecutionMessage[] = [];
+	private readonly _shellRunner: ShellRunnerSelection;
 
 	// Extension system
 	private _extensionRunner!: ExtensionRunner;
@@ -428,6 +440,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._shellRunner = config.shellRunner ?? { kind: "host" };
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -3242,6 +3255,7 @@ export class AgentSession {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
+		const shellRunner = this._shellRunner;
 		const baseToolDefinitions = this._baseToolsOverride
 			? Object.fromEntries(
 					Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -3251,7 +3265,17 @@ export class AgentSession {
 				)
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					...(shellRunner.kind === "host"
+						? { bash: { commandPrefix: shellCommandPrefix, shellPath } }
+						: {
+								// PI_* values describe the host session and would be wrong inside the runner.
+								bash: {
+									commandPrefix: shellCommandPrefix,
+									operations: shellRunner.operations,
+									exposeSessionEnvironment: false,
+								},
+								powershell: { operations: createRejectingShellOperations(POWERSHELL_UNAVAILABLE_MESSAGE) },
+							}),
 				});
 
 		this._baseToolDefinitions = new Map(
@@ -3460,6 +3484,20 @@ export class AgentSession {
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
 	): Promise<BashResult> {
+		const task = this._executeBash(command, onChunk, options);
+		this._bashTasks.add(task);
+		try {
+			return await task;
+		} finally {
+			this._bashTasks.delete(task);
+		}
+	}
+
+	private async _executeBash(
+		command: string,
+		onChunk: ((chunk: string) => void) | undefined,
+		options: { excludeFromContext?: boolean; id?: string; operations?: BashOperations } | undefined,
+	): Promise<BashResult> {
 		const abortController = new AbortController();
 		this._bashAbortControllers.add(abortController);
 
@@ -3467,20 +3505,19 @@ export class AgentSession {
 		const prefix = this.settingsManager.getShellCommandPrefix();
 		const shellPath = this.settingsManager.getShellPath();
 		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
+		// Extension-supplied operations stay extension-owned; otherwise use the process shell runner.
+		const operations =
+			options?.operations ??
+			(this._shellRunner.kind === "host" ? createLocalBashOperations({ shellPath }) : this._shellRunner.operations);
 
 		try {
-			const result = await executeBashWithOperations(
-				resolvedCommand,
-				this.sessionManager.getCwd(),
-				options?.operations ?? createLocalBashOperations({ shellPath }),
-				{
-					onChunk: (delta) => {
-						onChunk?.(delta);
-						this._emit({ type: "bash_execution_update", id: options?.id, delta });
-					},
-					signal: abortController.signal,
+			const result = await executeBashWithOperations(resolvedCommand, this.sessionManager.getCwd(), operations, {
+				onChunk: (delta) => {
+					onChunk?.(delta);
+					this._emit({ type: "bash_execution_update", id: options?.id, delta });
 				},
-			);
+				signal: abortController.signal,
+			});
 
 			this.recordBashResult(command, result, options);
 			return result;
@@ -3523,6 +3560,15 @@ export class AgentSession {
 		for (const abortController of [...this._bashAbortControllers]) {
 			abortController.abort();
 		}
+	}
+
+	/**
+	 * Cancel running bash commands and wait until each has settled, including its result
+	 * recording and any runner cleanup. Never rejects.
+	 */
+	async abortBashAndWait(): Promise<void> {
+		this.abortBash();
+		await Promise.allSettled([...this._bashTasks]);
 	}
 
 	/** Whether a bash command is currently running */

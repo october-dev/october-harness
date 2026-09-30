@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a shell runner boundary with a Docker reference adapter. The agent-directory `shellRunner` setting routes the built-in `bash` tool and `!`, `!!` and RPC `bash` commands into a fresh `docker run --rm` container with configured mounts and an environment allowlist; other tools still run on the host. The active runner is shown at startup, and a runner that cannot be used blocks commands instead of falling back to the host. See [Route shell commands through the Docker runner](docs/containerization.md#route-shell-commands-through-the-docker-runner) ([#33](https://github.com/october-dev/october-harness/pull/33)).
+
+### Changed
+
+- An agent-directory `settings.json` that cannot be parsed or read, or holds a non-object value such as `null` or a number, now blocks the `bash` tool and `!` commands until it is fixed and Pi is restarted. Previously it only produced a warning. An empty file or a JSON array still means the host shell ([#33](https://github.com/october-dev/october-harness/pull/33)).
+- Ctrl+C (SIGINT) in print, JSON and RPC modes now shuts down gracefully like SIGTERM, emitting `session_shutdown` and running exit cleanup, and exits with code 130 ([#33](https://github.com/october-dev/october-harness/pull/33)).
+
 ## [0.87.1-october.3] - 2026-09-30
 
 ### Added

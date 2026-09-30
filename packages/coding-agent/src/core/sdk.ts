@@ -17,6 +17,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { resolveShellRunner, type ShellRunnerSelection } from "./shell-runner.ts";
 import { time } from "./timings.ts";
 import {
 	createBashTool,
@@ -87,6 +88,12 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/**
+	 * Where built-in bash and default `!`/`!!`/RPC bash commands run. Default: resolved from the
+	 * global `shellRunner` setting. Resolve once with `resolveShellRunner()` and pass the same value
+	 * to every session a process creates, so a settings edit cannot change it mid-process.
+	 */
+	shellRunner?: ShellRunnerSelection;
 }
 
 /** Result from createAgentSession */
@@ -412,6 +419,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
+	const shellRunner = options.shellRunner ?? (await resolveShellRunner(settingsManager.getShellRunnerSettings(), cwd));
 	const session = new AgentSession({
 		agent,
 		sessionManager,
@@ -427,6 +435,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		shellRunner,
 	});
 
 	const extensionsResult = resourceLoader.getExtensions();

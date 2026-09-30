@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, type Model, type Transport } from "@earendil-works/pi-ai";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar, TerminalCapabilities } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
@@ -125,6 +125,27 @@ export type PackageSource =
 			themes?: string[];
 	  };
 
+export interface ShellRunnerMountSettings {
+	/** Absolute, `~`-prefixed, or relative to the initial session cwd. Mounted at the same path. */
+	path: string;
+	/** Default: false */
+	readOnly?: boolean;
+}
+
+export type ShellRunnerSettings =
+	| { type: "host" }
+	| {
+			type: "docker";
+			/** Local image with `bash` on PATH. It is never pulled. */
+			image: string;
+			/** Default: the initial session cwd, read-write. An explicit array replaces the default. */
+			mounts?: ShellRunnerMountSettings[];
+			/** Host environment variable names passed into the container. Default: none. */
+			envAllowlist?: string[];
+			/** Container user as `uid:gid`. Default: the host user's uid:gid. */
+			user?: string;
+	  };
+
 export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
@@ -179,6 +200,7 @@ export interface Settings {
 	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
 	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
 	fullscreenCopyOnSelect?: boolean; // default: true; no effect in regular TUI mode
+	shellRunner?: ShellRunnerSettings; // global setting only; fixed for the process at startup
 	mcpServers?: Record<string, McpServerSettings>; // Optional third-party MCP servers
 }
 
@@ -247,6 +269,16 @@ function toSettingsError(scope: SettingsScope, error: unknown, path?: string): S
 	};
 }
 
+function globalSettingsFileExists(path: string): boolean {
+	try {
+		statSync(path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+}
+
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
@@ -291,8 +323,10 @@ export class FileSettingsStorage implements SettingsStorage {
 
 		let release: (() => void) | undefined;
 		try {
-			// Only create directory and lock if file exists or we need to write
-			const fileExists = existsSync(path);
+			// Only create directory and lock if file exists or we need to write.
+			// The global file holds the shell runner policy, so only a missing file counts as absent;
+			// an unreadable directory or a non-directory path component is an error.
+			const fileExists = scope === "global" ? globalSettingsFileExists(path) : existsSync(path);
 			if (fileExists) {
 				release = this.acquireLockSyncWithRetry(path);
 			}
@@ -441,8 +475,13 @@ export class SettingsManager {
 		if (!content) {
 			return {};
 		}
-		const settings = JSON.parse(stripBom(content));
-		return SettingsManager.migrateSettings(settings);
+		const settings: unknown = JSON.parse(stripBom(content));
+		if (typeof settings !== "object" || settings === null) {
+			throw new Error(
+				`Settings file must contain a JSON object, found ${settings === null ? "null" : typeof settings}`,
+			);
+		}
+		return SettingsManager.migrateSettings(settings as Record<string, unknown>);
 	}
 
 	private static tryLoadFromStorage(
@@ -1051,6 +1090,25 @@ export class SettingsManager {
 		this.globalSettings.quietStartup = quiet;
 		this.markModified("quietStartup");
 		this.save();
+	}
+
+	/**
+	 * Read the shell runner policy from global settings only. Project settings cannot select or
+	 * weaken it. `error` is set when the global file exists but cannot be read or parsed, since its
+	 * intent is unknown. Absent `settings` and `error` mean the default host runner, including for an
+	 * empty file or a JSON array, which cannot contain a policy.
+	 */
+	getShellRunnerSettings(): { settings?: ShellRunnerSettings | null; error?: string } {
+		const source = this.settingsPaths.global
+			? `Global settings file ${this.settingsPaths.global}`
+			: "Global settings";
+		if (this.globalSettingsLoadError) {
+			return { error: `${source} could not be loaded: ${this.globalSettingsLoadError.message}` };
+		}
+		if (!Object.hasOwn(this.globalSettings, "shellRunner")) {
+			return {};
+		}
+		return { settings: structuredClone(this.globalSettings.shellRunner) };
 	}
 
 	getDefaultProjectTrust(): DefaultProjectTrust {

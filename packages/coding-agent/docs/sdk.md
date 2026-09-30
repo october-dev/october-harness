@@ -107,6 +107,8 @@ Each boundary can be supplied explicitly:
 - `resourceLoader` supplies extensions, skills, prompt templates, themes, and context files.
 - `tools`, `noTools`, `excludeTools`, and `customTools` control the active tool set.
 
+- `shellRunner` selects where the built-in `bash` tool and default `!`/`!!`/RPC `bash` commands run. See [Shell runners](#shell-runners).
+
 Use `DefaultResourceLoader` when you want standard discovery with selected overrides. Supply a custom `ResourceLoader` when the host owns resource storage and discovery completely.
 
 <a id="inlineextension"></a>
@@ -114,6 +116,36 @@ Use `DefaultResourceLoader` when you want standard discovery with selected overr
 Inline extension factories can be supplied through `DefaultResourceLoader`. Give one an `InlineExtension` name only when it needs a stable name in diagnostics and startup output.
 
 See the focused examples for [models](../examples/sdk/02-custom-model.ts), [tools](../examples/sdk/05-tools.ts), [extensions](../examples/sdk/06-extensions.ts), and [full control](../examples/sdk/12-full-control.ts).
+
+## Shell runners
+
+Without `shellRunner`, `createAgentSession()` resolves one from the agent-directory `shellRunner` setting on every call. A process that creates several sessions, for example through `AgentSessionRuntime` replacement factories, should resolve once and pass the same value to each session, so a settings edit cannot change where commands run mid-process:
+
+```typescript
+import { createAgentSession, resolveShellRunner, SettingsManager } from "@earendil-works/pi-coding-agent";
+
+const cwd = process.cwd();
+const shellRunner = await resolveShellRunner(SettingsManager.create(cwd).getShellRunnerSettings(), cwd);
+if (shellRunner.notice) console.error(shellRunner.notice);
+
+const { session } = await createAgentSession({ cwd, shellRunner });
+```
+
+Display `notice` before any command runs; it states the runner, its mounts and its scope. An `invalid` selection rejects every command with the cause.
+
+To use another isolation environment, pass a `custom` selection with its own `BashOperations`:
+
+```typescript
+const shellRunner = {
+  kind: "custom" as const,
+  notice: "Shell runner: my-sandbox. Only bash and ! commands run in the sandbox.",
+  operations: mySandboxOperations,
+};
+```
+
+An adapter must follow the contract documented on `BashOperations`: honor `signal` and `timeout`, reject with `aborted` or `timeout:<seconds>`, report signal exits as `128 + n`, call nothing after it settles, and reject instead of running a command elsewhere. `stdin` and `onStderr` are optional inputs an adapter should support.
+
+Any runner other than `host` disables the `powershell` tool and the `PI_*` session variables. Tools supplied through `baseToolsOverride` are not rerouted. `session.dispose()` starts cancellation and does not wait for runner cleanup; to wait, `await session.abort()` and `await session.abortBashAndWait()` first.
 
 ## Examples
 
