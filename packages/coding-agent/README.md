@@ -193,6 +193,8 @@ The first terminal checksum-installs and starts Bus when needed. Both terminals 
 
 Use `/team` for peer presence, `/tasks` for the shared board, `/inbox` for delivery state, `/delegate` for a bounded task request, and `/handoff` to include a capped excerpt of the current session. A delegation can tighten the receiving turn to `read-only` or `accept-edits`; it cannot relax the receiver's local permission policy.
 
+Use `/cockpit` in the interactive TUI to inspect the Bus connection, peers, shared tasks, and messages in one read-only view. Enter opens an item's details; Escape goes back or closes. The view reads a snapshot when it opens, so reopen it to refresh. It never claims tasks, sends messages, or reads the inbox: the messages shown are the ones this session has already recorded (deliveries, replies, and `/delegate` or `/handoff` requests), and queued messages that have not been delivered yet are not previewed. A message's detail view fetches its current Bus delivery receipt.
+
 For an existing local or remote Bus, set `OCTOBER_BUS_ADDRESS` and `OCTOBER_BUS_SCOPE_TOKEN` before `october --team`. Use `--team-connect-to <peer>` for a specific additional link and `--team-bus <path>` to select a preinstalled runtime.
 
 Ask the first agent:

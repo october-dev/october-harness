@@ -7,9 +7,10 @@ import type { OctoberPublicBusEnv } from "./env.ts";
 import { logOctoberDebug } from "./log.ts";
 import { MCP_TOOL_PREFIX, type McpToolCallResult, OctoberMcpClient } from "./mcp-client.ts";
 
-const DELIVERY_ENTRY = "october-bus-delivery";
+export const DELIVERY_ENTRY = "october-bus-delivery";
+export const REQUEST_ENTRY = "october-bus-request";
 const DELIVERY_MESSAGE = "october-bus-inbox";
-const POLICY_CONTEXT_TITLE = "October delegation policy";
+export const POLICY_CONTEXT_TITLE = "October delegation policy";
 const INBOX_WAIT_MS = 25_000;
 const HEARTBEAT_MS = 10_000;
 const RETRY_MS = 2_000;
@@ -26,7 +27,7 @@ interface BusContextItem {
 	mediaType?: string;
 }
 
-interface BusMessage {
+export interface BusMessage {
 	id: string;
 	from: string;
 	to: string;
@@ -70,17 +71,29 @@ interface DeliveryBatch {
 	permissionCeiling: OctoberTemporaryPermissionCeiling;
 }
 
+/** Session record of a successful `/delegate` or `/handoff` send. Never enters model context. */
+export interface DelegationRequestRecord {
+	version: 1;
+	messageId: string;
+	taskId: string;
+	from: string;
+	to: string;
+	mode: "request";
+	body: string;
+	receipt: Record<string, unknown>;
+}
+
 interface DelegationPolicy {
 	version: 1;
 	permissionCeiling: OctoberTemporaryPermissionCeiling;
 	taskId: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
@@ -101,8 +114,8 @@ function resultObject(result: McpToolCallResult): Record<string, unknown> {
 	return parsed;
 }
 
-async function callObject(
-	client: OctoberMcpClient,
+export async function callObject(
+	client: Pick<OctoberMcpClient, "callTool">,
 	name: string,
 	args: Record<string, unknown>,
 	signal?: AbortSignal,
@@ -128,7 +141,7 @@ function parseContext(value: unknown): BusContextItem[] {
 	return context;
 }
 
-function parseMessages(value: unknown): BusMessage[] {
+export function parseMessages(value: unknown): BusMessage[] {
 	if (!Array.isArray(value)) return [];
 	const messages: BusMessage[] = [];
 	for (const item of value) {
@@ -215,7 +228,7 @@ function parsePermissionCeiling(messages: BusMessage[]): OctoberTemporaryPermiss
 	return ceiling;
 }
 
-function parseDeliveryRecord(value: unknown): DeliveryRecord | undefined {
+export function parseDeliveryRecord(value: unknown): DeliveryRecord | undefined {
 	if (!isRecord(value) || value.version !== 1) return undefined;
 	if (
 		typeof value.batchId !== "string" ||
@@ -367,7 +380,7 @@ export function registerOctoberPublicBus(
 					"october-team",
 					[
 						`Team ${env.agentId} | ${peers.length} peers | ${readyTasks} ready tasks | ${waiting} inbox | ${discovery}`,
-						"/team  /tasks  /inbox  /delegate  /handoff",
+						"/team  /tasks  /inbox  /delegate  /handoff  /cockpit",
 					],
 					{ placement: "belowEditor" },
 				);
@@ -620,13 +633,35 @@ export function registerOctoberPublicBus(
 				const excerpt = boundedHandoffContext(ctx);
 				if (excerpt) messageContext.push({ kind: "text", title: "Bounded session handoff", text: excerpt });
 			}
-			await callObject(client, "message_peer", {
+			const body = `Delegated task ${created.id}: ${title}\n\n${description}`;
+			const receipt = await callObject(client, "message_peer", {
 				peer: peer.id,
 				mode: "request",
-				message: `Delegated task ${created.id}: ${title}\n\n${description}`,
+				message: body,
 				context: messageContext,
 				idempotencyKey: randomUUID(),
 			});
+			// The send succeeded. Record it for /cockpit correlation; a recording failure must never resend.
+			try {
+				if (typeof receipt.messageId !== "string" || !receipt.messageId)
+					throw new Error("October Bus did not return a message ID");
+				pi.appendEntry<DelegationRequestRecord>(REQUEST_ENTRY, {
+					version: 1,
+					messageId: receipt.messageId,
+					taskId: created.id,
+					from: env.agentId,
+					to: peer.id,
+					mode: "request",
+					body,
+					receipt,
+				});
+			} catch (error) {
+				ctx.ui.notify(
+					`Delegated ${created.id} to ${peer.id}, but recording the request in this session failed: ${errorMessage(error)}`,
+					"warning",
+				);
+				return;
+			}
 			await refresh();
 			ctx.ui.notify(`Delegated ${created.id} to ${peer.id} with ${permissionCeiling} authority.`, "info");
 		} catch (error) {
