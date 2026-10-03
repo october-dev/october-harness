@@ -1,0 +1,24 @@
+{
+	"formatVersion": 1,
+	"id": "core/permission-denial",
+	"description": "Under accept-edits, an edit runs but a shell command is blocked in a headless run. The blocked command must never execute and must come back as a tool error.",
+	"prompt": "Update the greeting in hello.txt, then write a marker file with a shell command.",
+	"tools": ["edit", "bash"],
+	"permissionMode": "accept-edits",
+	"faux": [
+		{
+			"toolCall": {
+				"name": "edit",
+				"args": { "path": "hello.txt", "edits": [{ "oldText": "hello", "newText": "hello, October" }] }
+			}
+		},
+		{ "toolCall": { "name": "bash", "args": { "command": "echo ran > marker.txt" } } },
+		{ "text": "The greeting is updated; the shell command was blocked by the permission mode." }
+	],
+	"expect": [
+		{ "file": "hello.txt", "contains": "hello, October" },
+		{ "file": "marker.txt", "exists": false, "weight": 2 },
+		{ "toolCalls": { "name": "bash", "min": 1, "errors": 1 } },
+		{ "toolCalls": { "name": "edit", "min": 1, "errors": 0 } }
+	]
+}

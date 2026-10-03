@@ -1,0 +1,19 @@
+{
+	"formatVersion": 1,
+	"id": "core/context-pressure",
+	"description": "Reading a large log fills a small context window, so threshold compaction must run mid-task and the run must still finish. Compaction asks the model for a summary, which is the second faux step.",
+	"prompt": "Read server-log.txt and report the slowest request.",
+	"tools": ["read"],
+	"model": { "contextWindow": 16000, "maxTokens": 100 },
+	"compaction": { "reserveTokens": 8000, "keepRecentTokens": 1000 },
+	"faux": [
+		{ "toolCall": { "name": "read", "args": { "path": "server-log.txt" } } },
+		{ "text": "Summary: read server-log.txt (560 request lines); the task is to report the slowest request." },
+		{ "text": "The slowest request took 999 ms." }
+	],
+	"expect": [
+		{ "compactions": { "min": 1, "max": 1 }, "weight": 2 },
+		{ "finalText": { "contains": "slowest request took" } },
+		{ "toolCalls": { "name": "read", "min": 1, "errors": 0 } }
+	]
+}

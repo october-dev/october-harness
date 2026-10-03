@@ -1,0 +1,27 @@
+{
+	"formatVersion": 1,
+	"id": "core/edit-rename-function",
+	"description": "Rename an exported function so the existing test passes. Checks read and edit plumbing and the final workspace state.",
+	"prompt": "Rename parseArgs to parseCliArgs in src/cli.js so the tests pass.",
+	"tools": ["read", "edit"],
+	"faux": [
+		{ "toolCall": { "name": "read", "args": { "path": "src/cli.js" } } },
+		{
+			"toolCall": {
+				"name": "edit",
+				"args": {
+					"path": "src/cli.js",
+					"edits": [{ "oldText": "export function parseArgs(", "newText": "export function parseCliArgs(" }]
+				}
+			}
+		},
+		{ "text": "Renamed parseArgs to parseCliArgs." }
+	],
+	"expect": [
+		{ "file": "src/cli.js", "contains": "export function parseCliArgs(" },
+		{ "file": "src/cli.js", "notContains": "function parseArgs(" },
+		{ "command": "node --test", "exitCode": 0, "weight": 2 },
+		{ "toolCalls": { "name": "edit", "min": 1, "errors": 0 } },
+		{ "maxTurns": 4 }
+	]
+}
