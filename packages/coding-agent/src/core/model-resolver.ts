@@ -26,7 +26,7 @@ export const defaultModelPerProvider: Record<KnownProvider | typeof OCTOBER_PROV
 	"azure-openai-responses": "gpt-5.4",
 	"openai-codex": "gpt-5.5",
 	radius: "balanced",
-	nvidia: "nvidia/nemotron-3-super-120b-a12b",
+	nvidia: "nvidia/nemotron-3-ultra-550b-a55b",
 	deepseek: "deepseek-v4-pro",
 	google: "gemini-3.1-pro-preview",
 	"google-vertex": "gemini-3.1-pro-preview",

@@ -19,6 +19,8 @@
 ### Fixed
 
 - Fixed one-shot `--provider october` runs warning that a gateway-served model was not found. Model ids are now matched exactly, never to a similar id. When the requested id is missing, the October catalogue is fetched once (5 second limit); if the live catalogue does not offer the id, the run fails with a `model_not_found` error naming it, and if the catalogue cannot be fetched, the id is sent as given with a `model_unverified` warning.
+- Fixed Together DeepSeek V4 Pro losing its thinking level controls after Together renamed it to `deepseek-ai/DeepSeek-V4-Pro-0813` ([#10336](https://github.com/earendil-works/pi/pull/10336) by [@cv](https://github.com/cv))
+- Fixed the default NVIDIA model pointing at `nvidia/nemotron-3-super-120b-a12b`, which NVIDIA no longer serves; the default is now `nvidia/nemotron-3-ultra-550b-a55b`
 
 ## [0.87.1-october.2] - 2026-09-25
 
