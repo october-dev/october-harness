@@ -1,0 +1,80 @@
+name: Model catalog drift
+
+# `npm run build` regenerates the model catalog from live provider data, so a provider removing a
+# model can break CI for every pull request without any code change. This checks main against the
+# live catalog daily and keeps one tracking issue open while it is broken.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: model-catalog-drift
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    if: github.repository == 'october-dev/october-harness'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build with the live model catalog
+        run: npm run build
+
+      - name: Type-check against the live catalog
+        id: typecheck
+        continue-on-error: true
+        run: npx tsgo --noEmit 2>&1 | tee typecheck.log; exit "${PIPESTATUS[0]}"
+
+      - name: Check that every provider default still exists
+        id: defaults
+        continue-on-error: true
+        working-directory: packages/coding-agent
+        run: |
+          npx vitest --run test/model-resolver.test.ts -t "built-in defaults exist" 2>&1 | tee ../../defaults.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Report drift
+        if: steps.typecheck.outcome == 'failure' || steps.defaults.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Model catalog drift breaks CI"
+          {
+            echo "The daily drift check found code that no longer matches the live model catalog: $RUN_URL"
+            echo
+            echo "Providers removed or renamed models that tests or provider defaults still reference. Pull requests will fail \`npm run check\` until these are updated. Upstream Pi often has the fix already."
+            echo
+            echo '```'
+            grep -h -E "error TS|AssertionError|should exist in its generated catalog" typecheck.log defaults.log | sed -E 's/(error TS[0-9]+: .{0,160}).*/\1/' | head -40
+            echo '```'
+          } > body.md
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi
+          exit 1
