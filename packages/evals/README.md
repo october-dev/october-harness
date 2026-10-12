@@ -16,8 +16,81 @@ Runner code lives in `src/`:
 - `plan.ts` expands cases into `(case, variant, repetition)` tasks
 - `report.ts` reads Vitest JSON, pairs arms, and computes lift
 - `harness.ts` is the vitest-evals adapter
+- `scenario.ts`, `scenario-runner.ts`, `scenario-checks.ts`, `scenario-report.ts`, and `scenario-cli.ts` run deterministic scenarios (see [Scenario evals](#scenario-evals))
 
-Eval suites and their fixtures live under `evals/`. Image build files live in `docker/`.
+Eval suites and their fixtures live under `evals/`. Deterministic scenarios live under `scenarios/`. Image build files live in `docker/`.
+
+## Scenario evals
+
+Scenario evals check harness behavior without credentials or network. Each run replays a scripted faux model against a copy of a fixture workspace, then scores the end state. The runner imports built packages, so build once after `npm ci`:
+
+```bash
+npm run build
+npm run eval:scenarios -w packages/evals
+```
+
+The command prints a Markdown summary and writes `scenarios.json` and `summary.md` under `.eval/`. It exits nonzero if any scenario fails, and a scenario that cannot load or run is reported as a failure instead of stopping the others.
+
+During a run, tools see only a minimal environment (`PATH`, the temporary home, locale and temp directories), so a scenario cannot read provider keys or other host secrets. Scenarios run one at a time because each run changes the process environment. Pass `--scenarios <dir>` (repeatable) to run other packs instead of the bundled one, `--filter <text>` to select by path, and `--out <dir>` to choose the report directory.
+
+### Run against a real model
+
+The same scenarios run against any configured model. The `faux` script is ignored, the checks are unchanged, and cost is reported when the model is priced:
+
+```bash
+npm run eval:scenarios -w packages/evals -- --provider anthropic --model claude-sonnet-5
+```
+
+**A real-model run executes the commands the model chooses, on this machine.** The workspace is a temporary copy and provider keys are hidden from tools, but `bash` and other tools still run on the host with your user's permissions. Run real-model evals only with models and scenario packs you trust, or inside a container.
+
+Credentials come from the host's stored login or environment, as for other evals, and are resolved before the run starts. Add `--record <dir>` to save each run's assistant messages as a new scenario pack with the same prompt, fixture and checks. Compaction summaries are recorded in place, so a run that compacts still replays in order. A compaction that makes two summary requests (a split turn with earlier history) is recorded as one step and will not replay exactly. The recorded pack then replays with no credentials:
+
+```bash
+npm run eval:scenarios -w packages/evals -- --provider anthropic --model claude-sonnet-5 --record recorded/
+npm run eval:scenarios -w packages/evals -- --scenarios recorded/
+```
+
+### Scenario packs
+
+A pack is any directory tree of scenarios. Extensions and providers can keep a pack next to their code, for example `my-extension/scenarios/`, and run it with `--scenarios my-extension/scenarios`. Use a pack-specific prefix in scenario ids (`my-extension/...`) so reports from several packs don't collide.
+
+A scenario is a directory with `scenario.json` and an optional `workspace/` fixture:
+
+```json
+{
+	"formatVersion": 1,
+	"id": "core/command-failure-recovery",
+	"prompt": "Build the project so dist/out.txt exists.",
+	"tools": ["bash"],
+	"faux": [
+		{ "toolCall": { "name": "bash", "args": { "command": "node scripts/missing-build.js" } } },
+		{ "toolCall": { "name": "bash", "args": { "command": "node scripts/build.js" } } },
+		{ "text": "Built dist/out.txt after retrying." }
+	],
+	"expect": [
+		{ "file": "dist/out.txt", "contains": "ok" },
+		{ "toolCalls": { "name": "bash", "min": 2, "errors": 1 } }
+	]
+}
+```
+
+- `faux` is the scripted model: each step is one model response, either `text`, a `toolCall`, or `toolCalls` with optional `text`. A compaction summary is a model request too, so it takes the next step. A run that stops before using every step is reported as an error.
+- `expect` lists the checks. `file` checks `exists`, `contains`, `notContains`, or a `matches` regex; `command` runs in the final workspace and checks `exitCode` and `outputContains`; `toolCalls` checks counts and errors, optionally for one tool; `finalText` checks the last assistant text; `maxTurns` bounds the turns; `compactions` bounds completed compactions (a failed or aborted one always fails the check); `busCall` requires a call to a fake Bus tool whose listed `arguments` match, optionally an exact `count`. Each check takes an optional `weight` (default 1).
+
+Optional fields set up the run:
+
+| Field | Effect |
+| --- | --- |
+| `model` | `contextWindow` and `maxTokens` for the faux model, to create context pressure. Ignored for a real model. |
+| `compaction` | Enables threshold compaction with `reserveTokens` and `keepRecentTokens`. Compaction is off otherwise. |
+| `permissionMode` | Loads the October permission gate in `ask`, `accept-edits`, or `bypass`. A headless run blocks whatever the mode would prompt for, as a tool error. |
+| `bus` | Serves `tools` from an in-process fake October Bus through the real Bus tools, as `mcp__october-bus__<name>`. Each tool returns its `result` text; every call is recorded for `busCall` checks. |
+
+The bundled `core/` pack covers editing, command-failure recovery, context pressure, permission denial, and Bus response correlation.
+- The score is the weighted share of passing checks. A scenario passes when every check passes and the run had no errors.
+- Faux usage is estimated, so cost is reported as `n/a`.
+
+Unknown fields are rejected, so a typo fails loading instead of silently skipping a check.
 
 ## Run evals
 

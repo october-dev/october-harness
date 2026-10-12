@@ -81,7 +81,15 @@ function argumentPreview(input: unknown): string {
 	}
 }
 
-export function registerOctoberPermissions(pi: ExtensionAPI, controller = createOctoberPermissionController()): void {
+/**
+ * Register the permission gate. `options.mode` replaces the process-level mode (flag, environment, global
+ * settings) for hosts that run the gate programmatically; trusted project settings may still tighten it.
+ */
+export function registerOctoberPermissions(
+	pi: ExtensionAPI,
+	controller = createOctoberPermissionController(),
+	options: { mode?: OctoberPermissionMode } = {},
+): void {
 	pi.registerFlag("permission-mode", {
 		type: "string",
 		description: "Tool permission mode: ask, accept-edits, or bypass. Default bypass. Not --approve.",
@@ -89,13 +97,13 @@ export function registerOctoberPermissions(pi: ExtensionAPI, controller = create
 
 	// Snapshot process-owned policy before a tool can edit settings. Project settings
 	// may tighten it, never grant more authority than the user supplied globally.
-	let mode = resolveOctoberPermissionMode(pi);
+	let mode = options.mode ?? resolveOctoberPermissionMode(pi);
 	let locked = false;
 	const lockMode = (ctx: ExtensionContext): void => {
 		if (locked) return;
 		locked = true;
 		const flag = pi.getFlag("permission-mode");
-		if (isMode(flag)) mode = flag;
+		if (options.mode === undefined && isMode(flag)) mode = flag;
 		if (!ctx.isProjectTrusted()) return;
 		const project = modeFromSettingsFile(join(ctx.cwd, CONFIG_DIR_NAME, "settings.json"));
 		const rank = { ask: 0, "accept-edits": 1, bypass: 2 };

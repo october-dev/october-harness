@@ -1,0 +1,41 @@
+{
+	"formatVersion": 1,
+	"id": "core/bus-response-correlation",
+	"description": "Answer a peer's Bus request through the real October Bus tools against an in-process fake Bus. In faux mode the script supplies responseTo and idempotencyKey, so this proves the tools deliver them to the Bus intact; with --provider it checks that the model correlates the reply itself.",
+	"prompt": "The planner sent request msg-42 asking whether the build passed. Check the peers, then reply to that request.",
+	"tools": ["mcp__october-bus__list_peers", "mcp__october-bus__message_peer"],
+	"bus": {
+		"tools": [
+			{ "name": "list_peers", "result": "{\"peers\":[{\"id\":\"planner\"}]}" },
+			{ "name": "message_peer", "result": "{\"messageId\":\"msg-43\"}" }
+		]
+	},
+	"faux": [
+		{ "toolCall": { "name": "mcp__october-bus__list_peers", "args": {} } },
+		{
+			"toolCall": {
+				"name": "mcp__october-bus__message_peer",
+				"args": {
+					"peer": "planner",
+					"mode": "response",
+					"message": "Build passed.",
+					"responseTo": "msg-42",
+					"idempotencyKey": "reply-msg-42"
+				}
+			}
+		},
+		{ "text": "Replied to msg-42." }
+	],
+	"expect": [
+		{
+			"busCall": {
+				"name": "message_peer",
+				"arguments": { "peer": "planner", "mode": "response", "responseTo": "msg-42", "idempotencyKey": "reply-msg-42" },
+				"count": 1
+			},
+			"weight": 2
+		},
+		{ "busCall": { "name": "list_peers" } },
+		{ "toolCalls": { "errors": 0 } }
+	]
+}

@@ -8,6 +8,7 @@
 		"eval": "npm run eval:host && npm run eval:docs --",
 		"eval:host": "vitest run --config vitest.evals.config.ts --project host",
 		"eval:docs": "node --experimental-strip-types src/cli.ts",
+		"eval:scenarios": "node --experimental-strip-types src/scenario-cli.ts",
 		"test": "vitest run --config vitest.test.config.ts"
 	},
 	"devDependencies": {
@@ -17,6 +18,7 @@
 		"@types/node": "22.19.19",
 		"@vitest-evals/core": "0.15.0",
 		"shx": "0.4.0",
+		"typebox": "1.3.27",
 		"typescript": "5.9.3",
 		"vitest-evals": "0.15.0",
 		"vitest": "4.1.9"

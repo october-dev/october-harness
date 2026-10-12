@@ -203,6 +203,26 @@ describe("october permission modes", () => {
 		).toBe(true);
 	});
 
+	it("uses an explicit mode instead of the process-level mode", async () => {
+		process.env.OCTOBER_PERMISSION_MODE = "bypass";
+		const harness = await createHarness({
+			tools: [dummyTool("read"), dummyTool("bash")],
+			extensionFactories: [
+				(pi) => registerOctoberPermissions(pi, createOctoberPermissionController(), { mode: "accept-edits" }),
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("go");
+
+		const result = toolResult(harness);
+		expect(result?.role === "toolResult" && result.isError).toBe(true);
+	});
+
 	it("bypass allows read, edit, and bash while retaining the temporary-ceiling gate", async () => {
 		const runtime = createExtensionRuntime();
 		const extension = await loadExtensionFromFactory(
