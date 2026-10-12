@@ -13,6 +13,7 @@ import { raceWithAbortSignal } from "../utils/abort.ts";
 import { getFileRevision, normalizePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { isCommandConfigValue, resolveConfigValue } from "./resolve-config-value.ts";
+import { isSensitiveEnvName } from "./sensitive-names.ts";
 
 type AuthStorageData = Record<string, Credential>;
 
@@ -506,6 +507,29 @@ export class AuthStorage implements CredentialStore {
 			return { result: undefined, next: JSON.stringify(currentData, null, 2) };
 		}, options);
 		this.updateReadState(latestData);
+	}
+
+	/**
+	 * Credential values already loaded in memory, for redaction: API keys, OAuth tokens, and
+	 * credential-named values of a credential's `env`. Resolves `$ENV` templates but never reloads
+	 * storage, executes `!command` values, or refreshes OAuth tokens.
+	 */
+	getSecretLiterals(): string[] {
+		const literals: string[] = [];
+		for (const credential of Object.values(this.readState.data)) {
+			if (credential.type === "oauth") {
+				literals.push(credential.access, credential.refresh);
+				continue;
+			}
+			if (credential.key !== undefined && !isCommandConfigValue(credential.key)) {
+				const key = resolveConfigValue(credential.key, credential.env);
+				if (key) literals.push(key);
+			}
+			for (const [name, value] of Object.entries(credential.env ?? {})) {
+				if (value && isSensitiveEnvName(name)) literals.push(value);
+			}
+		}
+		return literals;
 	}
 
 	/** List credential metadata without resolving configured key values. */

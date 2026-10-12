@@ -115,6 +115,32 @@ export type {
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
 export type { Tool } from "./tools/index.ts";
+export {
+	formatTraceTimeline,
+	parseTrace,
+	readTrace,
+	TRACE_FORMAT,
+	TRACE_FORMAT_VERSION,
+	type Trace,
+	TraceFormatError,
+	type TraceFrame,
+	type TraceHeaderRecord,
+	type TraceModelRef,
+	type TraceRecord,
+	type TraceRecordBody,
+	type TraceRecordOf,
+	type TraceToolDefinition,
+	UnsupportedTraceVersionError,
+} from "./trace/format.ts";
+export { TraceRecorder, type TraceRecorderOptions } from "./trace/recorder.ts";
+export {
+	createTraceReplay,
+	replayTrace,
+	type TraceReplayEvent,
+	type TraceReplayMismatch,
+	type TraceReplayResult,
+	type TraceRunReplay,
+} from "./trace/replay.ts";
 
 export {
 	withFileMutationQueue,

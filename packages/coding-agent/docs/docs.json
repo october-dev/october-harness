@@ -157,6 +157,10 @@
           "path": "session-format.md"
         },
         {
+          "title": "Execution Traces",
+          "path": "traces.md"
+        },
+        {
           "title": "Compaction and Branch Summaries",
           "path": "compaction.md"
         },
