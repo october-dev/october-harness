@@ -335,11 +335,13 @@ const QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS = new Set<string>([
 ]);
 
 const KIMI_K3_MAX_TOKENS = 131072;
+// Moonshot bills K3 cache writes separately (5min TTL tier by default):
+// https://platform.kimi.ai/docs/pricing/chat
 const KIMI_K3_COST = {
 	input: 3,
 	output: 15,
 	cacheRead: 0.3,
-	cacheWrite: 0,
+	cacheWrite: 3,
 } as const;
 // Kimi Coding is subscription-backed, so models.dev reports zero cost. Use the
 // equivalent Moonshot API rates to estimate the value of subscription usage.
