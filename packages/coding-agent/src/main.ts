@@ -67,6 +67,7 @@ import {
 } from "./core/session-portable.ts";
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
+import { resolveShellRunner } from "./core/shell-runner.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { createBuiltInExtensions } from "./extensions/index.ts";
@@ -944,6 +945,9 @@ export async function main(args: string[], options?: MainOptions) {
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
 	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+	// Resolved once per process from global settings; every runtime reuses it, so an edit to the
+	// settings file during the process cannot change where shell commands run.
+	const shellRunner = await resolveShellRunner(startupSettingsManager.getShellRunnerSettings(), sessionCwd);
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -1076,6 +1080,7 @@ export async function main(args: string[], options?: MainOptions) {
 			excludeTools: sessionOptions.excludeTools,
 			noTools: sessionOptions.noTools,
 			customTools: sessionOptions.customTools,
+			shellRunner,
 		});
 		const cliThinkingOverride = parsed.thinking !== undefined || cliThinkingFromModel;
 		if (created.session.model && cliThinkingOverride) {
@@ -1141,9 +1146,16 @@ export async function main(args: string[], options?: MainOptions) {
 
 	time("resolveModelScope");
 	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	// Interactive mode shows the runner policy itself, before command submission is enabled.
+	const shellRunnerNotice: AgentSessionRuntimeDiagnostic | undefined = shellRunner.notice
+		? { type: shellRunner.kind === "invalid" ? "warning" : "info", code: "shell_runner", message: shellRunner.notice }
+		: undefined;
 	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
 	if (appMode !== "interactive" || hasRuntimeErrors) {
-		reportDiagnostics(startupDiagnostics, appMode === "json" ? "json" : "text");
+		reportDiagnostics(
+			shellRunnerNotice ? [shellRunnerNotice, ...startupDiagnostics] : startupDiagnostics,
+			appMode === "json" ? "json" : "text",
+		);
 	}
 	if (hasRuntimeErrors) {
 		if (runtime.diagnostics.some((diagnostic) => diagnostic.message.includes("Failed to load extension"))) {
@@ -1182,6 +1194,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
+			shellRunnerNotice,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			initialMessage,

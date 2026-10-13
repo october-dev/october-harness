@@ -159,9 +159,10 @@ export class AgentSessionRuntime {
 	}
 
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
-		// Settle any active response first so the aborted turn (including tool
-		// results) is persisted to the outgoing session before it is replaced.
-		await this.session.abort();
+		// Settle any active response and user bash commands first so the aborted turn (including
+		// tool results) is persisted to the outgoing session before it is replaced. The next session
+		// works in the same workspace, so old commands and their runner cleanup must finish first.
+		await Promise.all([this.session.abort(), this.session.abortBashAndWait()]);
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,
