@@ -39,7 +39,7 @@ describe("editInExternalEditor", () => {
 
 		expect(result).toEqual({ status: "complete", content: "edited" });
 		expect(dirname(directory)).toBe(tmpdir());
-		expect(basename(directory)).toMatch(/^pi-editor-.+$/);
+		expect(basename(directory)).toMatch(/^october-editor-.+$/);
 		expect(basename(capture.filePath)).toBe("prompt.md");
 		expect(capture.entries).toEqual(["prompt.md"]);
 		expect(capture.content).toBe("original");

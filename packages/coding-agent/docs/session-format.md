@@ -8,16 +8,16 @@ For programmatic creation, persistence, and tree navigation, see the [`SessionMa
 ## File Location
 
 ```
-~/.pi/agent/sessions/--<path>--/<timestamp>_<session-id>.jsonl
+~/.october/agent/sessions/--<path>--/<timestamp>_<session-id>.jsonl
 ```
 
-By default, `<session-id>` is a UUID. Callers can supply a custom ID through the SDK or `--session-id`. For `<path>`, Pi removes the leading path separator and replaces `/`, `\\`, and `:` with `-`.
+By default, `<session-id>` is a UUID. Callers can supply a custom ID through the SDK or `--session-id`. For `<path>`, October removes the leading path separator and replaces `/`, `\\`, and `:` with `-`.
 
 ## Deleting Sessions
 
-Sessions can be removed by deleting their `.jsonl` files under `~/.pi/agent/sessions/`.
+Sessions can be removed by deleting their `.jsonl` files under `~/.october/agent/sessions/`.
 
-Pi also supports deleting sessions interactively from `/resume` (select a session and press `Ctrl+D`, then confirm). When available, pi uses the `trash` CLI to avoid permanent deletion.
+October also supports deleting sessions interactively from `/resume` (select a session and press `Ctrl+D`, then confirm). When available, pi uses the `trash` CLI to avoid permanent deletion.
 
 ## Session Version
 
@@ -32,13 +32,13 @@ Existing sessions are automatically migrated to the current version (v3) when lo
 ## Source Files
 
 Source on GitHub ([pi](https://github.com/earendil-works/pi)):
-- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/session-manager.ts) - Session entry types and SessionManager
+- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/october-dev/october-harness/blob/main/packages/coding-agent/src/core/session-manager.ts) - Session entry types and SessionManager
 - [Message Types](message-types.md) - Shared message and content-block reference
-- [`packages/coding-agent/src/core/messages.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/messages.ts) - Extended message types
-- [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/ai/src/types.ts) - Base message and content-block types
-- [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/main/packages/agent/src/types.ts) - Extensible `AgentMessage` union
+- [`packages/coding-agent/src/core/messages.ts`](https://github.com/october-dev/october-harness/blob/main/packages/coding-agent/src/core/messages.ts) - Extended message types
+- [`packages/ai/src/types.ts`](https://github.com/october-dev/october-harness/blob/main/packages/ai/src/types.ts) - Base message and content-block types
+- [`packages/agent/src/types.ts`](https://github.com/october-dev/october-harness/blob/main/packages/agent/src/types.ts) - Extensible `AgentMessage` union
 
-For TypeScript definitions in your project, inspect `node_modules/@earendil-works/pi-coding-agent/dist/` and `node_modules/@earendil-works/pi-ai/dist/`.
+For TypeScript definitions in your project, inspect `node_modules/@october-dev/october/dist/` and `node_modules/@earendil-works/pi-ai/dist/`.
 
 ## Messages
 
@@ -92,7 +92,7 @@ Sessions created before system messages existed have no leading system message; 
 {"type":"message","id":"c3d4e5f6","parentId":"b2c3d4e5","timestamp":"2024-12-03T14:00:03.000Z","message":{"role":"toolResult","toolCallId":"call_123","toolName":"bash","content":[{"type":"text","text":"output"}],"isError":false,"timestamp":1733234403000}}
 ```
 
-Assistant messages name the model that produced them. Newer messages also record `thinkingLevel`, the Pi thinking level requested for that response.
+Assistant messages name the model that produced them. Newer messages also record `thinkingLevel`, the October thinking level requested for that response.
 
 ### ModelChangeEntry
 
@@ -118,7 +118,7 @@ Records model-attributed usage that is not an assistant message and does not par
 {"type":"usage","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:08:00.000Z","kind":"cache_warm","provider":"anthropic","model":"claude-sonnet-4-5","usage":{"input":0,"output":0,"cacheRead":50000,"cacheWrite":0,"totalTokens":50000,"cost":{"input":0,"output":0,"cacheRead":0.015,"cacheWrite":0,"total":0.015}}}
 ```
 
-Usage entries contribute to session token and cost totals. Pi hides them from the conversation tree. Consumers should treat unknown `kind` values as normal usage rather than rejecting them.
+Usage entries contribute to session token and cost totals. October hides them from the conversation tree. Consumers should treat unknown `kind` values as normal usage rather than rejecting them.
 
 ### CompactionEntry
 
@@ -128,7 +128,7 @@ Created when context is compacted. Stores a summary of earlier messages and a co
 {"type":"compaction","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:10:00.000Z","summary":"User discussed X, Y, Z...","firstKeptEntryId":"c3d4e5f6","tokensBefore":50000,"systemMessage":{"role":"system","content":"You are a coding assistant.","toolsAdded":[],"timestamp":1733235000000}}
 ```
 
-`firstKeptEntryId` is required. It identifies the first entry retained from before the compaction entry. When rebuilding context, Pi replaces older summarized entries with the compaction summary and keeps the range beginning at this entry. A retain-none compaction stores its own ID in this field, so no preceding entries are retained.
+`firstKeptEntryId` is required. It identifies the first entry retained from before the compaction entry. When rebuilding context, October replaces older summarized entries with the compaction summary and keeps the range beginning at this entry. A retain-none compaction stores its own ID in this field, so no preceding entries are retained.
 
 Optional fields:
 - `systemMessage`: The replayed prompt sections and tool declarations at the compaction boundary; it becomes the leading system message of the compacted context, and system messages among the kept entries are dropped in its favor. It is absent on older session entries.
@@ -171,7 +171,7 @@ Extension state persistence. Does NOT participate in LLM context.
 
 Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context.
 
-Pi stores [virtual model](virtual-models.md) router state as custom entries with `customType` `pi.virtual-model-state` and `data` `{ provider, modelId, state }`.
+October stores [virtual model](virtual-models.md) router state as custom entries with `customType` `pi.virtual-model-state` and `data` `{ provider, modelId, state }`.
 
 ### CustomMessageEntry
 

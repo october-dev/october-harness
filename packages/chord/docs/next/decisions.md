@@ -2153,6 +2153,209 @@ validation and copies the v2 kernel added around Delta.
   consumer waits "contract mismatch". Which package carries the app's contracts is point 5. The by-name lookup and the
   `tsconfig` path aliases go; built in the plugin slice (examples 35-38, fixtures, design §21, the plugins README, the
   guide's chapter "Plugins Using Plugins").
+- **Plugins import only the app's versioned API; Chord is re-exported in it (owner, 2026-11-01: "makes sense";
+  plugin model point 2):** a plugin never imports Chord directly: Chord is not a host package plugins may name, so a
+  direct import is a build error pointing to the app's API. The app's API module per version (`@acme/app/v3`)
+  re-exports the Chord surface the app supports (contract and schema builders, `defineFacet`, `defineRegistry`, the
+  types plugins see) next to its own small part (host kinds, the principal type, `defineFacet` bound to it, core
+  contracts, registry tokens). One version number, the app's, describes everything a plugin gets from its host. The
+  process runs one Chord: an older API version still listed is a layer over today's Chord; when Chord breaks its
+  API it keeps its previous API as a compatibility module for a while, which the app's older version re-exports;
+  once that is dropped the app drops the version and old plugins fail at build naming the available versions.
+  Contracts are data and bind through `accepts` whatever Chord runs. One facet imports from one API version only
+  (checked at build). Only base code imports Chord directly. Bundling is slice 10's host packages: the version is part
+  of the name (`kinds.hostPackages` lists `@acme/app/v3`, `@acme/app/v2`), each process provides its own modules.
+- **The plugin model, points 3, 4, 5 and 8, imports and builds (owner, 2026-11-01, by voice: "yeah that checks out"; "lock the decisions on the
+  points which was discussed"; primer `docs/next/plugin-primer/`):**
+  (3) **Split by host kind, for the app and for plugins alike.** The app's API per version has a shared module
+  (`@acme/app/v3`: Chord's re-exported surface, host kinds, the principal type, `defineFacet` bound to it, contracts
+  and registries that cross hosts) and per-kind modules (`/v3/web`, `/v3/tui`, `/v3/server`, `/v3/worker` where
+  needed: UI components, registries and `local` contracts that live on that kind only). A plugin's contract files
+  mirror it: `contract.ts` (shared) and `contract.server.ts`, `contract.worker.ts`, `contract.web.tsx`,
+  `contract.tui.ts` as needed. A contract file mentions native things (React components, functions) only through
+  `import type`; at runtime it imports only the shared API and its plugin's data-only files (a hard rule). The build
+  checks every import by the file it resolves to: a per-kind file (`.web.` etc.) or per-kind API module only for that
+  kind, and a file importing a package the kind does not provide (React in a worker) refused. Shared UI between
+  plugins: a plain component through an imported file (inlined into the importer's script, frozen at its build), or
+  a registry when one live instance is needed (React contexts, a feature others embed).
+  (4) **Host kinds on registry tokens** are covered by placement: a token used on one kind lives in that kind's file,
+  so other kinds cannot import it; an explicit `hosts` marker only if a shared token must be limited later.
+  Registries version by hand: readers and writers work across versions through the token's version and the defining
+  plugin's `accepts`; no fingerprint for native values (decided earlier, unchanged).
+  (5) **Third parties get the app's contracts through its versioned API:** each built-in plugin keeps its contract
+  files; the API re-exports the ones the app promises (`export { Notes } from "../plugins/notes/contract.ts"`), so a
+  plugin built against `/v2` keeps v2's contracts; the others stay private. No per-area subpackages.
+  (Imports) **Plainly, with no resolution magic:** within one repository (a root, or a repository of several
+  plugins), relative paths to the files (`../notes/contract.web.tsx`); across repositories, the package name with its
+  exports (`@bob/notes`, `@bob/notes/web`), pinned in `dependencies` by an npm version or a git ref
+  (`github:bob/notes#<commit>`; npm's git dependencies, no registry publishing needed; a plugin in a subfolder of a
+  multi-plugin repository is cloned and linked by the plugins component, which npm cannot do). Rejected: one
+  specifier resolving to a sibling or an npm package depending on `dependencies` ("kinda magic"). Plugins are
+  installed from git by cloning a branch, tag or commit into a plugins root (as the coding agent's git packages).
+  (8, base code) **Base code shrinks to the API, bootstrap and a start-data facet:** the vocabulary (the versioned API modules,
+  host packages, never reloaded), bootstrap (creating hosts, opening the store, components such as `createHttp` and
+  `createWorkers`, which take settings and process values and return facets, their natives opened by Chord, passed as
+  the same object at every reload) and one small facet serving process values (start data, the opened store) as core
+  objects. Every implementation, the harness and the providers of core registries included, is a plugin in the app's
+  own root, loaded, reloaded and failing per plugin like any other; the app may mark its root required, so a core
+  plugin failing at startup is fatal. Built-in plugins follow the same rules as any plugin.
+  (Build) **No build hooks from plugins:** the server builds every plugin with one esbuild call from TypeScript source
+  (no `dist` needed; installs run with scripts off); what the build handles (TS, TSX, JS, JSON, CSS, assets and WASM
+  by URL) is the plugin's toolbox, generated files are committed; a CSS preprocessor or similar, if ever needed, is
+  enabled by the app per host kind, never by a plugin (a stranger's web plugin must not run code on the server).
+  To do: a skill and documentation for agents describing a plugin's layout, its contract files, imports and how the
+  host builds it. Open from the primer: (6) `testPlugin` with stub facets, (7) single-file plugins.
+- **Single-file plugins (owner, 2026-11-01: "agreed"; plugin model point 7):** a root may hold plain files named
+  `<name>.<kind>.ts(x)` (`hello.server.ts`, `hello.web.tsx`): files with the same first name are one plugin named
+  after it, one facet per file. The name must be a valid unscoped name; a collision with a directory plugin of the
+  same root is reported like any duplicate. No `package.json`, so no npm dependencies; it imports only the app's API
+  (host packages), no other files and no contract files for others; it may serve objects, define contracts for
+  itself inline and contribute to registries. When it needs more, it becomes a directory with the same name, which a
+  reload treats as the same plugin. The watcher's `set` mark covers files appearing and disappearing at a root's top.
+- **Testing a plugin alone (owner, 2026-11-01: "let's do that"; plugin model point 6):** `testPlugin(dir, { kind,
+  modules, stubs, start?, principal? }, ctx)` builds the plugin as production does and loads it on an in-memory host
+  of that kind with an in-memory store. A plugin depends on four things, each answered without a mocking framework:
+  the app's API and Chord are the real modules (definitions only); other plugins' and core objects are reached
+  through contracts, so the test passes stubs, ordinary facets serving those contracts with fake data; registries
+  the plugin contributes to are served by the helper, which collects the contributions for the test to read (a
+  registry it reads gets fake entries from a stub); process values come as fake start data. The result is a live host:
+  the test gets the plugin's objects, calls them, watches their state, and acts as any principal. A contract no stub
+  serves leaves its requests waiting `not_served`; the helper lists those names, so the test says what to stub.
+  Several hosts at once (a server plugin calling a worker) is a later, larger helper over memory links; the app kit
+  may ship stubs for its core contracts.
+- **The app kit, point 1: its shape (owner, 2026-11-01, by voice: "yeah"; app kit design pass):** the app's own
+  layout is fixed: `src/` with the API versions (`src/api/v3/`, per host kind as decided for the plugin model) and the
+  built-in plugins root (`plugins/`). The data directory is deployment configuration, outside the app: a `startApp`
+  option set by the app's own start script (no environment variables: owner, "no environment variables"), default a
+  dot directory named after the app in the home directory; it holds the store, the user's plugins root, logs and the
+  workers' data. The server is fixed (one per app, clients connect to it). Workers are a list of worker kinds the app
+  defines, each a host kind with the app's own params (sharding is the app's: a project, a tenant, a document; the kit
+  knows no sessions) and how to start it (entry, start data per address, principal, idle time: the workers
+  component's options); zero kinds is a server with clients only (a chat app).
+- **The app kit, point 2: principals and users (owner, 2026-11-01, by voice: "yeah I guess. just make it nice and
+  concise and easy to use and flexible"; "too opinionated might be a problem"):** three things kept apart. (1) The
+  principal is tiny (a kind and an id: it travels on every call and is part of objects' identity) and the app defines
+  its type; the kit requires only the variants it needs itself (the server and its worker kinds). (2) User data
+  (avatar, bio, availability) is ordinary app data in objects keyed by the user's id, never in the principal. (3)
+  Authentication turns a connection into a principal. The kit ships optional plugins: a users plugin storing accounts
+  with a profile schema the app supplies (a Slack-like profile or just a name), and authenticator plugins (device
+  pairing, invite links, an ephemeral one for an IRC-like "pick a name and you're in": a fresh id with the name, no
+  stored account, gone with the connection); an app picks, replaces or writes its own. Rejected: a fixed principal type
+  with roles.
+- **The app kit, point 3: authentication (owner, 2026-11-01, by voice: "yeah, I guess something like that"):** (a)
+  no owner by loopback alone (any local process or OS user could claim it): the start script prints a link with a
+  one-time token (as Jupyter), whose visit sets a signed `HttpOnly` owner cookie for that browser; drive-by requests
+  from pages in that browser stay blocked by the security baseline (foreign requests, also other localhost ports,
+  never authenticated; Host and Origin checks). (b) Deny by default, in the HTTP component itself (a change to slice
+  10's routes and sockets): a request without a principal is refused before plugin code unless its route or socket is
+  marked public (a landing page, a webhook, the ephemeral name login, which hands out a principal). Authenticators stay
+  the `Authenticators` registry, filled by the authenticator plugins the app chose; a session helper issues and revokes
+  sessions so authenticators do not each reinvent cookies and logout.
+  (c) Command-line clients (owner: "that sounds good"; the TUI client too) connect over the same WebSocket with a
+  token in a header (no Origin, no Fetch Metadata: not a browser request; the token decides): on the same machine an
+  owner token file in the data directory readable only by the OS user running the app; from another machine a device
+  pairing flow (the tool shows a code and a link, the owner approves in a browser, the tool stores the token), the
+  token a session like any other, listed and revocable.
+- **The app kit, point 4: storage (owner, 2026-11-01, by voice: "yeah, I suppose that sounds right"):** in the data
+  directory the server has one store; each worker has its own directory under its worker kind, named by its address,
+  with its store in it; the kit opens and closes them. Plugins never use paths of the data directory: their state is
+  in their objects' documents and tables; a plugin that needs raw files gets a subdirectory of its own, owned by one of
+  its objects.
+- **The app kit, point 5: plugins, files and export (owner, 2026-11-01: "okay", "yeah"):** two plugin roots: the
+  app's built-in `plugins/` (required: a plugin failing at startup stops the app with its error) and the user's in the
+  data directory (failures reported). Installs from git or npm into the user's root. One "apply changes" call builds the
+  dirty plugins and rolls them out to the server, then every running worker; the app exposes it as a button, a
+  command or an agent tool; changes are never applied by themselves. **Files:** the kit ships a files plugin, one owner
+  per address (`self.get(Files, { scope })`: `put`, chunked transfers for large files (design §23), a watchable
+  index, caps), its files in that worker's directory; apps build on it (p3's artifacts: versions, previews, sharing;
+  design §26 #17). Raw directories only where a real path is needed (a git checkout, a library writing its own
+  database), each owned by one object, under the worker's directory. **Export and import per address:** the store's
+  archive plus the worker's directory as one archive; importing it under another address copies or moves it.
+  Refines point 4 (storage): plugins use the files plugin instead of raw subdirectories of their own.
+- **Slice 11, P3: the base bundle and plugin scripts (owner, 2026-11-01, by voice: "yep, that sounds good"):** the
+  server builds one base bundle per client kind from an entry in the app's source (the app's web start code, its API
+  with the kind's module, Chord, React), content-hashed and cached by browsers forever; a change of base code reloads
+  the page (as a restart of the server). Plugin scripts: at page load the server serves the current set of the kind's
+  plugins as one combined file named by a hash of the set (one request, cacheable); while a page is open, a rollout's
+  changed plugins are fetched one script each. A fresh page makes two requests, an update downloads only what changed.
+  Rejected: a prebuilt base bundle shipped with the app (could disagree with the plugins' build).
+- **Slice 11, P4: new plugin scripts apply in place (owner, 2026-11-01: "yep, agree"):** a page's host reloads the
+  changed plugins per plugin (`host.reload`, as on the server): objects swap or restart, the UI re-renders from its
+  registries, keeping what is on screen (scroll, a half-typed message). A change of base code still reloads the whole
+  page. Rejected: reloading the page for every plugin change (p2's behaviour, which lost the screen on every agent
+  edit).
+- **Slice 11, P5: pages learn of new scripts through Chord (owner, 2026-11-01: "agree"):** the web component serves a
+  small object whose state is the current set of the kind's plugin scripts (names, digests, URLs); every page holds
+  it; a rollout publishes the new set without waiting for pages; each page gets one frame and fetches what changed;
+  after a reconnect the hold's snapshot brings the current set, so a page catches up on anything it missed. Rejected:
+  polling a manifest (p2: every 5 s while visible).
+- **Slice 11, P6: the connection loop (owner, 2026-11-01: "agree"):** p2's `keepConnected`: after a drop, reconnect
+  with a growing pause (250 ms to 5 s); try at once when the tab becomes visible, the browser comes back online or the
+  network changes; replace a socket open but silent; stop when the server reports an outdated protocol (the page
+  reloads) or the app's `canRetry` says no (a guest's share ended). References keep their last values and wait while
+  down, so the UI shows a banner from the connection state. A network reconnect, not a crash restart.
+- **Slice 11, P7: React bindings (owner, 2026-11-01: "we definitely want something like that"; p2's `useObject`,
+  `useReadable`, `useRegistry` in `runtime/web.tsx`):** an optional subpath (`chord/next/react`): `HostProvider`,
+  `useHold(Type, params)`, `useWatch(watchable)`, `useRegistry(R)`, `useRefState(ref)`; releasing holds on unmount,
+  and a component unmounted by a reload never counts as leaving (design §21). No components, no styling; non-React apps
+  never load it.
+- **Slice 11, P8: the terminal client always runs sandboxed (owner, 2026-11-01: "the terminal should always use the
+  sandbox approach"):** `chord/next/tui` is a Node client host that connects with a token (decision "The app kit, point
+  3", (c)), downloads the base bundle and the TUI plugin scripts from the server and runs the app's TUI entry, always
+  inside p2's sandbox: a permission-dropped worker thread with a bridge terminal, the trusted launcher outside it
+  holding the credentials, the terminal and local preferences. No unsandboxed mode, also for the owner's own server.
+- **Slice 11, P9: a terminal component scope, library-agnostic (owner, 2026-11-01: "yeah, sure"; p2's `TuiScope`
+  in `src/runtime/tui.ts`):** the counterpart of the React bindings: a scope tied to a component's life with `hold`,
+  `watch` and `registry`, releasing everything on dispose, calling one `changed` callback the app wires to its redraw
+  (one line with pi-tui; any library works). p2's retry with backoff for gone references is not carried over (v2
+  references wait and rebind by themselves). No pi-tui dependency.
+- **`chord.plugins` is a package's manifest of plugins, as pi's (owner, 2026-11-01: "yes"; slice 12 review, Opus H1;
+  refines "The plugin model ... imports and builds" (Imports) and `slice-12.md` §2, §5):** a package (npm, git, local)
+  declares the plugins it provides in its `package.json`, `"chord": { "plugins": ["./notes", "./search"] }` (globs and
+  exclusions as pi's `pi.extensions`); installing it picks up exactly those folders. Without the field discovery is
+  conventional: the package is one plugin when its top has facet files, else its subfolders with a `package.json`.
+  Depending on a plugin inside a multi-plugin repository is an ordinary dependency on the whole repository (npm version
+  or `github:bob/plugins#<commit>`, installed by plain npm), imported by path into it (`@bob/plugins/notes/contract.ts`)
+  or through its `exports`. Removed: the dependency form of `chord.plugins` (`"name": "github:...#ref:subfolder"`) and
+  its own clone-and-link installer (it could delete outside `node_modules`).
+- **Looks and themes (owner, 2026-11-02: "i suppose", then "do all the things"; proposal `docs/next/theming/`):**
+  shared components come from the app's per-kind API modules (one instance in the base bundle); looks are design
+  tokens, CSS custom properties on `:root` on the web, which the app's components and plugins' CSS read; plugins scope
+  their CSS with CSS modules (`*.module.css`); the terminal gets the app's components and a theme lookup by role. A
+  theme is data in one registry, `Themes`, shipped by the kit in its shared module with the code that writes the active
+  theme as CSS variables (web) and the lookup (TUI): a base set of roles the kit defines (accent, bg, fg, muted, error,
+  warning, success), apps may add roles; a user picks one dark and one light theme, the system preference chooses;
+  `web` extras may name fonts and assets of the plugin under the page's CSP. Plugins contribute themes; they cannot
+  change the app's base CSS or components. The open questions' recommendations taken.
+- **p3 meeting, 2026-11-02 (Mario and Armin; Armin's summary, relayed by the owner):** session sync: the session
+  repository talks to the server process to enumerate sessions; the session index in the server is updated by the
+  worker from events and sent to the server by RPC. Sync to R2 goes through Radius: Radius keys each session by id and
+  keeps its last sequence number, tells pi which sessions it has with their last sequence numbers (optimization: time
+  of last sync), and pi sends the delta commit log from that sequence number; R2 stores the SQLite file and the commit
+  log (SQLite DO to R2); sessions have an owner id. The index is a Chord table replicated like sessions; its entry is
+  updated only on a session metadata change, a session idle-state change and a subagent idle-state change. p3: each
+  host (server, worker, tui, web) has a kernel loading the plugins with contribution points via registries; p2's look
+  and feel made great; new session storage; hands (machine daemons) good, secure and connecting proactively.
+- **App kit naming and export (owner, 2026-11-02: "startApp > startServer?", "am i exporting an address? i'm exporting
+  the store a host created", "export should stop nothing before the export, it slots into the commit queue"; refines
+  slice 13):** `startApp` is `startServer` (the pair `startServer`/`startWorker`; an app always has one server).
+  `exportAddress`/`importAddress` are `exportData(address, path)`/`importData(path, address)`: the data a host created
+  (its store and files directory). Export stops nothing: a running worker exports its own store (`store.export()` holds
+  the commit queue while it reads, so the archive is one consistent point) and its finished files to the given path,
+  asked through a kit object on the worker; with no worker running, the server takes the worker's process lock (no
+  worker can start meanwhile) and reads the store itself. Import still takes the lock and refuses an address whose
+  directory exists (nothing is overwritten; replacing a session is delete, then import; a copy is an import under a new
+  address); registering the imported host in the app's index is the app's.
+- **p3 notes, 2026-11-02 (owner):** subagents may start with the main agent's context: `context: "inherit"` forks the
+  parent conversation (Durable's `conversation.fork`) at the last entry before the assistant message with the spawning
+  call; model, tools and location may differ; the tool's description names the cost (prompt cache only with the same
+  model). pi's `/tree` (in-session branches) is wanted for p3: proposed as forks inside the session's store (edit an
+  earlier message to fork, a branch list to switch; a full navigator and branch summaries later).
+- **Sync applies batches with the host stopped (owner, 2026-11-02: "sure"; sync example `60-session-sync`):**
+  `applyBatch` refuses while a host holds claims on the store; the sync layer stops the session's worker, applies,
+  restarts it. Usually nothing runs: Radius receiving uploads runs no host for a session it does not drive, and taking
+  a session back pulls before its worker starts. A live view of a replica (watching a session continue elsewhere) is a
+  later refinement: fewer pulls while watched, or a read-only view without the worker.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a

@@ -4,7 +4,7 @@ October connects to [Model Context Protocol](https://modelcontextprotocol.io) se
 
 ## Quick setup
 
-Add a local stdio server, check the connection, then start Pi:
+Add a local stdio server, check the connection, then start October:
 
 ```bash
 october mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem .
@@ -29,7 +29,7 @@ Use `/mcp` inside an interactive session to inspect connections, sign in, reconn
 
 ## Configure servers
 
-Pi reads user-level servers from `~/.october/agent/mcp.json` and project servers from `.october/mcp.json`. Project configuration is read only after [project trust](security.md#understand-project-trust) is granted. A project entry replaces a user-level entry with the same name.
+October reads user-level servers from `~/.october/agent/mcp.json` and project servers from `.october/mcp.json`. Project configuration is read only after [project trust](security.md#understand-project-trust) is granted. A project entry replaces a user-level entry with the same name.
 
 A project entry without `command`, `url`, or `type` overrides only `enabled`, `exposure`, and `toolExposure` of the user-level server with the same name and keeps the rest, including `env`, `headers`, and `auth`. For example, this turns off a user-level server in one project:
 
@@ -95,9 +95,9 @@ Shell commands work without a session: `october mcp add`, `october mcp remove`, 
 
 Run `october mcp list` to connect to every enabled server and print its state, tools, and errors. It exits with status 1 when an entry is invalid or an enabled server is not connected. `/mcp` shows the full connection error and the tail of stderr from a failed stdio server.
 
-Pi reports configuration errors, failed connections, and required sign-ins once after startup. Server logging notifications are appended to `~/.october/agent/mcp.log` as `<time> [<server>] <level> <logger>: <message>`. The file moves to `mcp.log.1` after it grows past 5 MB.
+October reports configuration errors, failed connections, and required sign-ins once after startup. Server logging notifications are appended to `~/.october/agent/mcp.log` as `<time> [<server>] <level> <logger>: <message>`. The file moves to `mcp.log.1` after it grows past 5 MB.
 
-Pi connects every enabled server in the background when a session starts. A server's tools appear once it connects; the `codemode` description does not list them, so it does not change when servers connect. The first prompt waits up to 10 seconds only for servers with `direct` tools, which must be declared in its request. Other servers are waited for when they are needed: a codemode script waits for the servers it names (`mcp__<server>`) and, when it calls `searchTools()` or reads `ALL_TOOLS`, for all of them; `tool_search` and the resource tools also wait for all of them. HTTP network errors and transient statuses (408, 429, and 5xx) are retried twice. A dropped connection is shown as disconnected and reconnects on the next call. When a server announces a changed tool list, new tools are added and withdrawn tools become unreachable.
+October connects every enabled server in the background when a session starts. A server's tools appear once it connects; the `codemode` description does not list them, so it does not change when servers connect. The first prompt waits up to 10 seconds only for servers with `direct` tools, which must be declared in its request. Other servers are waited for when they are needed: a codemode script waits for the servers it names (`mcp__<server>`) and, when it calls `searchTools()` or reads `ALL_TOOLS`, for all of them; `tool_search` and the resource tools also wait for all of them. HTTP network errors and transient statuses (408, 429, and 5xx) are retried twice. A dropped connection is shown as disconnected and reconnects on the next call. When a server announces a changed tool list, new tools are added and withdrawn tools become unreachable.
 
 Stopping a stdio server closes its stdin, sends SIGTERM, then sends SIGKILL to its process group. This also stops servers launched through wrappers such as `npx` or `uvx`.
 
@@ -124,9 +124,9 @@ Remote servers that use OAuth, such as Sentry, need no credentials in `mcp.json`
 }
 ```
 
-When the server rejects an unauthenticated connection, `/mcp` shows that it needs sign-in. Select "Sign in", run `/mcp login sentry`, or run `october mcp login sentry`. Pi opens the authorization page and waits for approval. If the browser runs on another machine, such as over SSH, paste its redirected URL into the sign-in screen. A running session uses the new credentials on its next turn.
+When the server rejects an unauthenticated connection, `/mcp` shows that it needs sign-in. Select "Sign in", run `/mcp login sentry`, or run `october mcp login sentry`. October opens the authorization page and waits for approval. If the browser runs on another machine, such as over SSH, paste its redirected URL into the sign-in screen. A running session uses the new credentials on its next turn.
 
-Pi identifies itself to the authorization server with its Client ID Metadata Document or by registering a client, stores tokens in `~/.october/agent/mcp-auth.json`, and refreshes access tokens when they expire or the server rejects them. If a server later requests additional scope, Pi asks for sign-in again. Signing out deletes the stored credentials.
+October identifies itself to the authorization server with its Client ID Metadata Document or by registering a client, stores tokens in `~/.october/agent/mcp-auth.json`, and refreshes access tokens when they expire or the server rejects them. If a server later requests additional scope, October asks for sign-in again. Signing out deletes the stored credentials.
 
 Credentials belong to a server name and URL. Servers with the same URL under different names, such as one per account, sign in separately; servers with the same name and URL in different `mcp.json` files share one sign-in.
 
@@ -143,9 +143,9 @@ OAuth applies to HTTP servers without an `Authorization` header. For a server th
 }
 ```
 
-The redirect URI must match the registered URI. `callbackPort` uses `http://127.0.0.1:<port>/callback`. To use another URI, set `callbackUrl`; it must use HTTP on `localhost`, `127.0.0.1`, or `[::1]`. Pi sends it exactly as written. When `callbackUrl` omits a port, Pi uses `callbackPort` or a free port and adds it to the URI, as allowed for loopback redirects by RFC 8252. `clientSecret` is optional and can use an environment variable or command.
+The redirect URI must match the registered URI. `callbackPort` uses `http://127.0.0.1:<port>/callback`. To use another URI, set `callbackUrl`; it must use HTTP on `localhost`, `127.0.0.1`, or `[::1]`. October sends it exactly as written. When `callbackUrl` omits a port, October uses `callbackPort` or a free port and adds it to the URI, as allowed for loopback redirects by RFC 8252. `clientSecret` is optional and can use an environment variable or command.
 
-Set `scope` to a space-separated list for servers that do not advertise their required scopes. Otherwise, Pi requests the advertised scopes. Later scope requests are added to the configured value.
+Set `scope` to a space-separated list for servers that do not advertise their required scopes. Otherwise, October requests the advertised scopes. Later scope requests are added to the configured value.
 
 October registers as `october`. Some servers only accept registrations from known clients. Set `clientName` to send another name:
 
@@ -157,11 +157,11 @@ October registers as `october`. Some servers only accept registrations from know
 }
 ```
 
-The name is only sent when Pi registers a client. To register again under a new name, sign out first.
+The name is only sent when October registers a client. To register again under a new name, sign out first.
 
 Without `clientId`, October registers a client dynamically. An existing registration stays in use while its redirect URI matches, until you sign out. Upstream Pi's Client ID Metadata Document support remains available through an explicit `clientRegistration: "cimd"`; it identifies the client as Pi and uses `https://pi.dev/oauth/client.json` with `http://127.0.0.1:<port>/callback`. If the authorization server omits the `iss` parameter (RFC 9207), the document and redirect path are specific to the MCP server: `https://pi.dev/oauth/<id>/client.json` and `http://127.0.0.1:<port>/callback/<id>`.
 
-Set `clientRegistration` to choose the method: `auto` (default, dynamic registration in October), `dcr` to always register, or `cimd` to use Pi's document. With `cimd`, sign-in fails if the authorization server does not support documents for public clients. Use `dcr` when the authorization page reports an invalid client:
+Set `clientRegistration` to choose the method: `auto` (default, dynamic registration in October), `dcr` to always register, or `cimd` to use October's document. With `cimd`, sign-in fails if the authorization server does not support documents for public clients. Use `dcr` when the authorization page reports an invalid client:
 
 ```json
 {
@@ -173,7 +173,7 @@ Set `clientRegistration` to choose the method: `auto` (default, dynamic registra
 
 `october mcp add --oauth-client-registration <mode>` sets it when adding a server. `cimd` cannot be combined with `clientId` or `clientName`, and a `callbackUrl` must use `localhost` or `127.0.0.1` with the path `/callback`.
 
-Pi finds the authorization server through the server's protected resource metadata (RFC 9728) and checks that the authorization server's metadata names the expected issuer (RFC 8414). Some servers advertise the wrong authorization server or none, so sign-in opens a page that does not exist. Set `authServerMetadataUrl` to the metadata document of the right authorization server:
+October finds the authorization server through the server's protected resource metadata (RFC 9728) and checks that the authorization server's metadata names the expected issuer (RFC 8414). Some servers advertise the wrong authorization server or none, so sign-in opens a page that does not exist. Set `authServerMetadataUrl` to the metadata document of the right authorization server:
 
 ```json
 {
@@ -186,7 +186,7 @@ Pi finds the authorization server through the server's protected resource metada
 }
 ```
 
-Pi uses that document instead of discovery and trusts it as configured, so only point it at a document you trust. The URL must use HTTPS, except on `localhost`, `127.0.0.1`, or `[::1]`.
+October uses that document instead of discovery and trusts it as configured, so only point it at a document you trust. The URL must use HTTPS, except on `localhost`, `127.0.0.1`, or `[::1]`.
 
 ## Control tool exposure
 
@@ -201,9 +201,9 @@ Each server tool is registered as `mcp__<server>__<tool>`. The server's `exposur
 
 `codemode-deferred` is accepted as an alias for `codemode`.
 
-Servers with `codemode` or `deferred` tools are listed in the `mcp_servers` section of the system prompt, with how their tools are reached and one line from the configured `description` or, once connected, from the server instructions. Pi updates the section when a prompt starts, after waiting for servers with `direct` tools. When it changed, for example because a server connected and its summary became available, Pi appends the new section to the conversation instead of changing tool declarations, so earlier messages stay cached. `describeNamespace()` and the `namespace` option of `searchTools()` accept `mcp__dev-radius`, `mcp__dev_radius`, `dev-radius`, or `dev_radius`.
+Servers with `codemode` or `deferred` tools are listed in the `mcp_servers` section of the system prompt, with how their tools are reached and one line from the configured `description` or, once connected, from the server instructions. October updates the section when a prompt starts, after waiting for servers with `direct` tools. When it changed, for example because a server connected and its summary became available, October appends the new section to the conversation instead of changing tool declarations, so earlier messages stay cached. `describeNamespace()` and the `namespace` option of `searchTools()` accept `mcp__dev-radius`, `mcp__dev_radius`, `dev-radius`, or `dev_radius`.
 
-Pi activates `codemode` when a server with `codemode` exposure connects. It activates `tool_search` for a server with `deferred` exposure. To make the model see a tool without searching, give it `direct` exposure with `toolExposure`.
+October activates `codemode` when a server with `codemode` exposure connects. It activates `tool_search` for a server with `deferred` exposure. To make the model see a tool without searching, give it `direct` exposure with `toolExposure`.
 
 `toolExposure` overrides the server exposure for individual tools. Keys are exact server tool names or patterns where `*` matches any characters. Exact names win over patterns; among patterns, the first match wins. A server with `hidden` exposure can expose only selected tools:
 
@@ -227,9 +227,9 @@ Pi activates `codemode` when a server with `codemode` exposure connects. It acti
 
 Tools with `codemode` or `deferred` exposure can be reached through either indirect mechanism: codemode scripts can call them, and `tool_search` can load them. Codemode calls do not depend on the active tool set, so they remain available after `/tree`, resume, and fork. Tools loaded by `tool_search` are recorded in the transcript and remain declared on that branch.
 
-`--tools` does not remove MCP tools unless one of its entries starts with `mcp__`; `pi --tools read,codemode,'mcp__radius__*'` keeps only the tools of `radius`. `--exclude-tools` accepts the same patterns, and `--no-mcp` disables MCP for one run (see [Tools](cli.md#mcp-tools)).
+`--tools` does not remove MCP tools unless one of its entries starts with `mcp__`; `october --tools read,codemode,'mcp__radius__*'` keeps only the tools of `radius`. `--exclude-tools` accepts the same patterns, and `--no-mcp` disables MCP for one run (see [Tools](cli.md#mcp-tools)).
 
-To keep `codemode` active without MCP servers, add `"defaultTools": ["+codemode"]` to [settings](settings.md#tools). To prevent automatic codemode activation, set `"autoEnableCodemode": false` beside `mcpServers`. A project value overrides the user-level value. Pi warns once when neither `codemode` nor `tool_search` is active and non-direct tools cannot be called.
+To keep `codemode` active without MCP servers, add `"defaultTools": ["+codemode"]` to [settings](settings.md#tools). To prevent automatic codemode activation, set `"autoEnableCodemode": false` beside `mcpServers`. A project value overrides the user-level value. October warns once when neither `codemode` nor `tool_search` is active and non-direct tools cannot be called.
 
 Text results over 20 KB reach the model with their middle removed around a `…N chars truncated…` marker. The full text is saved to a temporary file named in the result. Codemode scripts receive the complete result and can reduce it before returning output to the model.
 
@@ -237,7 +237,7 @@ Codemode scripts receive the complete MCP `CallToolResult`, including `content`,
 
 ## Use resources
 
-When a connected server offers [resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources), Pi adds the resource tools used by Codex and OpenCode:
+When a connected server offers [resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources), October adds the resource tools used by Codex and OpenCode:
 
 - `list_mcp_resources` lists resources as JSON: `{ server?, resources: [{ server, uri, name, ... }], nextCursor? }`. With `server`, it lists one page; `cursor` continues with the next page. Without `server`, it lists every resource from every server.
 - `list_mcp_resource_templates` lists URI templates for resources the servers do not list directly.
@@ -245,13 +245,13 @@ When a connected server offers [resources](https://modelcontextprotocol.io/speci
 
 These tools reach every enabled, non-hidden server with resources. Their exposure is the widest exposure among those servers: `direct`, then `codemode` or `deferred`. Resource links in tool results identify `read_mcp_resource` and the server.
 
-Resources for MCP Apps, identified by `ui://` URIs or `text/html;profile=mcp-app`, are omitted because Pi does not render them. Resource icons are also omitted.
+Resources for MCP Apps, identified by `ui://` URIs or `text/html;profile=mcp-app`, are omitted because October does not render them. Resource icons are also omitted.
 
 Reading and listing resources is retried once after a transient HTTP error (408, 429, or 5xx). Tool calls are not retried because the server may already have performed them.
 
 ## Permissions
 
-Every MCP call passes through Pi's tool pipeline. Extension `tool_call` and `tool_result` handlers, including permission gates, therefore apply to MCP tools. Calls made from codemode scripts carry the codemode call ID as `parentToolCallId`.
+Every MCP call passes through October's tool pipeline. Extension `tool_call` and `tool_result` handlers, including permission gates, therefore apply to MCP tools. Calls made from codemode scripts carry the codemode call ID as `parentToolCallId`.
 
 `pi.getAllTools()` reports the annotations declared by each server: `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`. Permission extensions can use these hints to decide which calls require confirmation (see [Tool exposure](extensions.md#tool-exposure)). Resource tools are marked read-only.
 
@@ -267,7 +267,7 @@ Changes to enabled state or exposure apply only to the current session. A file-c
 
 An installed extension that registers `/mcp`, such as October's included `pi-mcp-adapter`, replaces upstream's built-in MCP support for sessions. October then does not read `mcp.json` or connect its servers in a session, and `/mcp` belongs to the extension. Remove the replacement to use the built-in behavior. To disable built-in MCP support without a replacement, disable `mcp` under Built-in in `october config`, or set `"extensions": ["-builtin:mcp"]` in [settings](settings.md#resources). October's settings-based servers remain available independently through `/mcp-settings status`. `--no-mcp` disables both built-in implementations for one run; third-party replacements control their own connections.
 
-An extension that registers `codemode` or `tool_search` similarly replaces the built-in tool with that name. Pi activates the replacement for MCP servers and waits for the servers its calls need only when it declares [`reachesTools`](extensions.md#tool-exposure). Shell-level `october mcp` commands always use the built-in implementation.
+An extension that registers `codemode` or `tool_search` similarly replaces the built-in tool with that name. October activates the replacement for MCP servers and waits for the servers its calls need only when it declares [`reachesTools`](extensions.md#tool-exposure). Shell-level `october mcp` commands always use the built-in implementation.
 
 ### Use MCP from the SDK
 

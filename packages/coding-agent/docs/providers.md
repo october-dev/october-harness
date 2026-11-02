@@ -9,9 +9,9 @@ Use `/login [provider]` to see the methods supported by a provider. Amazon Bedro
 
 ## Authenticate interactively
 
-Run `/login` and select a provider. Pi guides you through its OAuth or API-key flow and saves the resulting credential in [`auth.json`](configuration.md#agent-directory).
+Run `/login` and select a provider. October guides you through its OAuth or API-key flow and saves the resulting credential in [`auth.json`](configuration.md#agent-directory).
 
-On a remote or headless machine, an OAuth callback may not reach the local process. When prompted, paste the final redirect URL or authorization code back into Pi.
+On a remote or headless machine, an OAuth callback may not reach the local process. When prompted, paste the final redirect URL or authorization code back into October.
 
 Run `/logout` and select a provider to remove its stored credential. This does not unset environment variables, remove authentication from `models.json`, or revoke the credential at the provider.
 
@@ -19,11 +19,11 @@ Run `/logout` and select a provider to remove its stored credential. This does n
 
 ## Use an API key from the environment
 
-Environment variables are useful in CI and anywhere Pi should not store the key. Set the variable before starting Pi:
+Environment variables are useful in CI and anywhere October should not store the key. Set the variable before starting October:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-pi
+october
 ```
 
 This table covers providers with a single primary API-key variable. Providers that need additional configuration or support ambient credentials are covered under [Provider Specific Config](#provider-specific-config).
@@ -81,7 +81,7 @@ To use a secret manager without writing the resolved key to disk, set a provider
 }
 ```
 
-Pi runs the command when the key is first needed and caches its standard output for the process lifetime. Empty output, a timeout, or a nonzero exit leaves the key unresolved until Pi restarts.
+October runs the command when the key is first needed and caches its standard output for the process lifetime. Empty output, a timeout, or a nonzero exit leaves the key unresolved until October restarts.
 
 ## Provider Specific Config
 
@@ -103,11 +103,11 @@ A stored API-key credential can include an `env` object. Its values take priorit
 
 ### Radius
 
-Radius is a service crafted for Pi by the builders of Pi, Earendil Works. It provides a customizable AI gateway with organization-level controls and analytics built in, and artifacts for sharing what you create with Pi.
+Radius is an optional service operated by Earendil Works, the builders of upstream Pi. It provides a customizable AI gateway with organization-level controls and analytics built in, and artifacts for sharing what you create with October.
 
-To get started, run `/login radius` in Pi. This adds Radius as a provider, and its models appear in `/model` like any other provider's.
+To get started, run `/login radius` in October. This adds Radius as a provider, and its models appear in `/model` like any other provider's.
 
-Radius also has an MCP server, so Pi can manage Radius for you.
+Radius also has an MCP server, so October can manage Radius for you.
 
 Radius is currently in early alpha and evolving quickly. See [radius.earendil.com](https://radius.earendil.com) for more.
 
@@ -117,9 +117,9 @@ Radius authentication uses its gateway catalog and caches refreshed model metada
 
 Authenticate with `/login openrouter` or `OPENROUTER_API_KEY`.
 
-With a key, Pi lists only the OpenRouter chat models that key may use, with the key's context size, max output, and prices. These come from OpenRouter's `/models/user` endpoint and reflect guardrails and provider restrictions set in OpenRouter. Image and classifier models are not filtered.
+With a key, October lists only the OpenRouter chat models that key may use, with the key's context size, max output, and prices. These come from OpenRouter's `/models/user` endpoint and reflect guardrails and provider restrictions set in OpenRouter. Image and classifier models are not filtered.
 
-Pi refreshes the list in the background at startup in interactive mode, when `/model` opens, after `/login`, and on `pi update --models`. The last list is saved and used offline and in `pi -p` and RPC mode. After switching keys outside `/login`, the previous key's list stays until the next refresh.
+October refreshes the list in the background at startup in interactive mode, when `/model` opens, after `/login`, and on `october update --models`. The last list is saved and used offline and in `october -p` and RPC mode. After switching keys outside `/login`, the previous key's list stays until the next refresh.
 
 Regional endpoints filter models to their region. To use one, set the base URL in [`models.json`](models.md#configure-a-compatible-endpoint):
 
@@ -131,7 +131,7 @@ Regional endpoints filter models to their region. To use one, set the base URL i
 }
 ```
 
-If the base URL rejects the key at `/models/user` or does not have that endpoint, for example a proxy configured as the OpenRouter base URL, Pi lists every OpenRouter model.
+If the base URL rejects the key at `/models/user` or does not have that endpoint, for example a proxy configured as the OpenRouter base URL, October lists every OpenRouter model.
 
 ### Azure OpenAI
 
@@ -150,7 +150,7 @@ export AZURE_OPENAI_RESOURCE_NAME=your-resource
 
 Resource root URLs under `ai.azure.com`, `cognitiveservices.azure.com`, and `openai.azure.com` are normalized to the OpenAI API path.
 
-Pi sends the model ID as the deployment name. If a deployment has a different name, map it with `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`:
+October sends the model ID as the deployment name. If a deployment has a different name, map it with `AZURE_OPENAI_DEPLOYMENT_NAME_MAP`:
 
 ```bash
 export AZURE_OPENAI_DEPLOYMENT_NAME_MAP=gpt-5.4=my-gpt-deployment,deepseek-v4-pro=my-deepseek
@@ -158,7 +158,7 @@ export AZURE_OPENAI_DEPLOYMENT_NAME_MAP=gpt-5.4=my-gpt-deployment,deepseek-v4-pr
 
 `AZURE_OPENAI_API_VERSION` overrides the API version for OpenAI models (default `v1`).
 
-To use a Foundry model that Pi does not include, add it under `azure` in [`models.json`](models.md#configure-a-compatible-endpoint) with `api: "openai-completions"`. Custom models require a `baseUrl`; `AZURE_OPENAI_BASE_URL` and `AZURE_OPENAI_RESOURCE_NAME` take priority over it when set:
+To use a Foundry model that October does not include, add it under `azure` in [`models.json`](models.md#configure-a-compatible-endpoint) with `api: "openai-completions"`. Custom models require a `baseUrl`; `AZURE_OPENAI_BASE_URL` and `AZURE_OPENAI_RESOURCE_NAME` take priority over it when set:
 
 ```json
 {
@@ -195,7 +195,7 @@ export AWS_REGION=us-west-2
 # AWS_DEFAULT_REGION is also supported
 ```
 
-Pi also supports ECS task credentials and IRSA through the standard `AWS_CONTAINER_CREDENTIALS_*` and `AWS_WEB_IDENTITY_TOKEN_FILE` variables.
+October also supports ECS task credentials and IRSA through the standard `AWS_CONTAINER_CREDENTIALS_*` and `AWS_WEB_IDENTITY_TOKEN_FILE` variables.
 
 ### Cloudflare AI Gateway
 
@@ -209,7 +209,7 @@ export CLOUDFLARE_GATEWAY_ID=...
 
 The account and gateway IDs can come from the process environment or the credential's `env` object in `auth.json`.
 
-`CLOUDFLARE_API_KEY` authenticates Pi to the gateway. Upstream access can use Cloudflare unified billing, credentials stored in the gateway, or an `Authorization` header configured for the provider in `models.json`.
+`CLOUDFLARE_API_KEY` authenticates October to the gateway. Upstream access can use Cloudflare unified billing, credentials stored in the gateway, or an `Authorization` header configured for the provider in `models.json`.
 
 ### Cloudflare Workers AI
 

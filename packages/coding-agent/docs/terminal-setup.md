@@ -1,22 +1,22 @@
 # Configure your terminal
 
-Most modern terminals work with Pi without additional setup. Use this page when modified keys, scrolling, links, images, colors, or input-method editor (IME) positioning do not behave as expected.
+Most modern terminals work with October without additional setup. Use this page when modified keys, scrolling, links, images, colors, or input-method editor (IME) positioning do not behave as expected.
 
-Pi uses extended-key protocols so terminals can distinguish combinations such as `Shift+Enter` and `Alt+Enter` from plain `Enter`. Terminal proxies, multiplexers, and built-in IDE terminals can change or discard that information.
+October uses extended-key protocols so terminals can distinguish combinations such as `Shift+Enter` and `Alt+Enter` from plain `Enter`. Terminal proxies, multiplexers, and built-in IDE terminals can change or discard that information.
 
 ## Troubleshooting
 
 | Symptom | Start here |
 |---|---|
-| `Shift+Enter` submits instead of inserting a line | Your terminal's section below; for tmux, see [Run Pi in tmux](tmux.md) |
+| `Shift+Enter` submits instead of inserting a line | Your terminal's section below; for tmux, see [Run October in tmux](tmux.md) |
 | `Alt+Enter` does not queue a follow-up | [WezTerm](#wezterm), [Alacritty](#alacritty), or [Windows Terminal](#windows-terminal) |
 | Fullscreen scrolling is unusually slow | [iTerm2](#iterm2) |
 | Links work but show no hover preview | [Ghostty](#ghostty) |
 | Inline images or colors are not detected | [Override detected capabilities](#override-detected-capabilities) |
 | An IME candidate window appears in the wrong place | [WezTerm](#wezterm) or [IntelliJ IDEA](#intellij-idea-integrated-terminal) |
-| Modified keys fail only inside tmux | [Run Pi in tmux](tmux.md) |
+| Modified keys fail only inside tmux | [Run October in tmux](tmux.md) |
 
-Use `/hotkeys` to inspect Pi's active shortcuts. See [Keybindings](keybindings.md) to change them.
+Use `/hotkeys` to inspect October's active shortcuts. See [Keybindings](keybindings.md) to change them.
 
 ## Kitty
 
@@ -28,7 +28,7 @@ Regular terminal mode works without additional configuration.
 
 ### Fix slow fullscreen scrolling
 
-In fullscreen mode, Pi owns the viewport, so iTerm2 sends mouse-wheel reports instead of scrolling native terminal history. Fast trackpad gestures can then move only about one line at a time.
+In fullscreen mode, October owns the viewport, so iTerm2 sends mouse-wheel reports instead of scrolling native terminal history. Fast trackpad gestures can then move only about one line at a time.
 
 To change this behavior:
 
@@ -40,9 +40,9 @@ This is an iTerm2-wide setting and can also change native trackpad scrolling. Th
 
 ## Apple Terminal
 
-Pi enables enhanced key reporting when available. If Terminal.app still sends plain Return or `ESC` + Return for `Shift+Enter`, Pi uses a local macOS modifier fallback and treats it as `Shift+Enter`. `ESC` + Return without Shift held remains `Alt+Enter`.
+October enables enhanced key reporting when available. If Terminal.app still sends plain Return or `ESC` + Return for `Shift+Enter`, October uses a local macOS modifier fallback and treats it as `Shift+Enter`. `ESC` + Return without Shift held remains `Alt+Enter`.
 
-The fallback works only when Pi runs on the same Mac as Terminal.app. It cannot inspect the local modifier state when Pi runs on another machine over SSH.
+The fallback works only when October runs on the same Mac as Terminal.app. It cannot inspect the local modifier state when October runs on another machine over SSH.
 
 ## Ghostty
 
@@ -60,11 +60,11 @@ Older Claude Code configurations may contain:
 keybind = shift+enter=text:\n
 ```
 
-This sends a raw linefeed, which Pi cannot distinguish from `Ctrl+J`. Remove the mapping if an older Claude Code installation is the only reason you added it. Pi already binds `Ctrl+J` as a newline alternative, so the mapping may appear to work while still preventing Pi and tmux from receiving a real `Shift+Enter` event.
+This sends a raw linefeed, which October cannot distinguish from `Ctrl+J`. Remove the mapping if an older Claude Code installation is the only reason you added it. October already binds `Ctrl+J` as a newline alternative, so the mapping may appear to work while still preventing October and tmux from receiving a real `Shift+Enter` event.
 
 ### Open links in fullscreen mode
 
-Links remain clickable in fullscreen mode, but Ghostty does not show its normal hover underline or URL preview while Pi captures mouse input. Hold `Shift+Command` on macOS or `Shift+Ctrl` on Linux to use Ghostty's native link handling.
+Links remain clickable in fullscreen mode, but Ghostty does not show its normal hover underline or URL preview while October captures mouse input. Hold `Shift+Command` on macOS or `Shift+Ctrl` on Linux to use Ghostty's native link handling.
 
 ## WezTerm
 
@@ -79,7 +79,7 @@ return config
 
 ### Forward Alt+Enter on macOS
 
-WezTerm binds `Option+Enter` to fullscreen by default on macOS. To use it for Pi's follow-up queue, add this entry to your `config.keys` table:
+WezTerm binds `Option+Enter` to fullscreen by default on macOS. To use it for October's follow-up queue, add this entry to your `config.keys` table:
 
 ```lua
 {
@@ -106,18 +106,18 @@ return config
 
 ### Position an IME candidate window in WSL
 
-If CJK IME candidates do not follow Pi's text cursor in WSL, show the hardware cursor:
+If CJK IME candidates do not follow October's text cursor in WSL, show the hardware cursor:
 
 ```bash
 export PI_HARDWARE_CURSOR=1
-pi
+october
 ```
 
-You can instead set `showHardwareCursor` to `true` in Pi settings.
+You can instead set `showHardwareCursor` to `true` in October settings.
 
 ## Alacritty
 
-Alacritty normally reports `Shift+Enter`. On macOS, `Option+Enter` can arrive as plain `Enter`. Add this to `~/.config/alacritty/alacritty.toml` to forward it to Pi:
+Alacritty normally reports `Shift+Enter`. On macOS, `Option+Enter` can arrive as plain `Enter`. Add this to `~/.config/alacritty/alacritty.toml` to forward it to October:
 
 ```toml
 [[keyboard.bindings]]
@@ -166,11 +166,11 @@ Add these bindings to Zed's `keymap.json`:
 
 ## Windows Terminal
 
-Windows Terminal uses Pi's Windows and WSL shortcut defaults. See [Keybindings](keybindings.md) for the complete list.
+Windows Terminal uses October's Windows and WSL shortcut defaults. See [Keybindings](keybindings.md) for the complete list.
 
 ### Forward Shift+Enter
 
-When Pi runs natively on Windows, it checks the local Shift key state and treats plain Return or `ESC` + Return as `Shift+Enter` while Shift is held. This fallback does not work in WSL or over SSH. If `Shift+Enter` still submits, forward it explicitly.
+When October runs natively on Windows, it checks the local Shift key state and treats plain Return or `ESC` + Return as `Shift+Enter` while Shift is held. This fallback does not work in WSL or over SSH. If `Shift+Enter` still submits, forward it explicitly.
 
 Open Windows Terminal's `settings.json` with `Ctrl+Shift+,` or **Settings > Open JSON file**. Add this object to its `actions` array:
 
@@ -181,13 +181,13 @@ Open Windows Terminal's `settings.json` with `Ctrl+Shift+,` or **Settings > Open
 }
 ```
 
-Fully close and reopen Windows Terminal, then verify that `Shift+Enter` inserts a new line in Pi.
+Fully close and reopen Windows Terminal, then verify that `Shift+Enter` inserts a new line in October.
 
 ### Use Alt+Enter for follow-ups
 
-Windows Terminal binds `Alt+Enter` to fullscreen by default. Pi therefore uses `Ctrl+Q` for follow-ups on Windows and WSL.
+Windows Terminal binds `Alt+Enter` to fullscreen by default. October therefore uses `Ctrl+Q` for follow-ups on Windows and WSL.
 
-To use `Alt+Enter` instead, configure Windows Terminal to forward the key and bind `app.message.followUp` to `alt+enter` in Pi's `keybindings.json`. See [Keybindings](keybindings.md#assign-keybindings).
+To use `Alt+Enter` instead, configure Windows Terminal to forward the key and bind `app.message.followUp` to `alt+enter` in October's `keybindings.json`. See [Keybindings](keybindings.md#assign-keybindings).
 
 ## xfce4-terminal and Terminator
 
@@ -197,18 +197,18 @@ Use a terminal with modern extended-key support when you need those shortcuts, s
 
 ## IntelliJ IDEA integrated terminal
 
-IntelliJ IDEA's built-in terminal cannot reliably distinguish `Shift+Enter` from plain `Enter`. Use `Ctrl+J` for a newline or run Pi in a terminal with modern extended-key support.
+IntelliJ IDEA's built-in terminal cannot reliably distinguish `Shift+Enter` from plain `Enter`. Use `Ctrl+J` for a newline or run October in a terminal with modern extended-key support.
 
 If an IME candidate window does not follow the text cursor, show the hardware cursor:
 
 ```bash
 export PI_HARDWARE_CURSOR=1
-pi
+october
 ```
 
 ## Override detected capabilities
 
-Pi automatically detects OSC 8 hyperlinks, inline image protocols, and truecolor support. A terminal proxy or multiplexer can make that detection inaccurate.
+October automatically detects OSC 8 hyperlinks, inline image protocols, and truecolor support. A terminal proxy or multiplexer can make that detection inaccurate.
 
 | Capability | Environment variable | Setting |
 |---|---|---|
@@ -218,11 +218,11 @@ Pi automatically detects OSC 8 hyperlinks, inline image protocols, and truecolor
 
 Settings take precedence over environment variables. An unset value or `auto` preserves automatic detection.
 
-Only force a capability supported by the complete terminal path. Unsupported escape sequences can corrupt rendering. See [Environment Variables](environment-variables.md#pi-process-configuration) and [Settings](settings.md) for the canonical value definitions.
+Only force a capability supported by the complete terminal path. Unsupported escape sequences can corrupt rendering. See [Environment Variables](environment-variables.md#october-process-configuration) and [Settings](settings.md) for the canonical value definitions.
 
 ## Program status
 
-Pi reports its state with the [Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status), so terminals and agent dashboards can show whether it is working, waiting for you, done, or failed:
+October reports its state with the [Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status), so terminals and agent dashboards can show whether it is working, waiting for you, done, or failed:
 
 | State | When |
 |---|---|
@@ -230,6 +230,6 @@ Pi reports its state with the [Program Status Protocol (OSC 7501)](https://www.s
 | `blocked` | An extension dialog or login waits for you. The message is the dialog title. |
 | `done` | A run finished. The message is the session name. |
 | `error` | A run ended with an error that is not retried. The message is the first line of the error. |
-| `idle` | Pi started, or you cancelled the run. |
+| `idle` | October started, or you cancelled the run. |
 
-Reports never contain prompts or model output. Pi sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `PI_PROGRAM_STATUS=1` to send reports without asking, or `PI_PROGRAM_STATUS=0` to turn them off.
+Reports never contain prompts or model output. October sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `PI_PROGRAM_STATUS=1` to send reports without asking, or `PI_PROGRAM_STATUS=0` to turn them off.

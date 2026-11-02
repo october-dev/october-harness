@@ -320,7 +320,7 @@ export const SettingsSchema = Type.Object(
 			Type.Array(Type.String(), {
 				minItems: 1,
 				description:
-					'Command `pi update` runs to update Pi itself, in argv form such as ["mise", "use", "-g", "npm:{packageName}@{version}"]. Placeholders: {packageName}, {version}, {installSpec}. PI_SELF_UPDATE_COMMAND takes precedence. Global setting only.',
+					'Command `october update` runs to update October, in argv form such as ["mise", "use", "-g", "npm:{packageName}@{version}"]. Placeholders: {packageName}, {version}, {installSpec}. PI_SELF_UPDATE_COMMAND takes precedence. Global setting only.',
 			}),
 		),
 		collapseChangelog: Type.Optional(
@@ -437,7 +437,9 @@ export const SettingsSchema = Type.Object(
 			}),
 		),
 		httpProxy: Type.Optional(
-			Type.String({ description: "Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients." }),
+			Type.String({
+				description: "Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for October-managed HTTP clients.",
+			}),
 		),
 		httpIdleTimeoutMs: Type.Optional(
 			timeoutSetting({

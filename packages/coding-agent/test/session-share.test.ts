@@ -129,7 +129,7 @@ describe("shareSession", () => {
 			"--public=false",
 			expect.any(String),
 		]);
-		expect(statuses[0]).toContain("https://pi.dev/session/#forced-gist");
+		expect(statuses[0]).toContain("https://www.october.dev/session/#forced-gist");
 	});
 
 	it("reports missing Radius authentication when Radius is forced", async () => {

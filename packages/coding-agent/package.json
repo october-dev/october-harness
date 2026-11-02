@@ -1,6 +1,6 @@
 {
 	"name": "@october-dev/october",
-	"version": "0.87.1-october.5",
+	"version": "1.5.0-october.1",
 	"description": "October's coding agent — inference, TUI, and october-bus (a fork of pi)",
 	"type": "module",
 	"piConfig": {
@@ -39,16 +39,16 @@
 		"copy-assets": "node ../../scripts/package-files.mjs copy \"src/modes/interactive/theme/*.json\" dist/modes/interactive/theme && node ../../scripts/package-files.mjs copy \"src/modes/interactive/assets/*.png\" dist/modes/interactive/assets && node ../../scripts/package-files.mjs copy src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html && node ../../scripts/package-files.mjs copy \"src/core/export-html/vendor/*.js\" dist/core/export-html/vendor",
 		"copy-binary-assets": "node ../../scripts/package-files.mjs copy package.json README.md CHANGELOG.md docs examples ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist && node ../../scripts/package-files.mjs copy \"src/modes/interactive/theme/*.json\" dist/theme && node ../../scripts/package-files.mjs copy \"src/modes/interactive/assets/*.png\" dist/assets && node ../../scripts/package-files.mjs copy src/core/export-html/template.html dist/export-html && node ../../scripts/package-files.mjs copy \"src/core/export-html/vendor/*.js\" dist/export-html/vendor",
 		"test": "vitest --run",
-		"generate:schemas": "node --import ./src/experimental/source-resolver.ts scripts/generate-schemas.ts",
-		"generate:references": "node --import ./src/experimental/source-resolver.ts scripts/generate-references.ts",
+		"generate:schemas": "node scripts/generate-schemas.ts",
+		"generate:references": "node scripts/generate-references.ts",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
-		"@earendil-works/pi-agent-core": "1.4.0",
-		"@earendil-works/pi-ai": "1.4.0",
-		"@earendil-works/pi-codemode": "1.4.0",
-		"@earendil-works/pi-mcp": "1.4.0",
-		"@earendil-works/pi-tui": "1.4.0",
+		"@earendil-works/pi-agent-core": "1.5.0",
+		"@earendil-works/pi-ai": "1.5.0",
+		"@earendil-works/pi-codemode": "1.5.0",
+		"@earendil-works/pi-mcp": "1.5.0",
+		"@earendil-works/pi-tui": "1.5.0",
 		"@modelcontextprotocol/client": "2.4.0",
 		"@silvia-odwyer/photon-node": "0.3.4",
 		"brace-expansion": "5.0.12",

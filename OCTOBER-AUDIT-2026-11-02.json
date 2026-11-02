@@ -1,0 +1,129 @@
+{
+  "date": "2026-11-02",
+  "candidate": "1.5.0-october.1",
+  "stable": {
+    "version": "0.87.1-october.5",
+    "commit": "dd4e9c69d14421207e137b9dc9aa13e13e17aa95",
+    "integrity": "sha512-PXxRD/Hf/HJYSiROW0W0kY1EJuF7BVfC4q/rP+iKZ5Jg+2OO1cbZN24nHqnukEnVaw6Z7vzEVAMKCrjwfSIYyg=="
+  },
+  "beforeSync": "1c215592622a90f38bcb5b42a19a4b094dd90979",
+  "upstream": "642e30b68930a644050794011555a04ed9027eb4",
+  "remainingUpstreamCommitsMerged": 43,
+  "filePreservation": {
+    "stable": {
+      "addedFiles": 81,
+      "unchanged": 63,
+      "merged": 18,
+      "missing": []
+    },
+    "beforeSync": {
+      "addedFiles": 124,
+      "unchanged": 104,
+      "merged": 20,
+      "missing": []
+    }
+  },
+  "sdkPreservation": {
+    "stableOctoberExports": [
+      "commitPortableImport",
+      "exportPortableSession",
+      "formatPortableSessionDiagnostics",
+      "importPortableSession",
+      "PORTABLE_SESSION_MARKER",
+      "PortableImportOptions",
+      "PortableSessionDiagnostic",
+      "PortableSessionError",
+      "PortableSessionErrorCode",
+      "PortableSessionExportResult",
+      "PortableSessionSerialization",
+      "PortableSessionSource",
+      "PreparedPortableImport",
+      "preparePortableImport",
+      "SessionImportError",
+      "SessionImportFileNotFoundError",
+      "SessionImportIdConflictError",
+      "serializePortableSession"
+    ],
+    "preSyncOctoberExports": [
+      "commitPortableImport",
+      "exportPortableSession",
+      "formatPortableSessionDiagnostics",
+      "importPortableSession",
+      "PORTABLE_SESSION_MARKER",
+      "PortableImportOptions",
+      "PortableSessionDiagnostic",
+      "PortableSessionError",
+      "PortableSessionErrorCode",
+      "PortableSessionExportResult",
+      "PortableSessionSerialization",
+      "PortableSessionSource",
+      "PreparedPortableImport",
+      "preparePortableImport",
+      "SessionImportError",
+      "SessionImportFileNotFoundError",
+      "SessionImportIdConflictError",
+      "serializePortableSession",
+      "ShellRunnerMountSettings",
+      "ShellRunnerSettings",
+      "resolveShellRunner",
+      "ShellRunnerSelection",
+      "ShellRunnerSettingsInput",
+      "BashExecOptions"
+    ],
+    "missingStableExports": [],
+    "missingPreSyncExports": []
+  },
+  "packagePreservation": {
+    "stableOctoberModules": 29,
+    "missing": []
+  },
+  "approvedUpstreamRemovals": [
+    "old experimental server/client/protocol stack",
+    "experimental agent harness",
+    "SQLite session backend",
+    "sandbox example"
+  ],
+  "mergeReview": [
+    "October native MCP settings were moved into settings-config.ts and settings-extension.ts while the upstream MCP implementation occupies index.ts and config.ts.",
+    "October provider model types now use ProviderChatModelConfig; catalog behavior is preserved.",
+    "October Bus custom-message wake skips a second before_agent_start inbox fetch.",
+    "OAuth login options now carry the upstream subscription flag.",
+    "Background jobs use Type.Enum in place of the removed upstream StringEnum API.",
+    "Documentation generator commands repaired after upstream source-resolver removal."
+  ],
+  "packaging": [
+    "npm CLI and SDK use bundled workspace code, retaining merged changes beyond the published Pi dependency versions.",
+    "Undici remains an exact pinned external dependency so Bun can use its runtime compatibility implementation.",
+    "The October tarball keeps the filename required by publish-october.yml."
+  ],
+  "validation": {
+    "build": "passed",
+    "repositoryCheck": "passed",
+    "npmAuditVulnerabilities": 0,
+    "isolatedNpmInstall": "passed",
+    "isolatedBunInstall": "passed (Bun 1.3.14)",
+    "standaloneBuild": "passed (Linux ARM64)",
+    "liveOctoberPrompts": {
+      "node": "passed",
+      "standaloneBun": "passed"
+    },
+    "interactiveOctoberReplies": {
+      "node": "passed",
+      "standaloneBun": "passed"
+    },
+    "packagingRegressionTests": {
+      "passed": 14,
+      "failed": 0
+    },
+    "codingAgentSuite": {
+      "initialPassed": 3442,
+      "initialFailed": 16,
+      "failuresFixedAndRetested": 16
+    },
+    "otherSuiteLimits": [
+      "Two 20,000-deep durable stress tests exceed their 60-second timeouts; files match upstream.",
+      "Six env test files require a Rust daemon unavailable on this host; package matches upstream."
+    ]
+  },
+  "scope": "File/export preservation and regression checks; not a proof of all possible runtime behaviors."
+}

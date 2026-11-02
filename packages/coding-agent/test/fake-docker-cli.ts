@@ -146,10 +146,8 @@ if (sub === "run") {
 	const file = path.join(containers, name);
 	const behavior = read("run-behavior", "").trim();
 	if (behavior === "missing-image") fail("docker: Error response from daemon: No such image: " + rest[j] + ".", 125);
-	if (behavior === "late-create") {
-		const script = "setTimeout(() => require('fs').writeFileSync(" + JSON.stringify(file) + ", ''), 400)";
-		cp.spawn(process.execPath, ["-e", script], { detached: true, stdio: "ignore" }).unref();
-	} else {
+	// The test supplies a delayed daemon-side creation after the client has exited.
+	if (behavior !== "late-create") {
 		fs.writeFileSync(file, "");
 	}
 	if (behavior === "lock-private-dir") {

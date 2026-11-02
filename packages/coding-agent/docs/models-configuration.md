@@ -4,7 +4,7 @@
 
 This reference lists the fields of `models.json`. See [Configure a compatible endpoint](models.md#configure-a-compatible-endpoint) for examples and [Configuration](configuration.md#agent-directory) for the file location.
 
-Add `"$schema": "https://pi.dev/schemas/models.schema.json"` to `models.json` for editor validation and completion.
+Add `"$schema": "https://raw.githubusercontent.com/october-dev/october-harness/main/packages/coding-agent/schemas/models.schema.json"` to `models.json` for editor validation and completion.
 
 ## Providers
 
@@ -48,7 +48,7 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `cost.tiers[].output` | number |  | Required. Output cost in USD per million tokens. |
 | `cost.tiers[].cacheRead` | number |  | Required. Cache-read cost in USD per million tokens. |
 | `cost.tiers[].cacheWrite` | number |  | Required. Cache-write cost in USD per million tokens. |
-| `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Pi warms only tiers with a known lifetime. |
+| `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. October warms only tiers with a known lifetime. |
 | `contextWindow` | number | `128000` | Context window in tokens. |
 | `maxTokens` | number | `16384` | Maximum output tokens. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
@@ -78,7 +78,7 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 | `cost.tiers[].output` | number |  | Required. Output cost in USD per million tokens. |
 | `cost.tiers[].cacheRead` | number |  | Required. Cache-read cost in USD per million tokens. |
 | `cost.tiers[].cacheWrite` | number |  | Required. Cache-write cost in USD per million tokens. |
-| `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. Pi warms only tiers with a known lifetime. |
+| `promptCache` | object |  | Best-effort prompt cache lifetime in seconds for the short and long retention tiers. October warms only tiers with a known lifetime. |
 | `contextWindow` | number |  | Context window in tokens. |
 | `maxTokens` | number |  | Maximum output tokens. |
 | `samplingParams` | object |  | Fields merged into every request body. Applies only to OpenAI-compatible APIs. |
@@ -120,7 +120,7 @@ See [Describe model input and caching](models.md#describe-model-input-and-cachin
 | `requiresAssistantAfterToolResult` | boolean |  | Whether a user message after tool results requires an assistant message in between. Default: auto-detected from URL. |
 | `requiresThinkingAsText` | boolean |  | Whether thinking blocks must be converted to text blocks with &lt;thinking> delimiters. Default: auto-detected from URL. |
 | `requiresReasoningContentOnAssistantMessages` | boolean |  | Whether all replayed assistant messages must include an empty reasoning_content field when reasoning is enabled. Default: auto-detected from URL. |
-| `thinkingFormat` | `"openai" \| "openrouter" \| "deepseek" \| "together" \| "baseten" \| "zai" \| "qwen" \| "chat-template" \| "qwen-chat-template" \| "string-thinking" \| "ant-ling"` |  | Format for reasoning or thinking parameters. When omitted, Pi auto-detects the format from the provider URL. "openai" uses reasoning_effort, "openrouter" uses reasoning.effort, "deepseek" uses thinking.type plus reasoning_effort when supported, "together" uses reasoning.enabled plus reasoning_effort when supported, "baseten" uses configurable chat_template_args plus reasoning_effort when supported, "zai" uses thinking.type, "qwen" uses top-level enable_thinking, "qwen-chat-template" uses chat_template_kwargs.enable_thinking and preserve_thinking, "chat-template" uses configurable chat_template_kwargs, "string-thinking" uses top-level thinking, and "ant-ling" uses reasoning.effort only when the mapped effort is non-null. |
+| `thinkingFormat` | `"openai" \| "openrouter" \| "deepseek" \| "together" \| "baseten" \| "zai" \| "qwen" \| "chat-template" \| "qwen-chat-template" \| "string-thinking" \| "ant-ling"` |  | Format for reasoning or thinking parameters. When omitted, October auto-detects the format from the provider URL. "openai" uses reasoning_effort, "openrouter" uses reasoning.effort, "deepseek" uses thinking.type plus reasoning_effort when supported, "together" uses reasoning.enabled plus reasoning_effort when supported, "baseten" uses configurable chat_template_args plus reasoning_effort when supported, "zai" uses thinking.type, "qwen" uses top-level enable_thinking, "qwen-chat-template" uses chat_template_kwargs.enable_thinking and preserve_thinking, "chat-template" uses configurable chat_template_kwargs, "string-thinking" uses top-level thinking, and "ant-ling" uses reasoning.effort only when the mapped effort is non-null. |
 | `chatTemplateKwargs` | object |  | Kwargs sent as chat_template_kwargs when thinkingFormat is "chat-template". Use $var with "thinking.enabled", "thinking.effort", or "thinking.budget" for pi-controlled values. |
 | `chatTemplateArgs` | object |  | Arguments sent as chat_template_args when thinkingFormat is "baseten". Use $var with "thinking.enabled", "thinking.effort", or "thinking.budget" for pi-controlled values. |
 | `openRouterRouting` | object |  | OpenRouter provider routing preferences. Controls which upstream providers OpenRouter routes requests to. Sent as the provider field in the OpenRouter API request body. See https://openrouter.ai/docs/guides/routing/provider-selection. |

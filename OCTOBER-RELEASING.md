@@ -2,13 +2,13 @@
 
 Pi remains the source of truth for inherited packages. October publishes only `@october-dev/october`; never use Pi's root `publish`, `release:patch`, or `release:minor` commands to publish this fork. Those commands intentionally retain Pi's lockstep/all-workspace release model.
 
-The October candidate version is `0.87.1-october.5`. Its upstream dependency versions stay on Pi 0.87.1. Keep the October dependency in `packages/evals/package.json` aligned when changing the October version. Refresh the root lockfile without scripts and regenerate the coding-agent shrinkwrap/install lock using the repository helpers.
+The October candidate version is `1.5.0-october.1`. Its upstream dependency versions stay on Pi 1.5.0. Keep the October dependency in `packages/evals/package.json` aligned when changing the October version. Refresh the root lockfile without scripts and regenerate the coding-agent install lock using the repository helper; do not ship an npm shrinkwrap.
 
 ## Required gates
 
 1. Confirm the `/cl` changelog audit required by `AGENTS.md`. Review `[Unreleased]` before finalizing the release.
 2. Run `npm run hydrate:model-data`, `npm run build:offline`, `npm run check`, and the October regression tests. Run `./test.sh` for the isolated non-e2e suite.
-3. Run `node scripts/october-release.mjs pack` from the repository root. It creates a fresh temporary directory, packs only October, and tests isolated npm and Bun installs against the actual published Pi dependencies. It never publishes or overwrites an existing output directory. Both installs expose `october`, not `pi`.
+3. Run `node scripts/october-release.mjs pack` from the repository root. It creates a fresh temporary directory, packs only October, and tests isolated npm and Bun installs against the actual published dependencies. The CLI and SDK load bundled workspace code so October changes and upstream commits newer than those dependencies reach users. Undici stays external for Bun's runtime compatibility. The checks verify both entry points use the bundle. Packing never publishes or overwrites an existing output directory. Both installs expose `october`, not `pi`.
 4. Build and smoke-test the Bun binary with `scripts/build-binaries.sh` for the host platform. Use a fresh temporary output directory. Outside the repo, check Node and compiled Bun `--help`, `--version`, `--list-models`, a real prompt, and an interactive model reply. Verify an upgraded profile opens without “What's New”. As required by `AGENTS.md`, missing live-provider smoke is a release blocker unless explicitly accepted.
 5. Commit only reviewed changes with the user's authorization; preserve unrelated local work. Obtain explicit approval to use this October-only release path instead of the inherited Pi lockstep release instructions. Do not publish a dirty or uncommitted candidate.
 

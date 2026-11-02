@@ -10,7 +10,8 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { SettingsSchema } from "../src/core/settings-schema.ts";
 import { validateThemeJson } from "../src/modes/interactive/theme/theme-schema.ts";
 
-const schemaBaseUrl = "https://pi.dev/schemas";
+const schemaBaseUrl =
+	"https://raw.githubusercontent.com/october-dev/october-harness/main/packages/coding-agent/schemas";
 const temporaryDirectories: string[] = [];
 
 afterEach(() => {
@@ -51,8 +52,8 @@ describe("generated configuration schemas", () => {
 		const accent = schema.properties.colors.properties.accent;
 		const colorValue = accent.$ref ? schema.$defs.ColorValue : accent;
 		expect(schema).toMatchObject({
-			title: "Pi Coding Agent Theme",
-			description: "Theme schema for Pi coding agent",
+			title: "October Coding Agent Theme",
+			description: "Theme schema for October coding agent",
 			properties: {
 				colors: {
 					description: expect.stringContaining("use compatible fallbacks"),

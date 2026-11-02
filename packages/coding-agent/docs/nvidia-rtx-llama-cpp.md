@@ -1,19 +1,19 @@
-# Run Pi with NVIDIA RTX and llama.cpp
+# Run October with NVIDIA RTX and llama.cpp
 
-[NVIDIA Local AI Inference Recipes](https://nvidia.github.io/local-ai-inference-recipes/index.html) provides llama.cpp settings tuned for specific NVIDIA hardware and models. Each recipe gives a single-model `llama-server` command. Pi works with the llama.cpp router, which can serve and manage several models, so this guide converts the recipe command into a router preset.
+[NVIDIA Local AI Inference Recipes](https://nvidia.github.io/local-ai-inference-recipes/index.html) provides llama.cpp settings tuned for specific NVIDIA hardware and models. Each recipe gives a single-model `llama-server` command. October works with the llama.cpp router, which can serve and manage several models, so this guide converts the recipe command into a router preset.
 
-The examples below use Windows PowerShell. See [Local Models with llama.cpp](llama-cpp.md) for Pi's complete router and model-management reference.
+The examples below use Windows PowerShell. See [Local Models with llama.cpp](llama-cpp.md) for October's complete router and model-management reference.
 
 ## Before you begin
 
 1. Open the [recipe catalog](https://nvidia.github.io/local-ai-inference-recipes/index.html), select your hardware, operating system, and model, then choose **llama.cpp**. Check the prerequisites and memory requirements. Keep the recipe's launch command for the conversion below.
 2. Install llama.cpp with the recipe's setup instructions. The recipe's settings depend on its build, for example CUDA support or speculative decoding options.
 3. Run `llama-server --help` and check that it lists `--models-preset`. Without it, the build cannot load the recipe as a router preset. Use a newer build that still meets the recipe's requirements.
-4. Install Pi with the [Quickstart](quickstart.md). On native Windows, also see [Run Pi on Windows](windows.md).
+4. Install October with the [Quickstart](quickstart.md). On native Windows, also see [Run October on Windows](windows.md).
 
 ## Convert the recipe to a preset
 
-A preset lists the settings for one or more models. Each section name becomes the model ID shown in Pi. Save the preset next to `llama-server`, or pass its full path when starting the router.
+A preset lists the settings for one or more models. Each section name becomes the model ID shown in October. Save the preset next to `llama-server`, or pass its full path when starting the router.
 
 Convert each option from the recipe command into one preset line:
 
@@ -89,8 +89,8 @@ If the recipe requires a Hugging Face token, set `$env:HF_TOKEN` in the same Pow
 
 Use the [router health checks](llama-cpp.md#troubleshooting) to confirm that the server is ready. In Windows PowerShell, use `curl.exe` rather than `curl`, which PowerShell maps to a different command. The model is ready when `/models` lists `qwen3.8-27b` with the status `loaded`.
 
-## Use the model in Pi
+## Use the model in October
 
-Follow [Configure Pi](llama-cpp.md#configure-pi) and connect to `http://127.0.0.1:8080`. The preset section name is the model ID, so select `qwen3.8-27b` in `/model` for this example.
+Follow [Configure October](llama-cpp.md#configure-october) and connect to `http://127.0.0.1:8080`. The preset section name is the model ID, so select `qwen3.8-27b` in `/model` for this example.
 
 NVIDIA recipe memory settings assume that only the selected model uses the GPU. If `/llama` shows other loaded models, unload them before using the recipe model.

@@ -1,8 +1,8 @@
 # CLI Integration
 
-By default, running `pi` opens the interactive terminal interface. When input or output is piped or redirected, Pi uses print mode instead. You can also select print, JSON, or RPC mode explicitly for scripts and applications.
+By default, running `october` opens the interactive terminal interface. When input or output is piped or redirected, October uses print mode instead. You can also select print, JSON, or RPC mode explicitly for scripts and applications.
 
-All four modes use the same agent, sessions, resources, and tools. The mode determines how input enters Pi, how output is exposed, and whether the process remains available for more commands.
+All four modes use the same agent, sessions, resources, and tools. The mode determines how input enters October, how output is exposed, and whether the process remains available for more commands.
 
 The SDK is not a CLI mode. It embeds the agent directly in a Node.js or Bun process. See the [SDK](sdk.md) when direct TypeScript access is preferable to a process boundary.
 
@@ -10,7 +10,7 @@ The SDK is not a CLI mode. It embeds the agent directly in a Node.js or Bun proc
 
 | Mode | Interface | Lifetime | Use it when |
 |---|---|---|---|
-| Interactive | Terminal UI | Until the user exits | A person is working with Pi directly |
+| Interactive | Terminal UI | Until the user exits | A person is working with October directly |
 | Print | Final text on stdout | One invocation | A script needs the final assistant response |
 | JSON | JSONL events on stdout | One invocation | A process needs structured progress from a run |
 | RPC | JSONL commands, responses, and events | Long-lived | A process needs bidirectional control |
@@ -22,7 +22,7 @@ CLI options still select the working directory, model, tools, resources, and ses
 Print mode runs the supplied prompts, writes the final assistant text to stdout, and exits:
 
 ```bash
-pi --print "Summarize the changes in this repository"
+october --print "Summarize the changes in this repository"
 ```
 
 Use print mode when only the final text is needed, including command substitution, pipelines, and one-shot jobs. Intermediate events are not exposed.
@@ -36,14 +36,14 @@ When no mode is selected explicitly, non-TTY stdin or stdout also selects print 
 JSON mode writes a session header followed by agent and session events as newline-delimited JSON:
 
 ```bash
-pi --mode json "Review this repository" > events.jsonl
+october --mode json "Review this repository" > events.jsonl
 ```
 
 This is structured event output, not a single JSON result or a constraint on the format of the model’s response.
 
 All prompts are supplied when the process starts. The process streams events for that run and then exits; it does not accept later commands.
 
-A failed or aborted assistant response appears in the event stream but does not by itself produce a nonzero exit status. Inspect the events when success or failure matters. Pi still exits nonzero if the invocation throws an error.
+A failed or aborted assistant response appears in the event stream but does not by itself produce a nonzero exit status. Inspect the events when success or failure matters. October still exits nonzero if the invocation throws an error.
 
 Streaming `message_update` records contain deltas rather than a growing message snapshot. Assemble live output from the delta events, then replace it with the authoritative message from `message_end`.
 
@@ -51,12 +51,12 @@ Streaming `message_update` records contain deltas rather than a growing message 
 
 Stdout is reserved for JSONL. Diagnostics and application logging are written to stderr. See [JSON Event Stream](json.md) for framing, event shapes, and reconstruction rules.
 
-## Control Pi with RPC
+## Control October with RPC
 
-RPC mode keeps Pi running while another process sends commands and receives responses and events:
+RPC mode keeps October running while another process sends commands and receives responses and events:
 
 ```bash
-pi --mode rpc --no-session
+october --mode rpc --no-session
 ```
 
 Commands are JSON objects written to stdin. Responses and events are JSON objects written to stdout. Every record occupies one line.
@@ -69,17 +69,17 @@ RPC commands can change models, inspect state, manage sessions, run shell comman
 
 Extension dialogs form a request-response subprotocol. Other extension UI updates are notifications that a client may display or ignore. TUI-only extension capabilities are unavailable or degraded outside interactive mode.
 
-For Node.js or TypeScript integrations, prefer `RpcClient` from `@earendil-works/pi-coding-agent`. It starts a Pi RPC child process, correlates requests, exposes typed command methods, and delivers session events to listeners.
+For Node.js or TypeScript integrations, prefer `RpcClient` from `@october-dev/october`. It starts a October RPC child process, correlates requests, exposes typed command methods, and delivers session events to listeners.
 
 The [RPC client example](../examples/rpc-client.ts) sends one prompt, streams text and tool activity, waits for `agent_settled`, and shuts down the child process. It is included in the repository’s TypeScript checks.
 
 `RpcClient.promptAndWait()` installs its event listener before sending the prompt, avoiding a race with fast completions. For separate operations, subscribe before calling `prompt()` and call `waitForIdle()` only while a run is active.
 
-The client requires a path to a runnable Pi CLI. The repository example points at `dist/cli.js`, so the package must be built before that example runs from a checkout.
+The client requires a path to a runnable October CLI. The repository example points at `dist/cli.js`, so the package must be built before that example runs from a checkout.
 
 If you are building a client without `RpcClient`, start with [RPC Protocol](rpc.md), then use [RPC Commands](rpc-commands.md) and [JSON Event Stream](json.md) as the wire references.
 
-## Fork and rebrand Pi
+## Fork and rebrand October
 
 A source fork can change the CLI name and configuration directory through `package.json`:
 

@@ -42,7 +42,7 @@ interface BugReportOptions {
 type Overlay = Container & { dispose?: () => void };
 
 const DISCLAIMER =
-	"This report goes to the Pi developers (Earendil) and is not shared publicly. It includes your pi version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session.";
+	"Create an October diagnostic report to export and attach to an October issue. It includes your October version, operating system, the current model and provider configuration (without API keys), loaded extensions, settings, and provider error diagnostics from this session. The optional Radius upload sends the report to Earendil, the Radius operator.";
 const TRANSCRIPT_NOTE =
 	"The transcript contains your messages, model output, tool calls and their results, including file contents and command output read during this session.";
 
@@ -133,16 +133,16 @@ async function promptForOptions(
 	const description = hint.trim();
 	const delivery = await choose(
 		context,
-		"Bug report",
-		["Upload Report", "Export as Zip", "Cancel"],
-		`Description: ${description || "none"}\nTranscript: ${includeSession ? "included" : "not included"}\nSummary: ${includeSummary ? `written by ${context.session.model?.name ?? "the current model"}` : "none"}\n\nUpload sends the report to ${new URL(getRadiusGatewayUrl()).host}. Export writes a zip archive to the current directory instead.`,
+		"October diagnostic report",
+		["Export as Zip", "Upload to Radius", "Cancel"],
+		`Description: ${description || "none"}\nTranscript: ${includeSession ? "included" : "not included"}\nSummary: ${includeSummary ? `written by ${context.session.model?.name ?? "the current model"}` : "none"}\n\nExport writes a zip archive to the current directory. Upload sends the report to ${new URL(getRadiusGatewayUrl()).host}, operated by Earendil Works.`,
 	);
 	if (!delivery || delivery === "Cancel") return undefined;
 	return {
 		hint: description || undefined,
 		includeSession,
 		includeSummary,
-		delivery: delivery === "Upload Report" ? "upload" : "zip",
+		delivery: delivery === "Upload to Radius" ? "upload" : "zip",
 	};
 }
 
@@ -207,7 +207,9 @@ async function exportZip(context: BugReportContext, bundle: BugReportBundle): Pr
 		return;
 	}
 	recordInSession(context.session, bundle, { delivery: "zip", path: archivePath });
-	context.showStatus(`Bug report exported to: ${archivePath}\nReport ID: ${bundle.metadata.id}`);
+	context.showStatus(
+		`Bug report exported to: ${archivePath}\nReport ID: ${bundle.metadata.id}\nOctober issues: https://github.com/october-dev/october-harness/issues/new`,
+	);
 }
 
 function recordInSession(

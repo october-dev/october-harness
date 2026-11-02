@@ -18,6 +18,9 @@ const banner = {
 const allowedExternalPackages = new Set([
 	"@silvia-odwyer/photon-node",
 	"jiti",
+	// Bun supplies its own Undici implementation; embedding Node's implementation
+	// bypasses that compatibility layer (including worker_threads APIs).
+	"undici",
 	// Optional native accelerators. Their callers fall back to JavaScript when absent.
 	"bufferutil",
 	"utf-8-validate",
@@ -81,7 +84,7 @@ function commonBuildOptions() {
 		banner,
 		bundle: true,
 		define: { PI_BUNDLED_NODE: "true" },
-		external: ["@silvia-odwyer/photon-node"],
+		external: ["@silvia-odwyer/photon-node", "undici"],
 		format: "esm",
 		legalComments: "none",
 		logLevel: "warning",
@@ -153,6 +156,16 @@ for (const entry of [
 
 rmSync(bundleDir, { force: true, recursive: true });
 mkdirSync(bundleDir, { recursive: true });
+
+// Keep the compiler output for standalone Bun builds and repeat bundle builds.
+// npm's public entries below must use this checkout's merged workspace code.
+for (const name of ["cli", "index"]) {
+	const source = readFileSync(join(codingAgentDistDir, `${name}.js`), "utf8");
+	if (!source.includes('"./bundle/')) {
+		writeFileSync(join(codingAgentDistDir, `${name}-unbundled.js`), source);
+	}
+	writeFileSync(join(codingAgentDistDir, `${name}.js`), readFileSync(join(codingAgentDistDir, `${name}-unbundled.js`)));
+}
 
 const mainResult = await build({
 	...commonBuildOptions(),
@@ -253,6 +266,16 @@ createRequire(import.meta.url)("./cli-runtime.js");
 writeFileSync(join(bundleDir, "cli.js"), cliLauncher);
 chmodSync(join(bundleDir, "cli.js"), 0o755);
 chmodSync(join(bundleDir, "rpc-entry.js"), 0o755);
+
+// Preserve the Node-only version preflight before loading the bundled runtime.
+const cliSource = readFileSync(join(codingAgentDistDir, "cli-unbundled.js"), "utf8");
+if (!cliSource.includes('"./cli-run.js"')) throw new Error("CLI bootstrap no longer loads cli-run.js");
+writeFileSync(join(codingAgentDistDir, "cli.js"), cliSource.replace('"./cli-run.js"', '"./bundle/cli-runtime.js"'));
+writeFileSync(join(codingAgentDistDir, "index.js"), 'export * from "./bundle/index.js";\n');
+// Bun must bundle its own runtime setup and workspace modules together, without
+// introducing a second copy of the Node bundle's module state.
+const bunCli = join(codingAgentDistDir, "bun", "cli.js");
+writeFileSync(bunCli, readFileSync(bunCli, "utf8").replace('"../cli.js"', '"../cli-unbundled.js"'));
 
 const files = new Set(metafiles.flatMap((metafile) => Object.keys(metafile.outputs))).size + 1;
 const mib = (outputBytes(metafiles) + cliLauncher.length) / (1024 * 1024);

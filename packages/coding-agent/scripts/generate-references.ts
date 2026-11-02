@@ -58,7 +58,7 @@ const referenceArtifacts: readonly ReferenceArtifact[] = [
 		title: "Models Configuration",
 		intro: [
 			"This reference lists the fields of `models.json`. See [Configure a compatible endpoint](models.md#configure-a-compatible-endpoint) for examples and [Configuration](configuration.md#agent-directory) for the file location.",
-			'Add `"$schema": "https://pi.dev/schemas/models.schema.json"` to `models.json` for editor validation and completion.',
+			'Add `"$schema": "https://raw.githubusercontent.com/october-dev/october-harness/main/packages/coding-agent/schemas/models.schema.json"` to `models.json` for editor validation and completion.',
 		].join("\n\n"),
 		sections: [
 			{
@@ -134,7 +134,8 @@ function referenceRows(schema: ReferenceSchema, section: ReferenceSection, prefi
 		const defaultText = field.default === undefined ? "" : `\`${escapeTableText(JSON.stringify(field.default))}\``;
 		const description = [schema.required?.includes(name) ? "Required." : undefined, field.description]
 			.filter((text) => text !== undefined)
-			.join(" ");
+			.join(" ")
+			.replace(/\bPi\b/g, "October");
 		rows.push(
 			`| \`${path}\` | ${link ? `[${typeText}](${link})` : typeText} | ${defaultText} | ${escapeTableText(description)} |`,
 		);

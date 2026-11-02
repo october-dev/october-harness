@@ -622,7 +622,10 @@ describeUnix("Docker shell runner (fake docker CLI)", () => {
 			await abortWhenRunning(controller);
 			await expect(run).rejects.toThrow(/^aborted$/);
 			const name = lastName();
-			await new Promise((resolve) => setTimeout(resolve, 700));
+			// The daemon can finish creating the container after the client and first removal exit.
+			// Trigger that ordering explicitly instead of racing process startup against a timer.
+			expect(docker.calls("rm").map((call) => call.argv.at(-1))).toEqual([name]);
+			writeFileSync(join(docker.stateDir, "containers", name), "");
 			expect(docker.containerExists(name)).toBe(true);
 			removeOutstandingDockerContainers();
 			expect(docker.containerExists(name)).toBe(false);

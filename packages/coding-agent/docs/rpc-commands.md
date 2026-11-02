@@ -37,7 +37,7 @@ Response:
 {"id": "req-1", "type": "response", "command": "prompt", "success": true, "data": {"disposition": "started"}}
 ```
 
-`data.disposition` is `"handled"` if an extension command or input handler consumed the prompt, `"queued"` if Pi queued it during a run, or `"started"` if Pi accepted it to start a run. This describes the submitted prompt, not independent work started by an extension or a guarantee of completion.
+`data.disposition` is `"handled"` if an extension command or input handler consumed the prompt, `"queued"` if October queued it during a run, or `"started"` if October accepted it to start a run. This describes the submitted prompt, not independent work started by an extension or a guarantee of completion.
 
 `success: true` means the prompt was accepted, queued, or handled immediately. `success: false` means the prompt was rejected before acceptance. Failures after acceptance are reported through the normal event and message stream, not as a second `response` for the same request id.
 
@@ -63,7 +63,7 @@ Response:
 {"type": "response", "command": "steer", "success": true, "data": {"disposition": "queued"}}
 ```
 
-`data.disposition` is `"handled"` if an input handler consumed this steer, or `"queued"` if Pi queued it (including after a handler transformed it). It does not guarantee this message remains queued.
+`data.disposition` is `"handled"` if an input handler consumed this steer, or `"queued"` if October queued it (including after a handler transformed it). It does not guarantee this message remains queued.
 
 See [set_steering_mode](#set_steering_mode) for controlling how steering messages are processed.
 
@@ -494,7 +494,7 @@ If output was truncated, includes `fullOutputPath`:
 
 The `bash` command executes immediately and returns a `BashResult`. Internally, a `BashExecutionMessage` is created and stored in the agent's message state.
 
-When the next `prompt` command is sent, Pi transforms context messages before sending them to the model. Unless `excludeFromContext` is true, the `BashExecutionMessage` becomes a `UserMessage` with this format:
+When the next `prompt` command is sent, October transforms context messages before sending them to the model. Unless `excludeFromContext` is true, the `BashExecutionMessage` becomes a `UserMessage` with this format:
 
 ````
 Ran `ls -la`
@@ -506,7 +506,7 @@ drwxr-xr-x ...
 
 This means:
 1. Included bash output reaches the model on the **next prompt**, not immediately.
-2. Multiple bash commands can run before a prompt; Pi includes each output that does not set `excludeFromContext`.
+2. Multiple bash commands can run before a prompt; October includes each output that does not set `excludeFromContext`.
 
 ### abort_bash
 
@@ -823,7 +823,7 @@ Response:
 }
 ```
 
-The current session name is available via `get_state` in the `sessionName` field. To set the initial name when starting RPC mode, pass `--name <name>` or `-n <name>` to the `pi --mode rpc` process.
+The current session name is available via `get_state` in the `sessionName` field. To set the initial name when starting RPC mode, pass `--name <name>` or `-n <name>` to the `october --mode rpc` process.
 
 ## Discoverable commands
 
@@ -848,7 +848,7 @@ Response:
         "description": "Fix failing tests",
         "source": "prompt",
         "sourceInfo": {
-          "path": "/home/user/myproject/.pi/agent/prompts/fix-tests.md",
+          "path": "/home/user/myproject/.october/agent/prompts/fix-tests.md",
           "source": "local",
           "scope": "project",
           "origin": "top-level"
@@ -868,7 +868,7 @@ Each command has:
   - `"skill"`: Loaded from a skill directory (name is prefixed with `skill:`)
 - `sourceInfo`: Metadata for the resource that registered the command:
   - `path`: Absolute path to the resource
-  - `source`: How Pi discovered it, such as `"local"`, `"auto"`, or `"cli"`
+  - `source`: How October discovered it, such as `"local"`, `"auto"`, or `"cli"`
   - `scope`: `"user"`, `"project"`, or `"temporary"`
   - `origin`: `"top-level"` for a directly loaded resource or `"package"` for a package resource
   - `baseDir`: Package base directory, when applicable

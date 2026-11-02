@@ -1,12 +1,12 @@
-# Use Pi in the terminal
+# Use October in the terminal
 
-Run `pi` from the folder you want to work in. Pi uses that folder to discover files, instructions, and configuration, and to group saved sessions. If you have not installed Pi or chosen a model yet, follow the [Quickstart](quickstart.md).
+Run `october` from the folder you want to work in. October uses that folder to discover files, instructions, and configuration, and to group saved sessions. If you have not installed October or chosen a model yet, follow the [Quickstart](quickstart.md).
 
-Pi may ask whether you trust the working folder before loading its project resources. See [Project trust](security.md#understand-project-trust).
+October may ask whether you trust the working folder before loading its project resources. See [Project trust](security.md#understand-project-trust).
 
-<p align="center"><img src="images/interactive-mode.png" alt="Pi interactive mode showing a conversation, editor, and status information" width="750"></p>
+<p align="center"><img src="images/interactive-mode.png" alt="October interactive mode showing a conversation, editor, and status information" width="750"></p>
 
-The transcript shows your prompts, Pi's responses, tool calls, results, and errors. You write prompts and commands in the editor. The footer shows the current folder, session, model, context usage, and accumulated usage and cost.
+The transcript shows your prompts, October's responses, tool calls, results, and errors. You write prompts and commands in the editor. The footer shows the current folder, session, model, context usage, and accumulated usage and cost.
 
 ## Enter a prompt
 
@@ -18,17 +18,17 @@ To include files or images:
 - Press `Tab` to complete a path.
 - Paste an image or drag it into a compatible terminal.
 
-## Follow Pi's work
+## Follow October's work
 
-Pi shows each tool call and result while it works. Press `Ctrl+O` to expand or collapse tool output. Press `Ctrl+T` to show or hide thinking blocks.
+October shows each tool call and result while it works. Press `Ctrl+O` to expand or collapse tool output. Press `Ctrl+T` to show or hide thinking blocks.
 
-The startup header lists the instructions and resources Pi loaded. The editor border indicates the current thinking level. The footer updates as the model uses context and reports usage.
+The startup header lists the instructions and resources October loaded. The editor border indicates the current thinking level. The footer updates as the model uses context and reports usage.
 
-Pi does not ask before every tool call. Review commands and changed files, and use a sandbox for untrusted or unattended work. See [Security](security.md).
+October does not ask before every tool call. Review commands and changed files, and use a sandbox for untrusted or unattended work. See [Security](security.md).
 
 ## Change direction
 
-You can send more input while Pi is working:
+You can send more input while October is working:
 
 | What you want | Action |
 |---|---|
@@ -37,7 +37,7 @@ You can send more input while Pi is working:
 | Return queued messages to the editor | Press `Alt+Up` |
 | Stop the current task | Press `Escape` |
 
-A message sent with `Enter` waits until the current response and its tool calls finish, then guides the next response. A follow-up sent with `Alt+Enter` waits until Pi finishes the current task. Aborting returns queued messages to the editor.
+A message sent with `Enter` waits until the current response and its tool calls finish, then guides the next response. A follow-up sent with `Alt+Enter` waits until October finishes the current task. Aborting returns queued messages to the editor.
 
 Windows Terminal reserves some Alt shortcuts. See [Terminal Setup](terminal-setup.md) for the Windows alternatives.
 
@@ -54,7 +54,7 @@ Prompt templates, skills, and extensions can add more commands to the same menu.
 
 ## Continue or start over
 
-Pi saves sessions automatically unless session persistence is disabled.
+October saves sessions automatically unless session persistence is disabled.
 
 - `/new` starts a new session.
 - `/resume` opens another saved session.
@@ -63,7 +63,7 @@ Pi saves sessions automatically unless session persistence is disabled.
 
 Use `/tree`, `/fork`, or `/clone` when you want to explore another approach without losing existing work. Use `/compact` to reduce the conversation history sent to the model. See [Sessions and Context](sessions.md) for these workflows.
 
-After leaving Pi, run `pi --continue` from the same folder to resume its most recent session.
+After leaving October, run `october --continue` from the same folder to resume its most recent session.
 
 ## Run a terminal command
 
@@ -79,7 +79,7 @@ Use `!!` when you want to run a command without sending its output to the model.
 
 Press `Ctrl+X` or run `/copy` to copy the last assistant response. Use `/export` to save the session as HTML or JSONL.
 
-Use `/share` to upload the session and get a viewer link. By default, Radius authentication makes the artifact visible to your Radius organization; otherwise, Pi creates a private GitHub gist through the GitHub CLI. The [`sessionShareDestination`](settings.md#sessions-and-context) setting can force either destination. Review the session first because it can contain prompts, tool output, file contents, and credentials exposed during the conversation.
+Use `/share` to upload the session and get a viewer link. By default, Radius authentication makes the artifact visible to your Radius organization; otherwise, October creates a private GitHub gist through the GitHub CLI. The [`sessionShareDestination`](settings.md#sessions-and-context) setting can force either destination. Review the session first because it can contain prompts, tool output, file contents, and credentials exposed during the conversation.
 
 ## Adjust the terminal
 
@@ -89,6 +89,6 @@ Terminal support for mouse input, keyboard shortcuts, and inline images varies. 
 
 ## Collect diagnostic information
 
-When troubleshooting terminal rendering or conversation state, run `/debug`. Pi writes the rendered terminal lines and current session messages to `pi-debug.log` in your [agent directory](configuration.md#agent-directory).
+When troubleshooting terminal rendering or conversation state, run `/debug`. October writes the rendered terminal lines and current session messages to `october-debug.log` in your [agent directory](configuration.md#agent-directory).
 
 Review this file before sharing it. It can contain prompts, model responses, tool output, file contents, and terminal data.

@@ -40,7 +40,7 @@ Use the reference pages to look up [CLI options](cli.md), [settings](settings.md
 
 For platform-specific help, see [Terminal Setup](terminal-setup.md), [Windows](windows.md), [tmux](tmux.md), [Termux on Android](termux.md), or [Containerization](containerization.md).
 
-Some inherited reference pages use Pi names and examples. For October, use the `october` executable, the `@october-dev/october` SDK package, and `.october` configuration paths. Keep inherited `PI_*` environment variables and the `@earendil-works/pi-*` supporting package names as documented.
+October uses the `october` executable, the `@october-dev/october` SDK package, and `.october` configuration paths. Inherited `PI_*` environment variables, protocol identifiers, and `@earendil-works/pi-*` supporting package names remain available as documented.
 
 ## Work safely
 

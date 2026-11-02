@@ -1,23 +1,23 @@
 # Configure shell commands
 
-Pi starts a separate non-interactive shell process for each Bash command. Non-interactive Bash does not expand aliases by default and usually does not load the same startup files as an interactive terminal.
+October starts a separate non-interactive shell process for each Bash command. Non-interactive Bash does not expand aliases by default and usually does not load the same startup files as an interactive terminal.
 
 Use `shellPath` to choose the Bash executable and `shellCommandPrefix` to run setup before each command.
 
-## Understand which shell Pi uses
+## Understand which shell October uses
 
 | Command source | Shell |
 |---|---|
-| Model calls the built-in `bash` tool | Pi's resolved Bash executable |
+| Model calls the built-in `bash` tool | October's resolved Bash executable |
 | You enter `!command` or `!!command` | The same resolved Bash executable |
 | Model calls the optional `powershell` tool | PowerShell 7 (`pwsh.exe`) or Windows PowerShell |
 | An extension provides or replaces a shell tool | The operations implemented by that extension |
 
-Pi normally invokes Bash with `bash -c`. On Unix systems, it uses `/bin/bash`, then `bash` on `PATH`, and finally `sh` when Bash is unavailable. Native Windows first checks the configured path, then Git Bash, then `bash.exe` on `PATH`.
+October normally invokes Bash with `bash -c`. On Unix systems, it uses `/bin/bash`, then `bash` on `PATH`, and finally `sh` when Bash is unavailable. Native Windows first checks the configured path, then Git Bash, then `bash.exe` on `PATH`.
 
 ## Choose a Bash executable
 
-Set `shellPath` in `~/.pi/agent/settings.json` when Pi should use a specific executable:
+Set `shellPath` in `~/.october/agent/settings.json` when October should use a specific executable:
 
 ```json
 {
@@ -33,7 +33,7 @@ On Windows, use forward slashes or escape backslashes:
 }
 ```
 
-Run `/reload` after changing the setting. See [Run Pi on Windows](windows.md) for the native Windows defaults.
+Run `/reload` after changing the setting. See [Run October on Windows](windows.md) for the native Windows defaults.
 
 ## Run setup before every Bash command
 
@@ -45,11 +45,11 @@ Set `shellCommandPrefix` to prepend shell setup to both the built-in `bash` tool
 }
 ```
 
-Pi joins the prefix and requested command with a newline. The prefix runs again for every command, so keep it fast and free of interactive prompts.
+October joins the prefix and requested command with a newline. The prefix runs again for every command, so keep it fast and free of interactive prompts.
 
 ## Enable Bash aliases
 
-Store aliases needed by Pi in a Bash-compatible file instead of parsing an entire interactive shell configuration.
+Store aliases needed by October in a Bash-compatible file instead of parsing an entire interactive shell configuration.
 
 Create `~/.bash_aliases`:
 
@@ -58,7 +58,7 @@ alias ll='ls -la'
 alias gs='git status --short'
 ```
 
-Then configure Pi to enable alias expansion and load the file:
+Then configure October to enable alias expansion and load the file:
 
 ```json
 {
@@ -66,7 +66,7 @@ Then configure Pi to enable alias expansion and load the file:
 }
 ```
 
-Run `/reload`, then verify the alias through Pi:
+Run `/reload`, then verify the alias through October:
 
 ```text
 !ll
@@ -80,11 +80,11 @@ Aliases must use Bash-compatible syntax. Do not source an arbitrary `.zshrc` int
 
 ### The prefix works for `!` but not for an extension tool
 
-`shellCommandPrefix` configures Pi's built-in Bash execution. An extension that replaces the `bash` tool or provides its own shell operations controls its own setup. Check that extension's documentation.
+`shellCommandPrefix` configures October's built-in Bash execution. An extension that replaces the `bash` tool or provides its own shell operations controls its own setup. Check that extension's documentation.
 
 ### `shopt` is not found
 
-Pi has fallen back to `sh` or `shellPath` points to a non-Bash shell. Install Bash or set `shellPath` to a Bash executable before using Bash-specific setup such as `shopt`.
+October has fallen back to `sh` or `shellPath` points to a non-Bash shell. Install Bash or set `shellPath` to a Bash executable before using Bash-specific setup such as `shopt`.
 
 ### A setup command waits for input
 

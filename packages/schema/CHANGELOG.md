@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-02
+
 ### Added
 
 - Initial release: `compile(schema, options)` validates JSON Schema drafts 2020-12 and 7 without `eval` or `new Function`, compiling a schema once into plain closures. `Validator.check` is the boolean check (a type guard for schemas built with the builders), `Validator.errors` reports each failure with a JSON Pointer path. Format checks are in the optional `@earendil-works/pi-schema/formats` entry point.

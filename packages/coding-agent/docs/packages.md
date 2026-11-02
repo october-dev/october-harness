@@ -1,6 +1,6 @@
-# Pi Packages
+# October Packages
 
-Pi packages install and distribute extensions, skills, prompt templates, and themes as one unit. Use a package when a customization should be shared through npm or git, or when several resources belong together.
+October packages install and distribute extensions, skills, prompt templates, and themes as one unit. Use a package when a customization should be shared through npm or git, or when several resources belong together.
 
 A package is an ordinary directory or npm package. It can expose conventional resource directories, declare explicit paths under the `pi` key in `package.json`, and carry its own runtime dependencies.
 
@@ -9,32 +9,32 @@ A package is an ordinary directory or npm package. It can expose conventional re
 Install from npm, git, or a local path:
 
 ```bash
-pi install npm:@example/pi-tools@1.0.0
-pi install git:github.com/example/pi-tools@v1
-pi install ./local-package
+october install npm:@example/pi-tools@1.0.0
+october install git:github.com/example/pi-tools@v1
+october install ./local-package
 ```
 
-`pi list` shows configured packages. Use `pi remove <source>` to remove one and `pi update --extensions` to reconcile package installations. See [Command Line](cli.md#package-commands) for every package command and option.
+`october list` shows configured packages. Use `october remove <source>` to remove one and `october update --extensions` to reconcile package installations. See [Command Line](cli.md#package-commands) for every package command and option.
 
-If a configured package fails to install at startup, for example because npm cannot reach the registry, Pi warns about it, skips that package's resources, and keeps running. Pi tries to install it again on the next start or `/reload`. `pi install` and `pi update --extensions` still report the failure and exit non-zero.
+If a configured package fails to install at startup, for example because npm cannot reach the registry, October warns about it, skips that package's resources, and keeps running. October tries to install it again on the next start or `/reload`. `october install` and `october update --extensions` still report the failure and exit non-zero.
 
-Personal installs are written to `~/.pi/agent/settings.json`. Add `--local` or `-l` to write the package declaration to `.pi/settings.json`. Pi reads declarations from that file only after project trust is granted.
+Personal installs are written to `~/.october/agent/settings.json`. Add `--local` or `-l` to write the package declaration to `.october/settings.json`. October reads declarations from that file only after project trust is granted.
 
 Project packages are installed and loaded only after project trust is resolved. Packages can execute extension code and can include skills that instruct the model to run programs. Review third-party package source before installing it. Review project package declarations before granting project trust.
 
 Use `--extension` or `-e` to try a package for one invocation without adding it to settings:
 
 ```bash
-pi -e npm:@example/pi-tools
+october -e npm:@example/pi-tools
 ```
 
-Pi caches `-e` packages under `~/.pi/agent/tmp/extensions/` and checks them on every start and `/reload`. An npm package is reinstalled when the registry has a newer version that matches the specification. A version pinned to an exact number, such as `@1.2.3`, is not checked. A git package is fetched and reset to the remote branch or ref. A ref that is a commit hash already checked out is not fetched. If the check fails or offline mode is on, Pi loads the cached copy.
+October caches `-e` packages under `~/.october/agent/tmp/extensions/` and checks them on every start and `/reload`. An npm package is reinstalled when the registry has a newer version that matches the specification. A version pinned to an exact number, such as `@1.2.3`, is not checked. A git package is fetched and reset to the remote branch or ref. A ref that is a commit hash already checked out is not fetched. If the check fails or offline mode is on, October loads the cached copy.
 
 ## Choose a source
 
 | Source | Example | Behavior |
 |---|---|---|
-| npm | `npm:@example/pi-tools@1.0.0` | Installed under the Pi npm directory |
+| npm | `npm:@example/pi-tools@1.0.0` | Installed under the October npm directory |
 | git | `git:github.com/example/pi-tools@v1` | Cloned and reconciled to the selected ref |
 | URL | `https://github.com/example/pi-tools` | Treated as a git source |
 | Local | `./pi-tools` | Loaded from the resolved path without copying |
@@ -56,7 +56,7 @@ my-pi-package/
 └── themes/
 ```
 
-Without a `pi` manifest, Pi discovers TypeScript and JavaScript extensions, skill directories, Markdown prompts, and JSON themes from those directories.
+Without a `pi` manifest, October discovers TypeScript and JavaScript extensions, skill directories, Markdown prompts, and JSON themes from those directories.
 
 Use an explicit manifest when resources live elsewhere or need filtering:
 
@@ -75,15 +75,15 @@ Use an explicit manifest when resources live elsewhere or need filtering:
 
 Paths are relative to the package root. Arrays accept glob patterns and exclusions. List dot-prefixed or symlinked resource roots directly when traversal through a glob would not discover them.
 
-The `pi-package` keyword makes an npm package eligible for discovery in the [Pi package gallery](https://pi.dev/packages). Optional `pi.image` and `pi.video` fields add gallery previews.
+The `pi-package` keyword makes an npm package eligible for discovery in the [upstream Pi package gallery](https://pi.dev/packages). Optional `pi.image` and `pi.video` fields add gallery previews.
 
 ## Show a changelog
 
-After a package update, Pi can show what changed. On the next fresh launch, Pi reads the package changelog and shows entries newer than the last seen version under "Extension Updates", the same way it shows its own changelog. The first time Pi sees a package, it records the version without showing anything.
+After a package update, October can show what changed. On the next fresh launch, October reads the package changelog and shows entries newer than the last seen version under "Extension Updates", the same way it shows its own changelog. The first time October sees a package, it records the version without showing anything.
 
 This applies to packages that load at least one extension. Packages that only provide skills, prompt templates, or themes do not show a changelog.
 
-By default Pi reads `CHANGELOG.md` from the package root. Point `pi.changelogPath` at another file inside the package, or set it to `""` to disable the changelog:
+By default October reads `CHANGELOG.md` from the package root. Point `pi.changelogPath` at another file inside the package, or set it to `""` to disable the changelog:
 
 ```json
 {
@@ -95,23 +95,23 @@ By default Pi reads `CHANGELOG.md` from the package root. Point `pi.changelogPat
 }
 ```
 
-Use version headings in the same format as Pi's changelog, such as `## [1.2.0]` or `## 1.2.0 - 2026-01-01`. Entries are matched against the `version` field in `package.json`, so a git package only shows a changelog when that field increases. The `collapseChangelog` setting condenses the section to one line per package, such as `Updated my-pi-package to v1.2.0.` Unlike Pi's own changelog, `/changelog` does not show package changelogs, so read the package's changelog file or repository for details.
+Use version headings in the same format as October's changelog, such as `## [1.2.0]` or `## 1.2.0 - 2026-01-01`. Entries are matched against the `version` field in `package.json`, so a git package only shows a changelog when that field increases. The `collapseChangelog` setting condenses the section to one line per package, such as `Updated my-pi-package to v1.2.0.` Unlike October's own changelog, `/changelog` does not show package changelogs, so read the package's changelog file or repository for details.
 
 ## Declare dependencies
 
-Put runtime packages imported by extensions in `dependencies`. Pi installs package dependencies when it installs an npm or git source.
+Put runtime packages imported by extensions in `dependencies`. October installs package dependencies when it installs an npm or git source.
 
-Pi supplies these packages to extensions and skills:
+October supplies these packages to extensions and skills:
 
 - `@earendil-works/pi-ai`
 - `@earendil-works/pi-agent-core`
-- `@earendil-works/pi-coding-agent`
+- `@october-dev/october`
 - `@earendil-works/pi-tui`
 - `typebox`
 
-Declare the host-provided packages listed above in `peerDependencies` with a `"*"` range and do not bundle them. Pi suppresses automatic peer installation for managed npm packages and git packages installed with npm, pnpm, or Bun. Local packages are not installed or modified, so their dependency tree remains the package author's responsibility.
+Declare the host-provided packages listed above in `peerDependencies` with a `"*"` range and do not bundle them. October suppresses automatic peer installation for managed npm packages and git packages installed with npm, pnpm, or Bun. Local packages are not installed or modified, so their dependency tree remains the package author's responsibility.
 
-Do not list host-provided packages in `dependencies`. A physical copy can bypass Pi's extension module mapping in compiled ESM and create duplicate classes, registries, and initialization work. Pi reports an extension warning when it detects this manifest configuration. Other Pi packages used as dependencies must be included in the published tarball and referenced through their `node_modules` resource paths.
+Do not list host-provided packages in `dependencies`. A physical copy can bypass October's extension module mapping in compiled ESM and create duplicate classes, registries, and initialization work. October reports an extension warning when it detects this manifest configuration. Other October packages used as dependencies must be included in the published tarball and referenced through their `node_modules` resource paths.
 
 Installed packages load with separate module roots. Do not rely on two packages sharing one dependency instance or one package resolving another package’s undeclared dependency.
 
@@ -142,12 +142,12 @@ For each resource type:
 
 Filters narrow the package manifest. They do not expose resources that the package itself did not declare.
 
-Run `pi config` to enable or disable discovered resources and pi's built-in extensions. It starts with personal configuration; press Tab to switch scope, or run `pi config --local` to start with project overrides.
+Run `october config` to enable or disable discovered resources and October's built-in extensions. It starts with personal configuration; press Tab to switch scope, or run `october config --local` to start with project overrides.
 
 ## Understand scope and identity
 
 The same package can appear in personal and project settings. A project entry normally replaces the personal entry. With `autoload: false`, the project entry instead acts as a filtering delta over the personal package.
 
-Pi identifies npm packages by package name, git packages by repository URL without the ref, and local packages by resolved absolute path. This prevents the same package from loading twice through equivalent declarations.
+October identifies npm packages by package name, git packages by repository URL without the ref, and local packages by resolved absolute path. This prevents the same package from loading twice through equivalent declarations.
 
 Use [Extensions](extensions.md), [Skills](skills.md), [Prompt Templates](prompt-templates.md), and [Themes](themes.md) to design each resource before packaging it.

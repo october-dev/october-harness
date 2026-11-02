@@ -41,7 +41,8 @@ describe("AgentSession virtual models", () => {
 		const harness = await createHarness({
 			...options,
 			models: [
-				{ id: "small", contextWindow: 1000 },
+				// Leave room for October's identity prompt after compaction, but not the 2k-token history.
+				{ id: "small", contextWindow: 1500 },
 				{ id: "large", contextWindow: 50_000, maxTokens: 4000, reasoning: true },
 			],
 			tools: [echoTool],
@@ -247,7 +248,7 @@ describe("AgentSession virtual models", () => {
 		await harness.session.prompt("hello");
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(0);
 
-		// About 2k tokens fit the large model that answered last, but not the small model's 1k window.
+		// About 2k tokens fit the large model that answered last, but not the small model's 1.5k window.
 		harness.session.setThinkingLevel("low");
 		await harness.session.prompt("next");
 

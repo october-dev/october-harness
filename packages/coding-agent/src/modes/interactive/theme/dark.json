@@ -1,5 +1,5 @@
 {
-	"$schema": "https://pi.dev/schemas/theme.schema.json",
+	"$schema": "https://raw.githubusercontent.com/october-dev/october-harness/main/packages/coding-agent/schemas/theme.schema.json",
 	"name": "dark",
 	"appearance": "dark",
 	"vars": {

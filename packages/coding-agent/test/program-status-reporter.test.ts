@@ -51,7 +51,7 @@ describe("ProgramStatusReporter", () => {
 	it("reports idle, working during a run, and done once it settles", () => {
 		const { reporter, reports, send, last } = setup("Fix login");
 		reporter.report();
-		expect(reports.at(-1)).toEqual({ state: "idle", app: "pi" });
+		expect(reports.at(-1)).toEqual({ state: "idle", app: "october" });
 
 		send({ type: "agent_start" });
 		expect(last()).toEqual({ state: "working", message: "Fix login" });

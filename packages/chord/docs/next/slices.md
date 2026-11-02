@@ -45,7 +45,7 @@ slice spec's section citations are for orientation, not a reading limit (owner, 
 
 Order (owner, 2026-10-22: routines and jobs before the store and reload; 2026-10-27: slice 8 before slice 7, whose
 reload has to reload real registries; 2026-10-29: slice 7 split into 7a, 7b, 7c; the app kit as slices 10 and 11;
-telemetry last, since it instruments the app kit too).
+telemetry last, since it instruments the app kit too; 2026-11-01: the plugin model (12) and the app kit (13) before web and TUI (11), which builds into the kit).
 
 | # | Slice | In short |
 | --- | --- | --- |
@@ -63,6 +63,8 @@ telemetry last, since it instruments the app kit too).
 | 7b | **Reload in the kernel** | `host.reload`: staging, commit, rollback; swaps, restarts, removal and re-serving; holds and `accepts` across a reload; jobs and registries across a reload; per-name wakes (`slice-7b/` brief) |
 | 7c | **Plugins** | `chord/next/plugins` (discovery, `buildFacet`, `evaluateFacet`, `pluginFile`, `installDependencies`, the watcher, `rollout`, `mapStack`; no dev/prod split; the kernel's `load`/`reload` per plugin; `slice-7c.md`) |
 | 10 | **HTTP and workers** | `chord/next/http` (server, `Http` registry, responses as descriptions, WebSocket entry) and `chord/next/workers` (a worker per address, IPC, idle stop) |
+| 12 | **The plugin model** | imports (relative within a repository, package names pinned across), versioned app API with Chord re-exported, per-kind API modules and contract files with the build's import check, single-file plugins, git installs, `testPlugin`, a required root (`slice-12.md`) |
+| 13 | **The app kit** | `chord/next/app`: `startApp`, `startWorker`, layout, worker kinds, owner link, deny by default, sessions, CLI tokens, storage, the files plugin, export per address, plugin roots and "apply changes", base code as API, bootstrap and a start-data facet (`slice-13.md`) |
 | 11 | **Web and TUI** | `chord/next/web` (page host, React hooks) and `chord/next/tui` (launcher, sandbox), from p2's code |
 | 9 | **Telemetry** | spans, events, metrics across hosts |
 
@@ -145,6 +147,7 @@ pattern, no code. Decided cuts are noted where they apply.
 | 22 | relays, size limits per part, compression at the origin, adapted bindings get diffs | 4a (relays), 4b (limits, compression), 7b |
 | 22 | trace carriers (R5) | 9 |
 | 23 | HTTP (routes, wraps, responses as descriptions, request bodies, plugin sockets), workers; channels and chunked transfers stay owner patterns until a second user | 10 |
+| 23 | the app kit: `startApp`, `startWorker`, start-data objects, deny by default, sessions, owner link and token file, device pairing, files (with chunked transfers), export and import per address, plugin roots and "apply changes", optional users, invite and ephemeral-login plugins | 13 |
 | 24 | Durable integration: `chord(fn, context)` (Q6), a `RegistryReader` over composed registries; the harness object and its model and env registries are p3's (base code, owner, 2026-10-27) | 8 (Chord parts), p3 |
 | 24 | `StoreStorage` | 6b |
 | 27 | versions table: contracts (L1 done), registries 8, documents 6, jobs 5, link protocol 3a | as listed |
@@ -162,6 +165,13 @@ Rules (owner, 2026-10-22): whoever defers something (this session, a subagent, a
 change; a slice's spec includes every entry of its section, and its build and review check them off; a done entry is
 deleted (the slice's spec and code are the record). Moved here from `carry-over.md` (owner, 2026-10-24).
 
+
+### Slice 11 (with the app kit's follow-ups)
+
+- **App kit renames and export** (decision "App kit naming and export"): `startApp` → `startServer`;
+  `exportAddress`/`importAddress` → `exportData`/`importData`; export without stopping the worker (a kit object on the
+  worker exports its store and finished files; without a worker the server takes the lock and reads the store); import
+  unchanged apart from the name. Examples 53-55, the app README and the guide's app kit chapter follow.
 ### Any slice (protocol and checks)
 
 - **Bump `PROTOCOL_VERSION`** for any message or reason change once p3 has shipped (slice 3b added `retry`, `loading`
@@ -181,12 +191,13 @@ deleted (the slice's spec and code are the record). Moved here from `carry-over.
 - **`rebuild` of tables** (key and column-type changes): `evolveTable` has no edit for them; build one only when a
   real case needs it. (Slice 6a's second spec review; out of slice 7b's scope, `slice-7b.md` §12.)
 
-### The plugin slice (plugin model)
+### Slice 11: web and TUI
 
-- **Cross-plugin imports by relative path and npm** (decision "Contracts come from where the plugin's code came
-  from"): remove `build.ts`'s by-name lookup, allow relative imports into another plugin of the same root, refuse
-  paths leaving the root; examples 35-38 and fixtures back to relative imports; drop the six `tsconfig` path aliases;
-  plugins README; the guide's chapter "Plugins Using Plugins". (Slice 10 built by-name imports.)
+- **Ephemeral sessions end with the connection** (slice 13 §3): the kit's ephemeral login drops its sessions when the
+  server starts and gives the browser a cookie without a lifetime; ending a session when its client's last link
+  closes needs the clients' connection loop, which slice 11 builds. (Slice 13 build.)
+- **`startApp` gains the web surface** (slice 13 §6): serving the clients' bundles from the kit, behind its sessions.
+  (Slice 13 spec.)
 
 ### After slice 11
 

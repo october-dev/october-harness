@@ -52,6 +52,8 @@ export function smokeTestCodingAgent(directory, runtime = process.execPath) {
 	try {
 		writeFileSync(entry, `import assert from "node:assert/strict";
 import { createAgentSession, SessionManager, ModelRuntime } from "${codingAgentName}";
+import { createAgentSession as bundledCreateAgentSession } from "./node_modules/${codingAgentName}/dist/bundle/index.js";
+assert.equal(createAgentSession, bundledCreateAgentSession, "SDK must use this release's bundled workspace code");
 assert.equal(typeof createAgentSession, "function");
 assert.equal(typeof SessionManager.inMemory, "function");
 assert.equal(typeof ModelRuntime.create, "function");
@@ -64,6 +66,9 @@ for (const subpath of ["/client", "/experimental/plugin"]) {
 `);
 		execFileSync(runtime, [entry], { cwd: directory, env, stdio: ["inherit", "pipe", "pipe"], timeout: 30_000 });
 		for (const cli of new Set([manifest.bin.october, "dist/cli.js"])) {
+			if (!readFileSync(join(packageDir, cli), "utf8").includes('"./bundle/cli-runtime.js"')) {
+				throw new Error(`${cli} must load this release's bundled workspace code`);
+			}
 			const output = execFileSync(runtime, [join(packageDir, cli), "--version"], {
 				cwd: directory,
 				encoding: "utf8",
@@ -72,6 +77,9 @@ for (const subpath of ["/client", "/experimental/plugin"]) {
 				timeout: 30_000,
 			});
 			if (output.trim() !== manifest.version) throw new Error(`Unexpected version from ${cli}: ${output}`);
+			execFileSync(runtime, [join(packageDir, cli), "--help"], {
+				cwd: directory, env, stdio: ["inherit", "pipe", "pipe"], timeout: 30_000,
+			});
 		}
 	} finally {
 		rmSync(entry, { force: true });

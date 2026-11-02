@@ -2,7 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -49,6 +49,11 @@ export function prepareOctoberRelease(output) {
 	const root = output ? resolve(output) : mkdtempSync(join(tmpdir(), "october-release-"));
 	if (output) mkdirSync(root); // Refuse to overwrite any existing directory.
 	const packages = packPackages([{ name: octoberPackageName, version, directory: packageDirectory }], join(root, "tarballs"));
+	// October's publishing workflow uses this stable asset name. The shared Pi
+	// packer now adds a content hash; integrity is still verified independently.
+	const releaseTarball = join(root, "tarballs", `october-dev-october-${version}.tgz`);
+	renameSync(packages[0].tarballPath, releaseTarball);
+	packages[0].tarballPath = releaseTarball;
 	const artifactSet = {
 		packages,
 		getPackage(name) {

@@ -1,6 +1,6 @@
-# Run Pi in tmux
+# Run October in tmux
 
-Pi works inside tmux, but tmux can report `Shift+Enter`, `Ctrl+Enter`, and plain `Enter` as the same key. Enable extended keys so Pi can distinguish them.
+October works inside tmux, but tmux can report `Shift+Enter`, `Ctrl+Enter`, and plain `Enter` as the same key. Enable extended keys so October can distinguish them.
 
 ## Check your tmux version
 
@@ -19,7 +19,7 @@ set -g extended-keys on
 set -g extended-keys-format csi-u
 ```
 
-Pi requests extended-key reporting when the terminal does not provide the Kitty keyboard protocol directly. CSI-u is the most reliable format for forwarding modified keys through tmux.
+October requests extended-key reporting when the terminal does not provide the Kitty keyboard protocol directly. CSI-u is the most reliable format for forwarding modified keys through tmux.
 
 ## Restart tmux
 
@@ -34,7 +34,7 @@ tmux
 
 ## Verify modified keys
 
-Start Pi inside the new tmux session and check that:
+Start October inside the new tmux session and check that:
 
 1. `Shift+Enter` inserts a new line in the editor.
 2. `Enter` submits the prompt.
@@ -50,12 +50,12 @@ These versions support extended keys but not `extended-keys-format csi-u`. Add o
 set -g extended-keys on
 ```
 
-Pi supports the xterm `modifyOtherKeys` format used by these versions. Restart tmux and repeat the verification steps.
+October supports the xterm `modifyOtherKeys` format used by these versions. Restart tmux and repeat the verification steps.
 
-For older versions, upgrade tmux or use Pi outside tmux rather than relying on modified Enter shortcuts.
+For older versions, upgrade tmux or use October outside tmux rather than relying on modified Enter shortcuts.
 
 ## Known issues
 
 | Issue | Affects | Remedy |
 |---|---|---|
-| Text such as `c0c/0c0c/0c0c` appears in the editor at startup ([tmux#4749](https://github.com/tmux/tmux/issues/4749)) | tmux 3.6 | Upgrade tmux. Changing Pi's theme does not help. |
+| Text such as `c0c/0c0c/0c0c` appears in the editor at startup ([tmux#4749](https://github.com/tmux/tmux/issues/4749)) | tmux 3.6 | Upgrade tmux. Changing October's theme does not help. |

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-02
+
 ### Breaking Changes
 
 - Tool schemas are JSON Schema typed through `@earendil-works/pi-schema`: `defineTool()` and `ToolRegistration` take any JSON Schema object as `parameters` and `structuredOutputSchema`, and type `args` with pi-schema's `Static` (`ToolArgs<TParameters>`; TypeBox schemas give TypeBox's static type for the common kinds, as pi-schema's `Static` describes; other schemas give `unknown`). The built-in tools (`read`, `write`, `edit`, `bash`, `powershell`, `codemode`, `tool_search`, the model tools) are built with pi-schema, with the same JSON Schema up to key order. `structuredOutput` is validated with pi-schema, so `invalid_structured_output` messages use its wording. `typebox` is no longer a dependency. Migration: replace `Type.Object({ n: Type.Number() })` from `@earendil-works/pi-ai` with `obj({ n: num() })` from `@earendil-works/pi-schema` (closed by default; `{ open: true }` allows other properties).

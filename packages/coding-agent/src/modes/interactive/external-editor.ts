@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { APP_NAME, APP_TITLE } from "../../config.ts";
 import { stripBom } from "../../utils/text.ts";
 
 export interface ExternalEditorOptions {
@@ -12,12 +13,14 @@ export interface ExternalEditorOptions {
 export type ExternalEditorResult = { status: "complete"; content: string } | { status: "failed"; message: string };
 
 export async function editInExternalEditor(options: ExternalEditorOptions): Promise<ExternalEditorResult> {
-	const directory = mkdtempSync(join(tmpdir(), "pi-editor-"));
+	const directory = mkdtempSync(join(tmpdir(), `${APP_NAME}-editor-`));
 	const filePath = join(directory, "prompt.md");
 	try {
 		writeFileSync(filePath, options.content, "utf-8");
 		const [editor, ...editorArgs] = options.command.split(" ");
-		process.stdout.write(`Launching external editor: ${options.command}\nPi will resume when the editor exits.\n`);
+		process.stdout.write(
+			`Launching external editor: ${options.command}\n${APP_TITLE} will resume when the editor exits.\n`,
+		);
 
 		// Do not use spawnSync here. On Windows, synchronous child_process calls can keep
 		// Node/libuv's console input read active after the parent pauses stdin, racing

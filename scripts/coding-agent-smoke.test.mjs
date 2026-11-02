@@ -36,13 +36,15 @@ function createFixture(t, { importUndeclared = false } = {}) {
 			bin: { october: "dist/cli.js" },
 		},
 		{
-			"dist/index.js": `${importUndeclared ? 'import "@earendil-works/undeclared";' : ""}
+			"dist/index.js": `${importUndeclared ? 'import "@earendil-works/undeclared";' : ""}export * from "./bundle/index.js";\n`,
+			"dist/bundle/index.js": `
 export function createAgentSession() {}
 export class SessionManager { static inMemory() {} }
 export class ModelRuntime { static create() {} }
 `,
 			"dist/index.d.ts": "export {};\n",
-			"dist/cli.js": 'console.log("1.0.0");\n',
+			"dist/cli.js": 'import "./bundle/cli-runtime.js";\n',
+			"dist/bundle/cli-runtime.js": 'console.log("1.0.0");\n',
 			"dist/bundle/cli.js": 'console.log("1.0.0");\n',
 		},
 	);
@@ -54,6 +56,19 @@ export class ModelRuntime { static create() {} }
 
 test("accepts a valid coding-agent package", (t) => {
 	smokeTestCodingAgent(createFixture(t));
+});
+
+test("rejects a CLI that bypasses the merged workspace bundle", (t) => {
+	const directory = createFixture(t);
+	writeFileSync(join(directory, "node_modules", codingAgentName, "dist/cli.js"), 'console.log("1.0.0");\n');
+	assert.throws(() => smokeTestCodingAgent(directory), /must load this release's bundled workspace code/);
+});
+
+test("rejects an SDK that bypasses the merged workspace bundle", (t) => {
+	const directory = createFixture(t);
+	writeFileSync(join(directory, "node_modules", codingAgentName, "dist/index.js"),
+		'export function createAgentSession() {}\nexport { SessionManager, ModelRuntime } from "./bundle/index.js";\n');
+	assert.throws(() => smokeTestCodingAgent(directory), /SDK must use this release's bundled workspace code/);
 });
 
 // #9132: smoke-test the public SDK, not just a bundled CLI that hides missing imports.

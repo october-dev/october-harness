@@ -173,7 +173,7 @@ function getSelfUpdateCommandForMethod(
 			const [command = "npm", ...npmArgs] = npmCommand ?? [];
 			const inferred = npmCommand?.length ? undefined : getInferredNpmInstall();
 			const prefixArgs = [...npmArgs, ...(inferred ? ["--prefix", inferred.prefix] : [])];
-			// pi.dev advertises releases immediately, so a configured npm age gate would
+			// npm advertises releases immediately, so a configured npm age gate would
 			// block the update. npm has no per-package age gate, so this also lets new
 			// transitive dependency releases through. Managed installs avoid this.
 			const installStep = makeSelfUpdateCommandStep(command, [
@@ -612,11 +612,11 @@ try {
 const piConfigName: string | undefined = pkg.piConfig?.name;
 export const PACKAGE_NAME: string = pkg.name || "@october-dev/october";
 export const APP_NAME: string = piConfigName || "october";
-export const APP_TITLE: string = piConfigName ? APP_NAME : "October";
+export const APP_TITLE: string = APP_NAME === "october" ? "October" : APP_NAME;
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".october";
 export const VERSION: string = pkg.version || "0.0.0";
 
-// e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
+// e.g., OCTOBER_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;
 export const ENV_SESSION_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_SESSION_DIR`;
 
@@ -633,10 +633,10 @@ export function getShareViewerUrl(gistId: string): string {
 }
 
 // =============================================================================
-// User Config Paths (~/.pi/agent/*)
+// User Config Paths (~/.october/agent/*)
 // =============================================================================
 
-/** Get the agent config directory (e.g., ~/.pi/agent/) */
+/** Get the agent config directory (e.g., ~/.october/agent/) */
 export function getAgentDir(): string {
 	const envDir = process.env[ENV_AGENT_DIR];
 	if (envDir) {

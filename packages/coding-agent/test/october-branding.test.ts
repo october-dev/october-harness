@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { printAuthCommandHelp } from "../src/cli/auth-command.ts";
-import { APP_NAME, CONFIG_DIR_NAME, PACKAGE_NAME } from "../src/config.ts";
+import { APP_NAME, APP_TITLE, CONFIG_DIR_NAME, PACKAGE_NAME } from "../src/config.ts";
 import { getProviderLoginHelp } from "../src/core/auth-guidance.ts";
 import { buildSystemPrompt } from "../src/core/system-prompt.ts";
 
@@ -115,6 +115,7 @@ describe("October package branding", () => {
 		expect(tsconfig.compilerOptions?.inlineSources).toBe(false);
 		expect(PACKAGE_NAME).toBe("@october-dev/october");
 		expect(APP_NAME).toBe("october");
+		expect(APP_TITLE).toBe("October");
 		expect(CONFIG_DIR_NAME).toBe(".october");
 	});
 
