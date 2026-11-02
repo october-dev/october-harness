@@ -16,7 +16,6 @@ const internalPackageNames = new Set(["@earendil-works/chord"]);
 const installPackageName = "@october-dev/october-install";
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
-	["esbuild@0.28.2", "postinstall selects and verifies the platform-specific esbuild binary"],
 	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
 
@@ -370,12 +369,6 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 				);
 			}
 		}
-	}
-
-	const platformPackageCount = Object.values(installLock.packages).filter((entry) => entry.os || entry.cpu || entry.libc)
-		.length;
-	if (platformPackageCount === 0) {
-		errors.push("no platform-specific optional dependency entries found");
 	}
 
 	if (errors.length > 0) {

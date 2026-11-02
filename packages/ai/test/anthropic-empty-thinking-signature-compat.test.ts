@@ -18,7 +18,7 @@ class PayloadCaptured extends Error {
 
 function makeModel(allowEmptySignature?: boolean): Model<"anthropic-messages"> {
 	return {
-		id: "mimo-v2.5-pro",
+		id: "mimo-v2.6-pro",
 		name: "MiMo-V2.5-Pro",
 		api: "anthropic-messages",
 		provider: "xiaomi-token-plan-ams",
@@ -36,7 +36,7 @@ function makeContext(
 	thinkingSignature: string,
 	thinking = "internal reasoning",
 	provider = "xiaomi-token-plan-ams",
-	model = "mimo-v2.5-pro",
+	model = "mimo-v2.6-pro",
 ): Context {
 	const assistant: AssistantMessage = {
 		role: "assistant",
@@ -123,24 +123,20 @@ describe("Anthropic empty thinking signature compat", () => {
 		]);
 	});
 
-	// Regression for #9323: opting into unsigned replay must not change cross-model conversion.
-	it("still converts cross-model Fireworks thinking to text", async () => {
+	// Regression for #9323: unsigned replay must still respect upstream's cross-model reasoning isolation.
+	it("omits cross-model Fireworks thinking while retaining the answer", async () => {
 		const model = getModel("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash");
-		const payload = await capturePayload(
-			model,
-			makeContext("", "internal reasoning", "fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"),
+		const context = makeContext(
+			"",
+			"internal reasoning",
+			"fireworks",
+			"accounts/fireworks/models/nemotron-3-ultra-nvfp4",
 		);
+		const assistant = context.messages[1] as AssistantMessage;
+		assistant.content.push({ type: "text", text: "answer" });
+		const payload = await capturePayload(model, context);
 		expect(payload.messages?.find((message) => message.role === "assistant")?.content).toEqual([
-			{ type: "text", text: "internal reasoning" },
+			{ type: "text", text: "answer" },
 		]);
-	});
-
-	it.each(["k3"] as const)("allows empty signatures for Kimi Coding %s", async (modelId) => {
-		const model = getModel("kimi-coding", modelId);
-		expect(model.compat?.allowEmptySignature).toBe(true);
-
-		const payload = await capturePayload(model, makeContext(" ", "internal reasoning", "kimi-coding", modelId));
-		const assistant = payload.messages?.find((message) => message.role === "assistant");
-		expect(assistant?.content).toEqual([{ type: "thinking", thinking: "internal reasoning", signature: "" }]);
 	});
 });

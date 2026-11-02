@@ -5,6 +5,7 @@ import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
+	getIdentityHeaders,
 	type Model,
 	normalizeContext,
 	type ProviderHeaders,
@@ -130,7 +131,7 @@ describe("createAgentSession provider attribution headers", () => {
 				...(options.requestHeaders ? { headers: options.requestHeaders } : {}),
 			});
 			await stream.result();
-			return capturedOptions?.headers;
+			return { ...getIdentityHeaders(model, capturedOptions?.identity), ...capturedOptions?.headers };
 		} finally {
 			session.dispose();
 			modelRegistry.unregisterProvider(model.provider);

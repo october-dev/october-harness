@@ -6,6 +6,7 @@ import {
 	type SettingsConfig,
 	SettingsSelectorComponent,
 } from "../src/modes/interactive/components/settings-selector.ts";
+import { SelectSubmenu } from "../src/modes/interactive/components/settings-submenu.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
@@ -26,10 +27,12 @@ describe("SettingsSelectorComponent", () => {
 		const onExitOutputChange = vi.fn();
 		const onScrollbarChange = vi.fn();
 		const onCopyOnSelectChange = vi.fn();
+		const onWheelScrollLinesChange = vi.fn();
 		const config = {
 			fullscreenExitOutput: "transcript",
 			fullscreenScrollbar: "auto",
 			fullscreenCopyOnSelect: true,
+			fullscreenWheelScrollLines: 7,
 			warnings: {},
 			defaultModel: "not set",
 			availableDefaultModels: [],
@@ -41,6 +44,7 @@ describe("SettingsSelectorComponent", () => {
 			onFullscreenExitOutputChange: onExitOutputChange,
 			onFullscreenScrollbarChange: onScrollbarChange,
 			onFullscreenCopyOnSelectChange: onCopyOnSelectChange,
+			onFullscreenWheelScrollLinesChange: onWheelScrollLinesChange,
 		} as unknown as SettingsCallbacks;
 
 		const cycle = (label: string, count: number) => {
@@ -55,6 +59,31 @@ describe("SettingsSelectorComponent", () => {
 		expect(onScrollbarChange.mock.calls.flat()).toEqual(["always", "hidden", "auto"]);
 		cycle("Fullscreen copy on select", 2);
 		expect(onCopyOnSelectChange.mock.calls.flat()).toEqual([false, true]);
+		// #9758: custom values from settings.json stay in the cycle.
+		cycle("Fullscreen wheel scrolling", 3);
+		expect(onWheelScrollLinesChange.mock.calls.flat()).toEqual([10, "auto", 1]);
+	});
+
+	it("cycles through share destinations", () => {
+		const onSessionShareDestinationChange = vi.fn();
+		const config = {
+			sessionShareDestination: "auto",
+			warnings: {},
+			defaultModel: "not set",
+			availableDefaultModels: [],
+			availableThinkingLevels: [],
+			modelThinkingLevels: {},
+			availableThemes: [],
+		} as unknown as SettingsConfig;
+		const callbacks = {
+			onSessionShareDestinationChange,
+		} as unknown as SettingsCallbacks;
+		const list = new SettingsSelectorComponent(config, callbacks).getSettingsList();
+		list.selectItem("share-destination");
+
+		for (let i = 0; i < 3; i++) list.handleInput("\r");
+
+		expect(onSessionShareDestinationChange.mock.calls.flat()).toEqual(["gist", "radius", "auto"]);
 	});
 
 	it("keeps the configured fixed theme marked while browsing", () => {
@@ -64,7 +93,7 @@ describe("SettingsSelectorComponent", () => {
 			modelThinkingLevels: {},
 			currentTheme: "dark",
 			terminalTheme: "dark",
-			availableThemes: ["dark", "light"],
+			availableThemes: ["system", "dark", "light"],
 			warnings: {},
 		} as unknown as SettingsConfig;
 		const callbacks = { onThemePreview: vi.fn(), onCancel: () => {} } as unknown as SettingsCallbacks;
@@ -73,7 +102,9 @@ describe("SettingsSelectorComponent", () => {
 		list.selectItem("theme");
 		list.handleInput("\r");
 		let output = stripAnsi(list.render(120).join("\n"));
-		expect(output).toContain("    Automatic");
+		expect(output).toMatch(
+			/ {4}system +Theme created from your terminal's colors\n {4}automatic +Use separate themes/,
+		);
 		expect(output).toContain("→ ✓ dark");
 
 		list.handleInput("\x1b[B");
@@ -134,5 +165,24 @@ describe("SettingsSelectorComponent", () => {
 		output = stripAnsi(list.render(120).join("\n"));
 		expect(output).toContain("  ✓ medium");
 		expect(output).toContain("→   high");
+	});
+
+	it("pages a searchable submenu with selection page keys (#7629)", () => {
+		const onSelect = vi.fn();
+		const submenu = new SelectSubmenu(
+			"Theme",
+			"",
+			Array.from({ length: 20 }, (_, index) => ({ value: `theme-${index}`, label: `theme-${index}` })),
+			"theme-0",
+			onSelect,
+			() => {},
+			undefined,
+			{ searchable: true },
+		);
+
+		submenu.handleInput("\x1b[6~"); // PageDown
+		submenu.handleInput("\r");
+
+		expect(onSelect).toHaveBeenCalledWith("theme-10");
 	});
 });

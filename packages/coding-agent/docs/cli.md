@@ -13,6 +13,7 @@ pi update [target] [options]
 pi list
 pi config [options]
 pi auth <check|print-api-key|print-bearer-token> [options]
+pi mcp <add|remove|list|login|logout> [options]
 ```
 
 <a id="modes"></a>
@@ -58,18 +59,18 @@ RPC mode rejects `@file` arguments. JSON and RPC modes reserve stdout for protoc
 pi --model sonnet:high
 ```
 
-See [Choose a Model](models.md) for model selection and [Provider Authentication](providers.md) for credentials.
+See [Choose a Model](models.md) for model selection and [Providers](providers.md) for credentials.
 
 - `--provider <name>`<br>
-  Restricts `--model` lookup to one provider.
+  Restricts `--model` lookup to one provider. It requires `--model`.
 - `--model <pattern>`<br>
-  Selects by exact ID or fuzzy ID/name match. It accepts `provider/id` and an optional `:<thinking>` suffix.
+  Selects by exact ID or fuzzy ID/name match. It accepts `provider/id` and an optional `:<thinking>` suffix. If several providers match, Pi prefers the one with credentials, otherwise it asks for `--provider`.
 - `--api-key <key>`<br>
-  Uses a non-persistent API-key override. It requires a model selected through `--model` or `--models`.
+  Uses a non-persistent API-key override. It requires a model selected through `--model` or `--models`. It does not choose between providers that offer the same model.
 - `--thinking <level>`<br>
   Sets `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. It overrides a `--model` suffix and is clamped to the model's capabilities.
 - `--models <patterns>`<br>
-  Sets a comma-separated scope for startup and cycling. It accepts exact IDs, fuzzy matches, case-insensitive globs, and optional `:<thinking>` suffixes.
+  Sets a comma-separated scope for startup and cycling. It accepts exact IDs, fuzzy matches, case-insensitive globs, and optional `:<thinking>` suffixes. A model offered by several providers is added for each, with a warning.
 - `--list-models [search]`<br>
   Lists available models, optionally filtered by a fuzzy search, then exits.
 
@@ -84,15 +85,15 @@ pi --continue
 See [Sessions and Context](sessions.md) for resuming, forking, naming, and storing sessions.
 
 - `-c`, `--continue`<br>
-  Continues the most recent session for the current project.
+  Continues the most recent session for the current directory.
 - `-r`, `--resume`<br>
-  Opens the session selector.
+  Opens the session selector and resumes the chosen session in its working directory. Press Tab to include sessions from other directories.
 - `--session <path|id>`<br>
-  Opens by file path, exact ID, or partial ID. Pi searches the current project first and offers to fork a cross-project match.
+  Opens a session by file path or full/partial ID, and resumes it in its working directory. If the ID only matches sessions stored for another directory, Pi offers to fork it into the current directory instead.
 - `--session-id <id>`<br>
-  Opens the exact project session ID or creates it if absent. IDs accept letters, numbers, `.`, `_`, and `-`.
+  Opens the current directory's existing session with the ID, or creates it otherwise. IDs accept letters, numbers, `.`, `_`, and `-`.
 - `--fork <path|id>`<br>
-  Forks an existing session into a new session for the current project.
+  Forks a session, chosen by file path or full/partial ID, into a new session in the current directory.
 - `--session-dir <dir>`<br>
   Overrides storage and lookup. It takes precedence over `PI_CODING_AGENT_SESSION_DIR` and the `sessionDir` setting.
 - `--no-session`<br>
@@ -117,15 +118,25 @@ pi --tools read,grep,find,ls --print "Review this project"
 See [Settings](settings.md#tools) for configuring the default tool selection.
 
 - `-t`, `--tools <list>`<br>
-  Replaces the default selection with a comma-separated allowlist of built-in, extension, or custom tools.
+  Replaces the default selection with a comma-separated allowlist of built-in, extension, or custom tools. Entries are tool names or patterns where `*` matches any characters. MCP tools are kept unless an entry starts with `mcp__` (see [MCP tools](#mcp-tools)). A list of only `+name` and `-name` entries is not an allowlist; it changes the default selection instead.
 - `-xt`, `--exclude-tools <list>`<br>
-  Disables comma-separated tool names after all other selection options.
+  Disables comma-separated tool names or patterns after all other selection options, MCP tools included.
 - `-nbt`, `--no-builtin-tools`<br>
   Disables default built-in tools while retaining extension and custom tools.
 - `-nt`, `--no-tools`<br>
-  Starts with all built-in, extension, and custom tools disabled.
+  Starts with all built-in, extension, custom, and MCP tools disabled.
 
-Default enabled tools are `read`, `bash`, `edit`, and `write`, unless `defaultTools` changes them.
+Default enabled tools are `read`, `bash`, `edit`, and `write`, unless `defaultTools` changes them. `--tools` with plain names replaces the whole selection, so name every tool you want. Like `defaultTools`, it also accepts a list of only `+name` and `-name` entries, which adds tools to or removes them from the default selection: `pi --tools +codemode,-write` keeps the other default tools, enables `codemode`, and disables `write`. These entries take exact tool names, not `*` patterns; use `--exclude-tools` to disable tools by pattern. Plain names and `+name`/`-name` entries cannot be mixed. `/reload` enables tools newly added to `defaultTools`, but a tool removed with `-name` stays removed.
+
+<a id="mcp-tools"></a>
+
+`--tools` selects the tools declared to the model. It does not remove MCP tools, whose reach is set by their [exposure](mcp.md#control-tool-exposure): `pi --tools read,codemode` keeps every MCP tool callable from codemode scripts. An MCP tool that no entry names or matches is never declared directly, whatever its exposure; only `tool_search`, if listed, can load it. Once an entry starts with `mcp__`, `--tools` filters MCP tools too, so this keeps only the tools of the `radius` server:
+
+```sh
+pi --tools read,bash,codemode,'mcp__radius__*'
+```
+
+The MCP resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) count as MCP tools. To remove MCP tools, use `--exclude-tools 'mcp__*'` or [`--no-mcp`](#resource-options).
 
 | Built-in | Purpose |
 |---|---|
@@ -138,6 +149,39 @@ Default enabled tools are `read`, `bash`, `edit`, and `write`, unless `defaultTo
 | `find` | Find paths using glob patterns |
 | `ls` | List directory contents |
 
+Built-in extensions add two more tools. They are off by default; the MCP extension turns them on when an MCP server needs them (see [MCP](mcp.md#control-tool-exposure)). To enable them yourself, name them in `--tools` or `defaultTools`.
+
+| Built-in extension | Purpose |
+|---|---|
+| `codemode` | Run JavaScript that calls the other tools, for example in parallel with `Promise.allSettled`; only the script's output reaches the model |
+| `tool_search` | Search tools that are not declared to the model (`codemode` and `deferred` exposure, such as MCP tools) and declare the matches for the next call |
+
+### Enable codemode
+
+To turn on `codemode` for every session, add it to the default tools in `~/.pi/agent/settings.json` or a project's `.pi/settings.json`:
+
+```json
+{
+  "defaultTools": ["+codemode"]
+}
+```
+
+This keeps `read`, `bash`, `edit`, and `write` and adds `codemode`. For one invocation, add it with `--tools`:
+
+```sh
+pi --tools +codemode
+```
+
+Codemode is useful without MCP: scripts can run several tool calls in parallel, filter large output before it reaches the model, call classifier models such as TypeSafe's Jev through `models.classify()` (see [Classifier models](models.md#use-classifier-models)), and generate images through `models.generateImages()` (see [Image models](models.md#use-image-models)).
+
+### How codemode works
+
+Scripts run in a QuickJS sandbox and reach the other tools through `tools.<name>(args)`. [Codemode](codemode.md) describes the script API, how tools are listed and found, the `store()` and `models` globals, and the limits.
+
+### Tool search
+
+`tool_search` is off by default; enable it with `"defaultTools": ["+tool_search"]` or `--tools`. It uses the same ranking as `searchTools()` over tools that are not declared yet and declares the matches for the next model call. Loaded tools are recorded in the session like other tool changes, so they stay declared on that branch.
+
 <a id="resource-options"></a>
 
 ## Resources
@@ -149,9 +193,11 @@ pi --extension ./review.ts
 See [Configuration](configuration.md) for conventional directories and project trust, [Settings](settings.md#resources) for configured paths, and [Pi Packages](packages.md) for package sources.
 
 - `-e`, `--extension <path>`<br>
-  Loads an extension file or directory and is repeatable.
+  Loads an extension file or directory, or a built-in extension such as `builtin:mcp`, and is repeatable.
 - `-ne`, `--no-extensions`<br>
-  Disables discovered and configured extensions. Explicit `-e` paths still load.
+  Disables discovered, configured, and built-in extensions. Explicit `-e` paths still load, so `pi -ne -e builtin:mcp` keeps only the built-in MCP support.
+- `--no-mcp`<br>
+  Disables the built-in MCP support for this run: no servers connect, and there are no MCP tools or `/mcp`. It does not affect an extension that replaces the built-in MCP support.
 - `--skill <path>`<br>
   Loads a skill file or directory and is repeatable.
 - `-ns`, `--no-skills`<br>
@@ -186,7 +232,7 @@ See [Configuration](configuration.md) for saved configuration, [Security](securi
 - `--append-system-prompt <text|path>`<br>
   Appends text or an existing file to the system prompt and is repeatable.
 - `--tui-mode <mode>`<br>
-  Uses `regular` or `fullscreen` terminal mode.
+  Uses `fullscreen` (default) or `regular` terminal mode.
 - `--verbose`<br>
   Shows verbose interactive startup information, overriding `quietStartup`.
 - `-a`, `--approve`<br>
@@ -235,6 +281,18 @@ Running `pi update` without a target updates Pi itself.
 
 Add `--force` to reinstall Pi when the selected update includes Pi.
 
+`pi update` cannot update Pi when another package manager provides it, such as Nix. Update Pi with that package manager, for example `nix profile upgrade pi`. Package and model catalog updates still work.
+
+#### Custom update command
+
+If a wrapper or another package manager provides Pi, set `PI_SELF_UPDATE_COMMAND` so `pi update` runs its update command:
+
+```sh
+export PI_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
+```
+
+`pi update` runs it only when pi.dev has a newer release, replacing `{packageName}`, `{version}`, and `{installSpec}` (`{packageName}@{version}`) with that release. The value is split on spaces. For arguments with spaces, use the `selfUpdateCommand` setting in `~/.pi/agent/settings.json` instead, an argv array such as `["nix", "profile", "upgrade", "pi"]`.
+
 ### Aliases and command options
 
 - `pi uninstall <source>` is an alias for `pi remove <source>`.
@@ -249,7 +307,7 @@ Add `--force` to reinstall Pi when the selected update includes Pi.
 pi auth check --provider openai --json
 ```
 
-Authentication commands require `--provider <provider>` or `--model <model>`. See [Provider Authentication](providers.md) for supported methods.
+Authentication commands require `--provider <provider>` or `--model <model>`. See [Providers](providers.md) for supported methods.
 
 | Command | Description |
 |---|---|
@@ -267,3 +325,20 @@ Authentication commands require `--provider <provider>` or `--model <model>`. Se
 | `--min-expiry <duration>` | `print-bearer-token` | Require remaining token lifetime using `ms`, `s`, `m`, or `h`, such as `30m` |
 
 Credential-printing commands write secrets to stdout.
+
+## MCP commands
+
+These commands work outside a session, so agents can run them through `bash`. See [MCP Servers](mcp.md).
+
+| Command | Description |
+|---|---|
+| `pi mcp add <server> [options] -- <command> [args...]` | Add or replace a stdio server in `mcp.json`; `--env KEY=VALUE` (repeatable) and `--cwd <dir>` set its environment and working directory. Arguments after the command are passed to it |
+| `pi mcp add <server> [options] --url <url>` | Add or replace a streamable HTTP server; `--header KEY=VALUE` (repeatable), `--bearer-token-env-var <NAME>` (sends `Authorization: Bearer ${NAME}`), `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, `--oauth-client-name`, and `--oauth-client-registration` (`auto`, `cimd`, or `dcr`) configure authentication |
+| `pi mcp remove <server>` | Remove a server from `mcp.json`; stored OAuth credentials are kept |
+| `pi mcp list [--json]` | Connect to every enabled server and print its state, tools, and errors; exit with `1` when a config entry is invalid or an enabled server is not connected |
+| `pi mcp login <server> [-l] [--timeout <seconds>]` | Sign in to an OAuth server: open the authorization page and wait for the browser; a terminal also accepts the pasted redirect URL. `--timeout` limits the whole sign-in, including requests to the authorization server (default 300 seconds). `-l` requires the server to be defined in the project's `.pi/mcp.json` |
+| `pi mcp logout <server> [-l]` | Delete the stored OAuth credentials of a server |
+
+`add` and `remove` change `~/.pi/agent/mcp.json`, or `.pi/mcp.json` in the current directory with `--local` (`-l`). `add` also takes `--exposure <mode>` (see [Exposure](mcp.md#control-tool-exposure)) and `--description <text>` and does not connect; run `pi mcp list` to check the server.
+
+Project `.pi/mcp.json` files are only read for projects that are already trusted.

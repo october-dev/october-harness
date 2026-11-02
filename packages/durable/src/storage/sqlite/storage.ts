@@ -1,29 +1,42 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
-import { applyImmutable, type Op } from "@earendil-works/chord/delta";
+import { apply, type Op } from "@earendil-works/chord/delta";
+import type { SqliteDatabase, SqliteExecutor, SqliteValue } from "@earendil-works/chord/sqlite";
+import { StorageRequestError } from "../../errors.ts";
+import { idFromNumber, seqFromNumber } from "../../ids.ts";
 import type {
+	CommitResult,
+	ConversationId,
+	ConversationQuery,
 	ConversationRecord,
 	Cursor,
 	DocumentAddress,
 	DocumentContent,
 	DocumentCreate,
+	DocumentId,
 	DocumentPoint,
 	DocumentQuery,
 	DocumentRecord,
+	EntryId,
 	EntryQuery,
 	EntryRecord,
 	Id,
 	JsonObject,
 	Page,
+	ScanOrder,
 	Seq,
 	Storage,
 	StorageWrite,
 	StoredDocument,
+	SubmissionId,
+	SubmissionQuery,
 	SubmissionRecord,
+	TaskId,
 	TaskQuery,
 	TaskRecord,
 } from "../../types.ts";
-import type { SqliteDatabase, SqliteStatement, SqliteValue } from "./database.ts";
-import { applySqliteMigrations } from "./migrations.ts";
+import { nextCursor, type ScanStart, scanStart } from "../scan.ts";
+import { applySqliteMigrationsForSchema } from "./migrations.ts";
+import { createSqliteSchema, type SqliteSchema } from "./schema.ts";
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 type TableName = "conversation" | "entry" | "task" | "submission" | "document";
@@ -40,6 +53,7 @@ type IdRow = { readonly id: number };
 type MetadataRow = { readonly next_id: string; readonly next_seq: number };
 type DocumentAction = {
 	create?: DocumentCreate;
+	copy?: Extract<StorageWrite, { readonly type: "document.copy" }>["source"];
 	content?: DocumentContent;
 	retire: boolean;
 };
@@ -48,24 +62,42 @@ type ScopeColumns = {
 	readonly ownerId: number;
 };
 
+export type SqliteStorageOptions = {
+	/**
+	 * Prefix for every table and index in the durable schema. It must be a SQLite identifier and must not use
+	 * SQLite's reserved `sqlite_` prefix. Existing data is not migrated when this changes.
+	 */
+	readonly prefix?: string;
+};
+
 const parseJson = <T>(value: string): T => JSON.parse(value) as T;
 const encodeJson = (value: unknown): string => JSON.stringify(value) as string;
 // Some SQLite bindings replace lone UTF-16 surrogates. JSON encoding keeps indexed identities lossless.
 const encodeIndexedString = (value: string): string => JSON.stringify(value);
 
-const getRow = <T extends object>(statement: SqliteStatement, ...params: SqliteValue[]): T | undefined =>
-	statement.get<T>(...params);
+const cursorId = <I extends Id<string>>(cursor: Cursor | undefined): I | undefined => {
+	const after = cursor?.after;
+	if (after === undefined) return undefined;
+	if (typeof after !== "number" || !Number.isSafeInteger(after))
+		throw new StorageRequestError("Invalid storage cursor");
+	return idFromNumber<I>(after);
+};
 
-const allRows = <T extends object>(statement: SqliteStatement, ...params: SqliteValue[]): T[] =>
-	statement.all<T>(...params);
-
-const cursorId = (cursor: Cursor | undefined): Id | undefined => cursor?.after as Id | undefined;
-
-const page = <T extends { readonly id: Id }>(values: readonly T[], limit: number): Page<T, Cursor> => {
+const page = <T extends { readonly id: Id<string> }>(
+	values: readonly T[],
+	limit: number,
+	order: ScanOrder = "ascending",
+): Page<T, Cursor> => {
 	const items = values.slice(0, limit);
 	if (values.length <= limit) return { items };
-	return { items, next: { after: items.at(-1)!.id } };
+	return { items, next: nextCursor(items.at(-1)!.id, order) };
 };
+
+/** The ID condition, its parameter, and the `ORDER BY` direction of a table scan. */
+const scanSql = (start: ScanStart): { readonly clause: string; readonly param: number; readonly direction: string } =>
+	start.order === "ascending"
+		? { clause: "id > ?", param: start.after ?? -1, direction: "ASC" }
+		: { clause: "id < ?", param: start.after ?? Number.MAX_SAFE_INTEGER, direction: "DESC" };
 
 const scopeColumns = (scope: DocumentRecord["scope"]): ScopeColumns => {
 	switch (scope.kind) {
@@ -101,7 +133,7 @@ const isAliveAt = (record: DocumentRecord, at: DocumentPoint): boolean => {
 const isCurrentOnly = (record: DocumentRecord): boolean =>
 	record.scope.kind !== "conversation" || record.history === "latest";
 
-const writeId = (write: StorageWrite): Id | undefined => {
+const writeId = (write: StorageWrite): Id<string> | undefined => {
 	switch (write.type) {
 		case "conversation":
 		case "entry":
@@ -109,6 +141,7 @@ const writeId = (write: StorageWrite): Id | undefined => {
 		case "submission":
 			return write.value.id;
 		case "document.create":
+		case "document.copy":
 			return write.record.id;
 		case "document.change":
 		case "document.retire":
@@ -116,57 +149,57 @@ const writeId = (write: StorageWrite): Id | undefined => {
 	}
 };
 
-class StatementCachingDatabase implements SqliteDatabase {
-	private readonly database: SqliteDatabase;
-	private readonly statements = new Map<string, SqliteStatement>();
+/** Whether a database call of the checks failed, whatever it threw or rejected with. */
+type CheckCalls = { failed: boolean };
 
-	constructor(database: SqliteDatabase) {
-		this.database = database;
-	}
-
-	exec(sql: string): void {
-		this.database.exec(sql);
-	}
-
-	prepare(sql: string): SqliteStatement {
-		let statement = this.statements.get(sql);
-		if (statement === undefined) {
-			statement = this.database.prepare(sql);
-			this.statements.set(sql, statement);
+/**
+ * `executor`, setting `calls.failed` when one of its calls throws, synchronously (a synchronous driver) or by
+ * rejecting, with any value: then a failing check is the database's, not one of Durable's own.
+ */
+function watchCalls(executor: SqliteExecutor, calls: CheckCalls): SqliteExecutor {
+	const watched = async <T>(call: () => Promise<T>): Promise<T> => {
+		try {
+			return await call();
+		} catch (error) {
+			calls.failed = true;
+			throw error;
 		}
-		return statement;
-	}
-
-	transaction<T>(callback: () => T): T | Promise<T> {
-		return this.database.transaction(callback);
-	}
-
-	close(): void | Promise<void> {
-		this.statements.clear();
-		return this.database.close();
-	}
+	};
+	return {
+		exec: (sql) => watched(() => executor.exec(sql)),
+		run: (sql, ...params) => watched(() => executor.run(sql, ...params)),
+		runCounted: (sql, ...params) => watched(() => executor.runCounted(sql, ...params)),
+		get: (sql, ...params) => watched(() => executor.get(sql, ...params)),
+		all: (sql, ...params) => watched(() => executor.all(sql, ...params)),
+	};
 }
 
 /** Portable SQLite implementation of the Pico storage contract. */
 export class SqliteStorage implements Storage {
 	private readonly db: SqliteDatabase;
-	private nextId: Id;
+	private readonly schema: SqliteSchema;
+	private nextId: number;
 	private closed = false;
+	private closing: Promise<void> | undefined;
+	private admittedReads = 0;
+	private readsDrained: (() => void) | undefined;
 
-	private constructor(db: SqliteDatabase, nextId: Id) {
-		this.db = new StatementCachingDatabase(db);
+	private constructor(db: SqliteDatabase, schema: SqliteSchema, nextId: number) {
+		this.db = db;
+		this.schema = schema;
 		this.nextId = nextId;
 	}
 
 	/** Initialize storage over an owned SQLite database facade. */
-	static async open(db: SqliteDatabase): Promise<SqliteStorage> {
+	static async open(db: SqliteDatabase, options: SqliteStorageOptions = {}): Promise<SqliteStorage> {
 		try {
-			await applySqliteMigrations(db);
-			const metadata = getRow<MetadataRow>(
-				db.prepare("SELECT next_id, next_seq FROM durable_metadata WHERE singleton = 1"),
+			const schema = createSqliteSchema(options.prefix);
+			await applySqliteMigrationsForSchema(db, schema);
+			const metadata = await db.get<MetadataRow>(
+				`SELECT next_id, next_seq FROM ${schema.tables.durableMetadata} WHERE singleton = 1`,
 			);
 			if (metadata === undefined) throw new Error("Durable SQLite metadata is missing");
-			return new SqliteStorage(db, Number(metadata.next_id));
+			return new SqliteStorage(db, schema, Number(metadata.next_id));
 		} catch (error) {
 			try {
 				await db.close();
@@ -177,111 +210,237 @@ export class SqliteStorage implements Storage {
 		}
 	}
 
-	async commit(writes: readonly StorageWrite[], _context: Context): Promise<Seq> {
+	/**
+	 * Commit `batches` in one SQL transaction, each with its own seq. Each batch is checked before it writes anything,
+	 * against the state the earlier ones left, and the first one refused ends the batch: the transaction commits the ones
+	 * before it. No savepoints, which Durable Objects do not allow: the checks run before the writes instead.
+	 */
+	async commit(
+		batches: readonly (readonly StorageWrite[])[],
+		receive: (index: number, seq: Seq) => void,
+		_context: Context,
+	): Promise<CommitResult> {
 		this.assertOpen();
-		const documentActions = this.prepareDocumentActions(writes);
-		const candidateNextId = this.candidateNextId(writes);
-		const seq = await this.db.transaction(() => {
-			const metadata = getRow<MetadataRow>(
-				this.db.prepare("SELECT next_id, next_seq FROM durable_metadata WHERE singleton = 1"),
-			);
-			if (metadata === undefined) throw new Error("Durable SQLite metadata is missing");
-			const committedSeq = metadata.next_seq;
-			this.checkGlobalIds(writes);
-			this.checkDocumentActions(documentActions);
-			for (const write of writes) this.applyTableWrite(write, committedSeq);
-			this.applyDocumentActions(documentActions, committedSeq);
-			this.db
-				.prepare("UPDATE durable_metadata SET next_id = ?, next_seq = ? WHERE singleton = 1")
-				.run(String(Math.max(Number(metadata.next_id), candidateNextId)), committedSeq + 1);
-			return committedSeq;
+		const seqs: Seq[] = [];
+		let refused: { readonly error: unknown } | undefined;
+		let candidateNextId = this.nextId;
+		await this.db.transaction(async (transaction) => {
+			const metadata = await this.readMetadata(transaction);
+			let next = metadata.next_seq;
+			// Whether a database call of a batch's checks failed: then the failure is an unknown outcome, not a refusal.
+			const calls: CheckCalls = { failed: false };
+			const checked = watchCalls(transaction, calls);
+			for (const writes of batches) {
+				let documentActions: Map<DocumentId, DocumentAction>;
+				// Only Durable's own checks refuse a batch, before it wrote anything: the ones before it stand. A failure of
+				// the database rejects the call, and rolls back the batches before it with the transaction.
+				calls.failed = false;
+				try {
+					documentActions = this.prepareDocumentActions(writes);
+					await this.checkBatch(checked, writes, documentActions);
+				} catch (error) {
+					if (calls.failed) throw error;
+					refused = { error };
+					break;
+				}
+				const seq = seqFromNumber(next++);
+				await this.applyBatch(transaction, writes, documentActions, seq);
+				seqs.push(seq);
+				candidateNextId = Math.max(candidateNextId, this.candidateNextId(writes));
+			}
+			if (seqs.length > 0) {
+				await this.writeMetadata(transaction, Math.max(Number(metadata.next_id), candidateNextId), next);
+			}
 		});
 		this.nextId = Math.max(this.nextId, candidateNextId);
-		return seq;
+		// `COMMIT` returned: the stored batches are durable.
+		for (const [index, seq] of seqs.entries()) receive(index, seq);
+		return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: refused.error };
 	}
 
-	async mintId(): Promise<Id> {
+	private async readMetadata(executor: SqliteExecutor): Promise<MetadataRow> {
+		const metadata = await executor.get<MetadataRow>(
+			`SELECT next_id, next_seq FROM ${this.schema.tables.durableMetadata} WHERE singleton = 1`,
+		);
+		if (metadata === undefined) throw new Error("Durable SQLite metadata is missing");
+		return metadata;
+	}
+
+	private async writeMetadata(executor: SqliteExecutor, nextId: number, nextSeq: number): Promise<void> {
+		await executor.run(
+			`UPDATE ${this.schema.tables.durableMetadata} SET next_id = ?, next_seq = ? WHERE singleton = 1`,
+			String(nextId),
+			nextSeq,
+		);
+	}
+
+	/** Durable's own checks of one batch, copy resolution included, before it writes anything. */
+	private async checkBatch(
+		executor: SqliteExecutor,
+		writes: readonly StorageWrite[],
+		documentActions: Map<DocumentId, DocumentAction>,
+	): Promise<void> {
+		await this.checkGlobalIds(executor, writes);
+		await this.checkDocumentActions(executor, documentActions);
+		await this.resolveCopies(executor, documentActions);
+	}
+
+	private async applyBatch(
+		executor: SqliteExecutor,
+		writes: readonly StorageWrite[],
+		documentActions: ReadonlyMap<DocumentId, DocumentAction>,
+		seq: Seq,
+	): Promise<void> {
+		for (const write of writes) await this.applyTableWrite(executor, write, seq);
+		await this.applyDocumentActions(executor, documentActions, seq);
+	}
+
+	async mintId<I extends Id<string>>(): Promise<I> {
 		this.assertOpen();
 		if (!Number.isSafeInteger(this.nextId)) throw new Error("ID space is exhausted");
-		return this.nextId++;
+		return idFromNumber<I>(this.nextId++);
 	}
 
-	async conversation(id: Id, _context: Context): Promise<ConversationRecord | undefined> {
+	async conversation(id: ConversationId, _context: Context): Promise<ConversationRecord | undefined> {
 		this.assertOpen();
-		const row = getRow<JsonRow>(this.db.prepare("SELECT record FROM conversations WHERE id = ?"), id);
+		const row = await this.db.get<JsonRow>(`SELECT record FROM ${this.schema.tables.conversations} WHERE id = ?`, id);
 		return row === undefined ? undefined : parseJson<ConversationRecord>(row.record);
 	}
 
 	async scanConversations(
-		cursor: Cursor | undefined,
+		query: ConversationQuery,
 		limit: number,
+		cursor: Cursor | undefined,
 		_context: Context,
 	): Promise<Page<ConversationRecord, Cursor>> {
 		this.assertOpen();
-		const after = cursorId(cursor) ?? -1;
-		const rows = allRows<JsonRow>(
-			this.db.prepare("SELECT record FROM conversations WHERE id > ? ORDER BY id LIMIT ?"),
-			after,
-			limit + 1,
+		const start = scanStart(query.order, cursor, "ascending");
+		const scan = scanSql(start);
+		const clauses = [scan.clause];
+		const params: SqliteValue[] = [scan.param];
+		if (query.ownerConversationId !== undefined) {
+			clauses.push("owner_conversation_id = ?");
+			params.push(query.ownerConversationId);
+		}
+		if (query.ownerTaskId !== undefined) {
+			clauses.push("owner_task_id = ?");
+			params.push(query.ownerTaskId);
+		}
+		params.push(limit + 1);
+		const rows = await this.db.all<JsonRow>(
+			`SELECT record FROM ${this.schema.tables.conversations} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`,
+			...params,
 		);
 		return page(
 			rows.map((row) => parseJson<ConversationRecord>(row.record)),
 			limit,
+			start.order,
 		);
 	}
 
-	async entry(
-		id: Id,
-		_context: Context,
+	entry(id: EntryId, context: Context): Promise<{ readonly entry: EntryRecord; readonly commitSeq: Seq } | undefined>;
+	entry(
+		conversationId: ConversationId,
+		id: EntryId,
+		context: Context,
+	): Promise<{ readonly entry: EntryRecord; readonly commitSeq: Seq } | undefined>;
+	entry(
+		idOrConversationId: EntryId | ConversationId,
+		idOrContext: EntryId | Context,
+		context?: Context,
 	): Promise<{ readonly entry: EntryRecord; readonly commitSeq: Seq } | undefined> {
-		this.assertOpen();
-		const row = getRow<EntryJsonRow>(this.db.prepare("SELECT record, commit_seq FROM entries WHERE id = ?"), id);
-		return row === undefined ? undefined : { entry: parseJson<EntryRecord>(row.record), commitSeq: row.commit_seq };
+		return this.admitRead(() => this.readEntry(idOrConversationId, idOrContext, context));
 	}
 
-	async findLatestHeadMarker(
-		conversationId: Id,
-		atOrBeforeEntryId: Id | undefined,
+	findLatestHeadMarker(
+		conversationId: ConversationId,
+		atOrBeforeEntryId: EntryId | undefined,
 		_context: Context,
-	): Promise<(EntryRecord & { readonly head: Id }) | undefined> {
-		this.assertOpen();
-		let conversation = this.readConversation(conversationId);
-		if (conversation === undefined) throw new Error(`Unknown conversation: ${conversationId}`);
-		let upper = atOrBeforeEntryId;
+	): Promise<(EntryRecord & { readonly head: EntryId }) | undefined> {
+		return this.admitRead(() => this.readLatestHeadMarker(conversationId, atOrBeforeEntryId));
+	}
+
+	scanEntries(
+		query: EntryQuery,
+		limit: number,
+		cursor: Cursor | undefined,
+		_context: Context,
+	): Promise<Page<EntryRecord, Cursor>> {
+		return this.admitRead(() => this.readEntries(query, limit, cursor));
+	}
+
+	private async readEntry(
+		idOrConversationId: EntryId | ConversationId,
+		idOrContext: EntryId | Context,
+		context?: Context,
+	): Promise<{ readonly entry: EntryRecord; readonly commitSeq: Seq } | undefined> {
+		const id =
+			context === undefined
+				? idFromNumber<EntryId>(idOrConversationId)
+				: typeof idOrContext === "number"
+					? idFromNumber<EntryId>(idOrContext)
+					: undefined;
+		if (id === undefined) throw new StorageRequestError("Storage.entry() requires an entry ID");
+		let conversation: ConversationRecord | undefined;
+		if (context !== undefined) {
+			const conversationId = idFromNumber<ConversationId>(idOrConversationId);
+			conversation = await this.readConversation(conversationId);
+			if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
+		}
+		const row = await this.db.get<EntryJsonRow>(
+			`SELECT record, commit_seq FROM ${this.schema.tables.entries} WHERE id = ?`,
+			id,
+		);
+		if (row === undefined) return undefined;
+		const entry = parseJson<EntryRecord>(row.record);
+		if (conversation !== undefined) {
+			let upperEntryId = Number.POSITIVE_INFINITY;
+			while (conversation.id !== entry.conversationId) {
+				if (conversation.parent === undefined) return undefined;
+				upperEntryId = Math.min(upperEntryId, conversation.parent.at);
+				conversation = (await this.readConversation(conversation.parent.conversationId))!;
+			}
+			if (entry.id > upperEntryId) return undefined;
+		}
+		return { entry, commitSeq: seqFromNumber(row.commit_seq) };
+	}
+
+	private async readLatestHeadMarker(
+		conversationId: ConversationId,
+		atOrBeforeEntryId: EntryId | undefined,
+	): Promise<(EntryRecord & { readonly head: EntryId }) | undefined> {
+		let conversation = await this.readConversation(conversationId);
+		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${conversationId}`);
+		let upper: number | undefined = atOrBeforeEntryId;
 		while (true) {
 			const row =
 				upper === undefined
-					? getRow<JsonRow>(
-							this.db.prepare(
-								"SELECT record FROM entries WHERE conversation_id = ? AND head IS NOT NULL ORDER BY id DESC LIMIT 1",
-							),
+					? await this.db.get<JsonRow>(
+							`SELECT record FROM ${this.schema.tables.entries} WHERE conversation_id = ? AND head IS NOT NULL ORDER BY id DESC LIMIT 1`,
 							conversation.id,
 						)
-					: getRow<JsonRow>(
-							this.db.prepare(
-								"SELECT record FROM entries WHERE conversation_id = ? AND head IS NOT NULL AND id <= ? ORDER BY id DESC LIMIT 1",
-							),
+					: await this.db.get<JsonRow>(
+							`SELECT record FROM ${this.schema.tables.entries} WHERE conversation_id = ? AND head IS NOT NULL AND id <= ? ORDER BY id DESC LIMIT 1`,
 							conversation.id,
 							upper,
 						);
-			if (row !== undefined) return parseJson<EntryRecord & { readonly head: Id }>(row.record);
+			if (row !== undefined) return parseJson<EntryRecord & { readonly head: EntryId }>(row.record);
 			if (conversation.parent === undefined) return undefined;
 			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
-			conversation = this.readConversation(conversation.parent.conversationId)!;
+			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 		}
 	}
 
-	async scanEntries(
+	private async readEntries(
 		query: EntryQuery,
-		cursor: Cursor | undefined,
 		limit: number,
-		_context: Context,
+		cursor: Cursor | undefined,
 	): Promise<Page<EntryRecord, Cursor>> {
-		this.assertOpen();
-		let conversation = this.readConversation(query.conversationId);
-		if (conversation === undefined) throw new Error(`Unknown conversation: ${query.conversationId}`);
-		const after = cursorId(cursor);
-		let upper = query.maxEntryId;
+		const { order, after } = scanStart(query.order, cursor, "descending");
+		if (order === "ascending") return this.readEntriesAscending(query, limit, after);
+		let conversation = await this.readConversation(query.conversationId);
+		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${query.conversationId}`);
+		let upper: number | undefined = query.maxEntryId;
 		if (after !== undefined) upper = Math.min(upper ?? Number.MAX_SAFE_INTEGER, after - 1);
 		const values: EntryRecord[] = [];
 		while (true) {
@@ -296,34 +455,78 @@ export class SqliteStorage implements Storage {
 				params.push(upper);
 			}
 			params.push(limit + 1 - values.length);
-			const rows = allRows<JsonRow>(
-				this.db.prepare(`SELECT record FROM entries WHERE ${clauses.join(" AND ")} ORDER BY id DESC LIMIT ?`),
+			const rows = await this.db.all<JsonRow>(
+				`SELECT record FROM ${this.schema.tables.entries} WHERE ${clauses.join(" AND ")} ORDER BY id DESC LIMIT ?`,
 				...params,
 			);
 			values.push(...rows.map((row) => parseJson<EntryRecord>(row.record)));
 			if (values.length > limit || conversation.parent === undefined) break;
 			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
 			if (query.minEntryId !== undefined && upper < query.minEntryId) break;
-			conversation = this.readConversation(conversation.parent.conversationId)!;
+			conversation = (await this.readConversation(conversation.parent.conversationId))!;
 		}
-		return page(values, limit);
+		return page(values, limit, "descending");
 	}
 
-	async task(id: Id, _context: Context): Promise<StoredTask | undefined> {
+	/** Oldest first: the fork chain's segments from the root conversation forward, each up to its fork point. */
+	private async readEntriesAscending(
+		query: EntryQuery,
+		limit: number,
+		after: number | undefined,
+	): Promise<Page<EntryRecord, Cursor>> {
+		const segments: { readonly conversationId: ConversationId; readonly upper: number | undefined }[] = [];
+		let conversation = await this.readConversation(query.conversationId);
+		if (conversation === undefined) throw new StorageRequestError(`Unknown conversation: ${query.conversationId}`);
+		let upper: number | undefined = query.maxEntryId;
+		while (true) {
+			segments.push({ conversationId: conversation.id, upper });
+			if (conversation.parent === undefined) break;
+			upper = upper === undefined ? conversation.parent.at : Math.min(upper, conversation.parent.at);
+			if (query.minEntryId !== undefined && upper < query.minEntryId) break;
+			conversation = (await this.readConversation(conversation.parent.conversationId))!;
+		}
+		let lower: number | undefined = query.minEntryId;
+		if (after !== undefined) lower = Math.max(lower ?? after + 1, after + 1);
+		const values: EntryRecord[] = [];
+		for (const segment of segments.reverse()) {
+			const clauses = ["conversation_id = ?"];
+			const params: SqliteValue[] = [segment.conversationId];
+			if (lower !== undefined) {
+				clauses.push("id >= ?");
+				params.push(lower);
+			}
+			if (segment.upper !== undefined) {
+				clauses.push("id <= ?");
+				params.push(segment.upper);
+			}
+			params.push(limit + 1 - values.length);
+			const rows = await this.db.all<JsonRow>(
+				`SELECT record FROM ${this.schema.tables.entries} WHERE ${clauses.join(" AND ")} ORDER BY id ASC LIMIT ?`,
+				...params,
+			);
+			values.push(...rows.map((row) => parseJson<EntryRecord>(row.record)));
+			if (values.length > limit) break;
+		}
+		return page(values, limit, "ascending");
+	}
+
+	async task(id: TaskId, _context: Context): Promise<StoredTask | undefined> {
 		this.assertOpen();
-		const row = getRow<JsonRow>(this.db.prepare("SELECT record FROM tasks WHERE id = ?"), id);
+		const row = await this.db.get<JsonRow>(`SELECT record FROM ${this.schema.tables.tasks} WHERE id = ?`, id);
 		return row === undefined ? undefined : parseJson<StoredTask>(row.record);
 	}
 
 	async scanTasks(
 		query: TaskQuery,
-		cursor: Cursor | undefined,
 		limit: number,
+		cursor: Cursor | undefined,
 		_context: Context,
 	): Promise<Page<StoredTask, Cursor>> {
 		this.assertOpen();
-		const clauses = ["id > ?"];
-		const params: SqliteValue[] = [cursorId(cursor) ?? -1];
+		const start = scanStart(query.order, cursor, "ascending");
+		const scan = scanSql(start);
+		const clauses = [scan.clause];
+		const params: SqliteValue[] = [scan.param];
 		if (query.conversationId !== undefined) {
 			clauses.push("conversation_id = ?");
 			params.push(query.conversationId);
@@ -345,30 +548,62 @@ export class SqliteStorage implements Storage {
 			params.push(query.background ? 1 : 0);
 		}
 		params.push(limit + 1);
-		const rows = allRows<JsonRow>(
-			this.db.prepare(`SELECT record FROM tasks WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT ?`),
+		const rows = await this.db.all<JsonRow>(
+			`SELECT record FROM ${this.schema.tables.tasks} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`,
 			...params,
 		);
 		return page(
 			rows.map((row) => parseJson<StoredTask>(row.record)),
 			limit,
+			start.order,
 		);
 	}
 
-	async submission(id: Id, _context: Context): Promise<SubmissionRecord | undefined> {
+	async submission(id: SubmissionId, _context: Context): Promise<SubmissionRecord | undefined> {
 		this.assertOpen();
-		const row = getRow<JsonRow>(this.db.prepare("SELECT record FROM submissions WHERE id = ?"), id);
+		const row = await this.db.get<JsonRow>(`SELECT record FROM ${this.schema.tables.submissions} WHERE id = ?`, id);
 		return row === undefined ? undefined : parseJson<SubmissionRecord>(row.record);
 	}
 
+	async scanSubmissions(
+		query: SubmissionQuery,
+		limit: number,
+		cursor: Cursor | undefined,
+		_context: Context,
+	): Promise<Page<SubmissionRecord, Cursor>> {
+		this.assertOpen();
+		const start = scanStart(query.order, cursor, "ascending");
+		const scan = scanSql(start);
+		const clauses = [scan.clause];
+		const params: SqliteValue[] = [scan.param];
+		if (query.conversationId !== undefined) {
+			clauses.push("conversation_id = ?");
+			params.push(query.conversationId);
+		}
+		if (query.status !== undefined) {
+			clauses.push("status = ?");
+			params.push(query.status);
+		}
+		params.push(limit + 1);
+		const rows = await this.db.all<JsonRow>(
+			`SELECT record FROM ${this.schema.tables.submissions} WHERE ${clauses.join(" AND ")} ORDER BY id ${scan.direction} LIMIT ?`,
+			...params,
+		);
+		return page(
+			rows.map((row) => parseJson<SubmissionRecord>(row.record)),
+			limit,
+			start.order,
+		);
+	}
+
 	async submissionByRequest(
-		conversationId: Id,
+		conversationId: ConversationId,
 		requestId: string,
 		_context: Context,
 	): Promise<SubmissionRecord | undefined> {
 		this.assertOpen();
-		const row = getRow<JsonRow>(
-			this.db.prepare("SELECT record FROM submissions WHERE conversation_id = ? AND request_id = ?"),
+		const row = await this.db.get<JsonRow>(
+			`SELECT record FROM ${this.schema.tables.submissions} WHERE conversation_id = ? AND request_id = ?`,
 			conversationId,
 			encodeIndexedString(requestId),
 		);
@@ -382,59 +617,31 @@ export class SqliteStorage implements Storage {
 	): Promise<DocumentRecord | undefined> {
 		this.assertOpen();
 		const parts = addressParts(address);
-		const statement =
+		const sql =
 			at === "current"
-				? this.db.prepare(`SELECT record FROM documents
+				? `SELECT record FROM ${this.schema.tables.documents}
 					WHERE kind = ? AND scope_kind = ? AND owner_id = ? AND family = ? AND key_value = ?
-					AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1`)
-				: this.db.prepare(`SELECT record FROM documents
+					AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1`
+				: `SELECT record FROM ${this.schema.tables.documents}
 					WHERE kind = ? AND scope_kind = ? AND owner_id = ? AND family = ? AND key_value = ?
 					AND created_at <= ? AND (retired_at IS NULL OR retired_at > ?)
-					ORDER BY created_at DESC LIMIT 1`);
+					ORDER BY created_at DESC LIMIT 1`;
 		const params: SqliteValue[] = [parts.kind, parts.scopeKind, parts.ownerId, parts.family, parts.keyValue];
 		if (at !== "current") params.push(at, at);
-		const row = getRow<JsonRow>(statement, ...params);
+		const row = await this.db.get<JsonRow>(sql, ...params);
 		return row === undefined ? undefined : parseJson<DocumentRecord>(row.record);
 	}
 
-	async document(id: Id, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
+	async document(id: DocumentId, at: DocumentPoint, _context: Context): Promise<StoredDocument | undefined> {
 		this.assertOpen();
-		const row = getRow<JsonRow>(this.db.prepare("SELECT record FROM documents WHERE id = ?"), id);
-		if (row === undefined) return undefined;
-		const record = parseJson<DocumentRecord>(row.record);
-		if (at !== "current" && isCurrentOnly(record)) {
-			throw new Error(`Document ${id} does not retain historical content`);
-		}
-		if (!isAliveAt(record, at)) return undefined;
-		const upper = at === "current" ? Number.MAX_SAFE_INTEGER : at;
-		const base = getRow<RevisionRow>(
-			this.db.prepare(`SELECT seq, kind, version, content FROM document_revisions
-				WHERE document_id = ? AND kind = 'base' AND seq <= ? ORDER BY seq DESC LIMIT 1`),
-			id,
-			upper,
-		);
-		if (base === undefined) throw new Error(`Document ${id} is missing a required base`);
-		let value = parseJson<JsonObject>(base.content);
-		const tail = allRows<RevisionRow>(
-			this.db.prepare(`SELECT seq, kind, version, content FROM document_revisions
-				WHERE document_id = ? AND seq > ? AND seq <= ? ORDER BY seq`),
-			id,
-			base.seq,
-			upper,
-		);
-		for (const revision of tail) {
-			if (revision.kind !== "delta" || revision.version !== base.version) {
-				throw new Error(`Document ${id} crosses a stored version boundary without a base`);
-			}
-			value = applyImmutable(value, parseJson<readonly Op[]>(revision.content)) as JsonObject;
-		}
-		return { record, version: base.version, value };
+		// The record and revision queries must observe one committed state; a commit between them can replace the base.
+		return this.db.transaction((transaction) => this.materializeDocument(transaction, id, at));
 	}
 
 	async scanDocuments(
 		query: DocumentQuery,
-		cursor: Cursor | undefined,
 		limit: number,
+		cursor: Cursor | undefined,
 		_context: Context,
 	): Promise<Page<DocumentRecord, Cursor>> {
 		this.assertOpen();
@@ -452,8 +659,8 @@ export class SqliteStorage implements Storage {
 			params.push(query.at, query.at);
 		}
 		params.push(limit + 1);
-		const rows = allRows<JsonRow>(
-			this.db.prepare(`SELECT record FROM documents WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT ?`),
+		const rows = await this.db.all<JsonRow>(
+			`SELECT record FROM ${this.schema.tables.documents} WHERE ${clauses.join(" AND ")} ORDER BY id LIMIT ?`,
 			...params,
 		);
 		return page(
@@ -462,18 +669,80 @@ export class SqliteStorage implements Storage {
 		);
 	}
 
-	async close(_context: Context): Promise<void> {
-		if (this.closed) return;
-		this.closed = true;
+	close(_context: Context): Promise<void> {
+		if (this.closing === undefined) {
+			this.closed = true;
+			this.closing = this.closeDatabase();
+		}
+		return this.closing;
+	}
+
+	private async closeDatabase(): Promise<void> {
+		if (this.admittedReads > 0) {
+			await new Promise<void>((resolve) => {
+				this.readsDrained = resolve;
+			});
+		}
 		await this.db.close();
 	}
 
-	private readConversation(id: Id): ConversationRecord | undefined {
-		const row = getRow<JsonRow>(this.db.prepare("SELECT record FROM conversations WHERE id = ?"), id);
+	/**
+	 * Run a read that issues several queries. Close waits for admitted reads, so their later queries never reach a
+	 * closed database. Single-query reads and transactions are already ordered before close by the database.
+	 */
+	private async admitRead<T>(read: () => Promise<T>): Promise<T> {
+		this.assertOpen();
+		this.admittedReads++;
+		try {
+			return await read();
+		} finally {
+			if (--this.admittedReads === 0) this.readsDrained?.();
+		}
+	}
+
+	private async readConversation(id: ConversationId): Promise<ConversationRecord | undefined> {
+		const row = await this.db.get<JsonRow>(`SELECT record FROM ${this.schema.tables.conversations} WHERE id = ?`, id);
 		return row === undefined ? undefined : parseJson<ConversationRecord>(row.record);
 	}
 
-	private candidateNextId(writes: readonly StorageWrite[]): Id {
+	private async materializeDocument(
+		executor: SqliteExecutor,
+		id: DocumentId,
+		at: DocumentPoint,
+	): Promise<StoredDocument | undefined> {
+		const row = await executor.get<JsonRow>(`SELECT record FROM ${this.schema.tables.documents} WHERE id = ?`, id);
+		if (row === undefined) return undefined;
+		const record = parseJson<DocumentRecord>(row.record);
+		if (at !== "current" && isCurrentOnly(record)) {
+			throw new StorageRequestError(`Document ${id} does not retain historical content`);
+		}
+		if (!isAliveAt(record, at)) return undefined;
+		const upper = at === "current" ? Number.MAX_SAFE_INTEGER : at;
+		const base = await executor.get<RevisionRow>(
+			`SELECT seq, kind, version, content FROM ${this.schema.tables.documentRevisions}
+				WHERE document_id = ? AND kind = 'base' AND seq <= ? ORDER BY seq DESC LIMIT 1`,
+			id,
+			upper,
+		);
+		if (base === undefined) throw new Error(`Document ${id} is missing a required base`);
+		let value = parseJson<JsonObject>(base.content);
+		const tail = await executor.all<RevisionRow>(
+			`SELECT seq, kind, version, content FROM ${this.schema.tables.documentRevisions}
+				WHERE document_id = ? AND seq > ? AND seq <= ? ORDER BY seq`,
+			id,
+			base.seq,
+			upper,
+		);
+		for (const revision of tail) {
+			if (revision.kind !== "delta" || revision.version !== base.version) {
+				throw new Error(`Document ${id} crosses a stored version boundary without a base`);
+			}
+			value = apply(value, parseJson<readonly Op[]>(revision.content)) as JsonObject;
+		}
+		return { record, version: base.version, value, deltasSinceBase: tail.length };
+	}
+
+	private candidateNextId(writes: readonly StorageWrite[]): number {
 		let nextId = this.nextId;
 		for (const write of writes) {
 			const id = writeId(write);
@@ -482,14 +751,16 @@ export class SqliteStorage implements Storage {
 		return nextId;
 	}
 
-	private checkGlobalIds(writes: readonly StorageWrite[]): void {
-		const claimed = new Map<Id, TableName>();
-		const lookup = this.db.prepare("SELECT record_type FROM record_ids WHERE id = ?");
+	private async checkGlobalIds(executor: SqliteExecutor, writes: readonly StorageWrite[]): Promise<void> {
+		const claimed = new Map<Id<string>, TableName>();
 		for (const write of writes) {
 			if (write.type === "document.change" || write.type === "document.retire") continue;
-			const table: TableName = write.type === "document.create" ? "document" : write.type;
-			const id = write.type === "document.create" ? write.record.id : write.value.id;
-			const existing = getRow<RecordIdRow>(lookup, id)?.record_type;
+			const document = write.type === "document.create" || write.type === "document.copy";
+			const table: TableName = document ? "document" : write.type;
+			const id = document ? write.record.id : write.value.id;
+			const existing = (
+				await executor.get<RecordIdRow>(`SELECT record_type FROM ${this.schema.tables.recordIds} WHERE id = ?`, id)
+			)?.record_type;
 			const earlier = claimed.get(id);
 			if (table === "conversation" || table === "entry" || table === "document") {
 				if (existing !== undefined) throw new Error(`ID ${id} already belongs to ${existing}`);
@@ -503,13 +774,18 @@ export class SqliteStorage implements Storage {
 		}
 	}
 
-	private prepareDocumentActions(writes: readonly StorageWrite[]): Map<Id, DocumentAction> {
-		const actions = new Map<Id, DocumentAction>();
+	private prepareDocumentActions(writes: readonly StorageWrite[]): Map<DocumentId, DocumentAction> {
+		const actions = new Map<DocumentId, DocumentAction>();
 		for (const write of writes) {
-			if (write.type !== "document.create" && write.type !== "document.change" && write.type !== "document.retire") {
+			if (
+				write.type !== "document.create" &&
+				write.type !== "document.copy" &&
+				write.type !== "document.change" &&
+				write.type !== "document.retire"
+			) {
 				continue;
 			}
-			const id = write.type === "document.create" ? write.record.id : write.id;
+			const id = write.type === "document.create" || write.type === "document.copy" ? write.record.id : write.id;
 			let action = actions.get(id);
 			if (action === undefined) {
 				action = { retire: false };
@@ -517,14 +793,23 @@ export class SqliteStorage implements Storage {
 			}
 			switch (write.type) {
 				case "document.create":
-					if (action.create !== undefined || action.content !== undefined) {
+					if (action.create !== undefined || action.content !== undefined || action.copy !== undefined) {
 						throw new Error(`Document ${id} has more than one content command`);
 					}
 					action.create = write.record;
 					action.content = write.content;
 					break;
+				case "document.copy":
+					if (action.create !== undefined || action.content !== undefined || action.copy !== undefined) {
+						throw new Error(`Document ${id} has more than one content command`);
+					}
+					action.create = write.record;
+					action.copy = write.source;
+					break;
 				case "document.change":
-					if (action.content !== undefined) throw new Error(`Document ${id} has more than one content command`);
+					if (action.content !== undefined || action.copy !== undefined) {
+						throw new Error(`Document ${id} has more than one content command`);
+					}
 					action.content = write.content;
 					break;
 				case "document.retire":
@@ -536,22 +821,23 @@ export class SqliteStorage implements Storage {
 		return actions;
 	}
 
-	private checkDocumentActions(actions: ReadonlyMap<Id, DocumentAction>): void {
+	private async checkDocumentActions(
+		executor: SqliteExecutor,
+		actions: ReadonlyMap<DocumentId, DocumentAction>,
+	): Promise<void> {
 		const liveCounts = new Map<string, number>();
 		for (const [id, action] of actions) {
-			const row = getRow<JsonRow>(this.db.prepare("SELECT record FROM documents WHERE id = ?"), id);
+			if (action.copy !== undefined && actions.has(action.copy.id)) {
+				throw new Error(`Document copy ${id} source is changed in the copy batch`);
+			}
+			const row = await executor.get<JsonRow>(`SELECT record FROM ${this.schema.tables.documents} WHERE id = ?`, id);
 			const existing = row === undefined ? undefined : parseJson<DocumentRecord>(row.record);
 			if (action.create === undefined && existing === undefined) throw new Error(`Unknown document: ${id}`);
 			if (action.create !== undefined && existing !== undefined) throw new Error(`Document ${id} already exists`);
 			if (existing?.retiredAt !== undefined) throw new Error(`Document ${id} is retired`);
-			if (action.create !== undefined && action.content?.kind !== "base") {
-				throw new Error(`Document ${id} creation requires a base`);
-			}
 			if (action.content?.kind === "delta") {
-				const previous = getRow<{ readonly version: number }>(
-					this.db.prepare(
-						"SELECT version FROM document_revisions WHERE document_id = ? ORDER BY seq DESC LIMIT 1",
-					),
+				const previous = await executor.get<{ readonly version: number }>(
+					`SELECT version FROM ${this.schema.tables.documentRevisions} WHERE document_id = ? ORDER BY seq DESC LIMIT 1`,
 					id,
 				);
 				if (previous === undefined) throw new Error(`Document ${id} delta has no base`);
@@ -562,7 +848,7 @@ export class SqliteStorage implements Storage {
 			const record = action.create ?? existing!;
 			const key = addressKey(record);
 			let live = liveCounts.get(key);
-			if (live === undefined) live = this.currentDocumentId(record) === undefined ? 0 : 1;
+			if (live === undefined) live = (await this.currentDocumentId(executor, record)) === undefined ? 0 : 1;
 			if (action.retire && existing !== undefined) live--;
 			if (action.create !== undefined && !action.retire) live++;
 			liveCounts.set(key, live);
@@ -572,78 +858,128 @@ export class SqliteStorage implements Storage {
 		}
 	}
 
-	private currentDocumentId(address: DocumentAddress | DocumentCreate | DocumentRecord): Id | undefined {
+	private async currentDocumentId(
+		executor: SqliteExecutor,
+		address: DocumentAddress | DocumentCreate | DocumentRecord,
+	): Promise<DocumentId | undefined> {
 		const parts = addressParts(address);
-		return getRow<IdRow>(
-			this.db.prepare(`SELECT id FROM documents
+		const id = (
+			await executor.get<IdRow>(
+				`SELECT id FROM ${this.schema.tables.documents}
 				WHERE kind = ? AND scope_kind = ? AND owner_id = ? AND family = ? AND key_value = ? AND retired_at IS NULL
-				LIMIT 1`),
-			parts.kind,
-			parts.scopeKind,
-			parts.ownerId,
-			parts.family,
-			parts.keyValue,
+				LIMIT 1`,
+				parts.kind,
+				parts.scopeKind,
+				parts.ownerId,
+				parts.family,
+				parts.keyValue,
+			)
 		)?.id;
+		return id === undefined ? undefined : idFromNumber<DocumentId>(id);
 	}
 
-	private applyTableWrite(write: StorageWrite, seq: Seq): void {
+	private async applyTableWrite(executor: SqliteExecutor, write: StorageWrite, seq: Seq): Promise<void> {
 		switch (write.type) {
 			case "conversation":
-				this.claimId(write.value.id, "conversation");
-				this.db
-					.prepare("INSERT INTO conversations (id, record) VALUES (?, ?)")
-					.run(write.value.id, encodeJson(write.value));
+				await this.claimId(executor, write.value.id, "conversation");
+				await executor.run(
+					`INSERT INTO ${this.schema.tables.conversations} (id, owner_conversation_id, owner_task_id, record) VALUES (?, ?, ?, ?)`,
+					write.value.id,
+					write.value.owner?.conversationId ?? null,
+					write.value.owner?.taskId ?? null,
+					encodeJson(write.value),
+				);
 				break;
 			case "entry":
-				this.claimId(write.value.id, "entry");
-				this.db
-					.prepare("INSERT INTO entries (id, conversation_id, head, commit_seq, record) VALUES (?, ?, ?, ?, ?)")
-					.run(write.value.id, write.value.conversationId, write.value.head ?? null, seq, encodeJson(write.value));
+				await this.claimId(executor, write.value.id, "entry");
+				await executor.run(
+					`INSERT INTO ${this.schema.tables.entries} (id, conversation_id, head, commit_seq, record) VALUES (?, ?, ?, ?, ?)`,
+					write.value.id,
+					write.value.conversationId,
+					write.value.head ?? null,
+					seq,
+					encodeJson(write.value),
+				);
 				break;
 			case "task":
-				this.claimId(write.value.id, "task");
-				this.db
-					.prepare(`INSERT INTO tasks (id, conversation_id, kind, status, abort_requested, background, record)
+				await this.claimId(executor, write.value.id, "task");
+				await executor.run(
+					`INSERT INTO ${this.schema.tables.tasks} (id, conversation_id, kind, status, abort_requested, background, record)
 						VALUES (?, ?, ?, ?, ?, ?, ?)
 						ON CONFLICT(id) DO UPDATE SET conversation_id = excluded.conversation_id, kind = excluded.kind,
 						status = excluded.status, abort_requested = excluded.abort_requested,
-						background = excluded.background, record = excluded.record`)
-					.run(
-						write.value.id,
-						write.value.conversationId,
-						encodeIndexedString(write.value.kind),
-						write.value.state.status,
-						write.value.abortRequested ? 1 : 0,
-						write.value.background ? 1 : 0,
-						encodeJson(write.value),
-					);
+						background = excluded.background, record = excluded.record`,
+					write.value.id,
+					write.value.conversationId,
+					encodeIndexedString(write.value.kind),
+					write.value.state.status,
+					write.value.abortRequested ? 1 : 0,
+					write.value.background ? 1 : 0,
+					encodeJson(write.value),
+				);
 				break;
 			case "submission":
-				this.claimId(write.value.id, "submission");
-				this.db
-					.prepare(`INSERT INTO submissions (id, conversation_id, request_id, record) VALUES (?, ?, ?, ?)
+				await this.claimId(executor, write.value.id, "submission");
+				await executor.run(
+					`INSERT INTO ${this.schema.tables.submissions} (id, conversation_id, request_id, status, record) VALUES (?, ?, ?, ?, ?)
 						ON CONFLICT(id) DO UPDATE SET conversation_id = excluded.conversation_id,
-						request_id = excluded.request_id, record = excluded.record`)
-					.run(
-						write.value.id,
-						write.value.conversationId,
-						write.value.requestId === undefined ? null : encodeIndexedString(write.value.requestId),
-						encodeJson(write.value),
-					);
+						request_id = excluded.request_id, status = excluded.status, record = excluded.record`,
+					write.value.id,
+					write.value.conversationId,
+					write.value.requestId === undefined ? null : encodeIndexedString(write.value.requestId),
+					write.value.status,
+					encodeJson(write.value),
+				);
 				break;
 			case "document.create":
+			case "document.copy":
 			case "document.change":
 			case "document.retire":
 				break;
 		}
 	}
 
-	private claimId(id: Id, table: TableName): void {
-		this.db.prepare("INSERT OR IGNORE INTO record_ids (id, record_type) VALUES (?, ?)").run(id, table);
+	private async claimId(executor: SqliteExecutor, id: Id<string>, table: TableName): Promise<void> {
+		await executor.run(
+			`INSERT OR IGNORE INTO ${this.schema.tables.recordIds} (id, record_type) VALUES (?, ?)`,
+			id,
+			table,
+		);
 	}
 
-	private applyDocumentActions(actions: ReadonlyMap<Id, DocumentAction>, seq: Seq): void {
+	/** Resolve each copy to a base of its source's state before this batch, which may not change the source. */
+	private async resolveCopies(executor: SqliteExecutor, actions: Map<DocumentId, DocumentAction>): Promise<void> {
 		for (const [id, action] of actions) {
+			if (action.copy === undefined) continue;
+			try {
+				const stored = await this.materializeDocument(executor, action.copy.id, action.copy.at);
+				if (stored === undefined) throw new Error(`Fork source document ${action.copy.id} cannot be read`);
+				const create = action.create!;
+				if (
+					stored.record.scope.kind !== "conversation" ||
+					create.scope.kind !== "conversation" ||
+					stored.record.kind !== create.kind ||
+					stored.record.key !== create.key ||
+					stored.record.history !== create.history ||
+					stored.record.fork !== create.fork
+				) {
+					throw new Error(`Fork source document ${action.copy.id} does not match the copied record`);
+				}
+				action.content = { kind: "base", version: stored.version, value: stored.value };
+			} catch (error) {
+				throw new Error(`Document copy ${id} was rejected`, { cause: error });
+			}
+		}
+	}
+
+	private async applyDocumentActions(
+		executor: SqliteExecutor,
+		actions: ReadonlyMap<DocumentId, DocumentAction>,
+		seq: Seq,
+	): Promise<void> {
+		for (const [id, action] of actions) {
+			// Copies are resolved to their content by `resolveCopies()`.
+			const content = action.content;
 			let record: DocumentRecord;
 			if (action.create !== undefined) {
 				record = {
@@ -652,48 +988,57 @@ export class SqliteStorage implements Storage {
 					...(action.retire ? { retiredAt: seq } : {}),
 				};
 				const parts = addressParts(record);
-				this.claimId(id, "document");
-				this.db
-					.prepare(`INSERT INTO documents
+				await this.claimId(executor, id, "document");
+				await executor.run(
+					`INSERT INTO ${this.schema.tables.documents}
 						(id, kind, family, key_value, scope_kind, owner_id, created_at, retired_at, record)
-						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-					.run(
-						id,
-						parts.kind,
-						parts.family,
-						parts.keyValue,
-						parts.scopeKind,
-						parts.ownerId,
-						seq,
-						action.retire ? seq : null,
-						encodeJson(record),
-					);
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					id,
+					parts.kind,
+					parts.family,
+					parts.keyValue,
+					parts.scopeKind,
+					parts.ownerId,
+					seq,
+					action.retire ? seq : null,
+					encodeJson(record),
+				);
 			} else {
-				const row = getRow<JsonRow>(this.db.prepare("SELECT record FROM documents WHERE id = ?"), id)!;
+				const row = (await executor.get<JsonRow>(
+					`SELECT record FROM ${this.schema.tables.documents} WHERE id = ?`,
+					id,
+				))!;
 				record = parseJson<DocumentRecord>(row.record);
 			}
 
-			if (action.content !== undefined) {
-				if (action.content.kind === "base" && isCurrentOnly(record)) {
-					this.db.prepare("DELETE FROM document_revisions WHERE document_id = ?").run(id);
+			if (content !== undefined) {
+				if (content.kind === "base" && isCurrentOnly(record)) {
+					await executor.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE document_id = ?`, id);
 				}
-				const encodedContent =
-					action.content.kind === "base" ? encodeJson(action.content.value) : encodeJson(action.content.ops);
-				this.db
-					.prepare(
-						"INSERT INTO document_revisions (document_id, seq, kind, version, content) VALUES (?, ?, ?, ?, ?)",
-					)
-					.run(id, seq, action.content.kind, action.content.version, encodedContent);
+				const encodedContent = content.kind === "base" ? encodeJson(content.value) : encodeJson(content.ops);
+				await executor.run(
+					`INSERT INTO ${this.schema.tables.documentRevisions} (document_id, seq, kind, version, content) VALUES (?, ?, ?, ?, ?)`,
+					id,
+					seq,
+					content.kind,
+					content.version,
+					encodedContent,
+				);
 			}
 
 			if (action.retire) {
 				if (action.create === undefined) {
 					record = { ...record, retiredAt: seq };
-					this.db
-						.prepare("UPDATE documents SET retired_at = ?, record = ? WHERE id = ?")
-						.run(seq, encodeJson(record), id);
+					await executor.run(
+						`UPDATE ${this.schema.tables.documents} SET retired_at = ?, record = ? WHERE id = ?`,
+						seq,
+						encodeJson(record),
+						id,
+					);
 				}
-				if (isCurrentOnly(record)) this.db.prepare("DELETE FROM document_revisions WHERE document_id = ?").run(id);
+				if (isCurrentOnly(record)) {
+					await executor.run(`DELETE FROM ${this.schema.tables.documentRevisions} WHERE document_id = ?`, id);
+				}
 			}
 		}
 	}

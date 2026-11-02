@@ -8,10 +8,6 @@ Stateful agent with tool execution and event streaming. Built on `@earendil-work
 npm install @earendil-works/pi-agent-core
 ```
 
-### SQLite session backends
-
-The SQLite session backend and the `node:sqlite` adapter live in a separate package, `@earendil-works/pi-session-backend-sqlite-node`, so the core package does not pull in runtime builtins or native SQLite dependencies by default. The backend accepts a runtime-specific SQLite factory, allowing other session backends to ship as their own packages in the future.
-
 ## Quick Start
 
 ```typescript
@@ -41,10 +37,6 @@ agent.subscribe((event) => {
 
 await agent.prompt("Hello!");
 ```
-
-## Experimental facet services
-
-Transport-neutral facet-service primitives live in `@earendil-works/chord`. The agent core does not export the service runtime.
 
 ## Core Concepts
 
@@ -239,6 +231,11 @@ const agent = new Agent({
 
   // Session ID for provider caching
   sessionId: "session-123",
+
+  // How requests identify the app to providers (pi-ai ClientIdentity), merged over
+  // DEFAULT_AGENT_IDENTITY ({ attribution: PI_ATTRIBUTION }: provider attribution headers name pi).
+  // Pass your app's attribution, or null to send none.
+  identity: { attribution: { name: "my-app", url: "https://my-app.example" } },
 
   // Dynamic API key resolution (for expiring OAuth tokens)
   getApiKey: async (provider) => refreshToken(),
@@ -458,18 +455,20 @@ const agent = new Agent({
 
 ## Tools
 
-Define tools using `AgentTool`:
+Define tools using `AgentTool`. `parameters` is any JSON Schema object; built with `@earendil-works/pi-schema`'s builders, it also types `params` (other schemas give `unknown`, `AgentTool<any>` gives `any`):
 
 ```typescript
-import { Type } from "typebox";
+import { obj, str } from "@earendil-works/pi-schema";
 
-const readFileTool: AgentTool = {
+const readFileParameters = obj({
+  path: str({ description: "File path" }),
+});
+
+const readFileTool: AgentTool<typeof readFileParameters> = {
   name: "read_file",
   label: "Read File",  // For UI display
   description: "Read a file's contents",
-  parameters: Type.Object({
-    path: Type.String({ description: "File path" }),
-  }),
+  parameters: readFileParameters,
   // Override execution mode for this tool (optional).
   // "sequential" forces the entire batch to run one at a time.
   // "parallel" allows concurrent execution with other tool calls.
@@ -510,6 +509,10 @@ execute: async (toolCallId, params, signal, onUpdate) => {
 Thrown errors are caught by the agent and reported to the LLM as tool errors with `isError: true`.
 
 Return `terminate: true` from `execute()`, a blocked `beforeToolCall`, or `afterToolCall` to hint that the agent should stop after the current tool batch. This only takes effect when every finalized tool result in the batch is terminating. The hint is runtime-only; emitted `toolResult` transcript messages remain standard LLM tool results.
+
+### MCP and Codemode
+
+`@earendil-works/pi-mcp` connects to MCP servers and `@earendil-works/pi-codemode` runs model-written JavaScript that calls tools. [examples/mcp-codemode](examples/mcp-codemode) wraps both as `AgentTool`s: one tool per MCP tool, and a `codemode` tool whose scripts call the agent's tools through `runToolCall()`, so `beforeToolCall` and `afterToolCall` apply to those calls too.
 
 ## Proxy Usage
 

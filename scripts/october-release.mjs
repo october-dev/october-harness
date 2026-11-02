@@ -8,7 +8,9 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { gt, valid } from "semver";
-import { installCodingAgentConsumer, packReleasePackages, smokeTestCodingAgentConsumer } from "./coding-agent-consumer.mjs";
+import { smokeTestCodingAgent } from "./coding-agent-smoke.mjs";
+import { installConsumer } from "./local-package-install.mjs";
+import { packPackages } from "./package-artifacts.mjs";
 
 export const octoberPackageName = "@october-dev/october";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,18 +44,26 @@ export function inspectOctoberTarball(tarball) {
 }
 
 export function prepareOctoberRelease(output) {
-	validateOctoberManifest(JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")));
+	const version = validateOctoberManifest(JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")));
 	if (!existsSync(join(packageDirectory, "dist/bundle/cli.js"))) throw new Error("Build the release before packing");
 	const root = output ? resolve(output) : mkdtempSync(join(tmpdir(), "october-release-"));
 	if (output) mkdirSync(root); // Refuse to overwrite any existing directory.
-	const tarballs = packReleasePackages([{ name: octoberPackageName, directory: packageDirectory }], join(root, "tarballs"));
-	const tarball = tarballs.get(octoberPackageName);
+	const packages = packPackages([{ name: octoberPackageName, version, directory: packageDirectory }], join(root, "tarballs"));
+	const artifactSet = {
+		packages,
+		getPackage(name) {
+			const pkg = packages.find((candidate) => candidate.name === name);
+			if (!pkg) throw new Error(`Package is not present in the October release: ${name}`);
+			return pkg;
+		},
+	};
+	const tarball = artifactSet.getPackage(octoberPackageName).tarballPath;
 	const artifact = inspectOctoberTarball(tarball);
 	// No Pi workspace overrides: test the exact upstream dependencies npm users get.
 	for (const manager of ["npm", "bun"]) {
 		const directory = join(root, manager === "npm" ? "node" : "bun-install");
-		installCodingAgentConsumer(directory, tarballs, manager);
-		smokeTestCodingAgentConsumer(directory, manager === "npm" ? process.execPath : "bun");
+		installConsumer({ directory, artifactSet, packageNames: [octoberPackageName], packageManager: manager });
+		smokeTestCodingAgent(directory, manager === "npm" ? process.execPath : "bun");
 		if (process.platform !== "win32") symlinkSync(join("node_modules", ".bin", "october"), join(directory, "october"));
 	}
 	console.log(JSON.stringify({ root, tarball, ...artifact }, null, 2));

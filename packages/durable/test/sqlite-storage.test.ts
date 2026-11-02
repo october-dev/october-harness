@@ -2,14 +2,34 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { JsonValue } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
-import type { SqliteStorage } from "../src/storage/sqlite/index.ts";
-import { type NodeSqliteStorageOptions, openNodeSqliteStorage } from "../src/storage/sqlite/node.ts";
-import type { DocumentCreate, EntryRecord, Seq, Storage, StorageWrite, TaskRecord } from "../src/types.ts";
+import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
+import { registerStorageConformance } from "@earendil-works/pi-durable/testing";
+import { afterEach, describe, expect, it } from "vitest";
+import { idFromNumber } from "../src/ids.ts";
+import { type SqliteStorage, SqliteStorage as SqliteStorageClass } from "../src/storage/sqlite/index.ts";
+import {
+	type NodeSqliteStorageOptions,
+	openNodeSqliteDatabase,
+	openNodeSqliteStorage,
+} from "../src/storage/sqlite/node.ts";
+import { commitWrites } from "../src/testing/commit-writes.ts";
+import type {
+	CommitResult,
+	ConversationId,
+	DocumentCreate,
+	DocumentId,
+	EntryId,
+	EntryRecord,
+	Id,
+	Seq,
+	Storage,
+	StorageWrite,
+	TaskId,
+	TaskRecord,
+} from "../src/types.ts";
 import { ROOT_CONVERSATION_ID } from "../src/types.ts";
-import { registerStorageConformance } from "./storage-conformance.ts";
 
 const context = BACKGROUND_CONTEXT;
 const openStorages = new Set<SqliteStorage>();
@@ -43,36 +63,56 @@ class ReopeningStorage implements Storage {
 		this.options = options;
 	}
 
-	async commit(writes: readonly StorageWrite[], commitContext: Parameters<Storage["commit"]>[1]): Promise<Seq> {
-		if (this.closed) return this.current.commit(writes, commitContext);
+	async commit(
+		batches: readonly (readonly StorageWrite[])[],
+		receive: (index: number, seq: Seq) => void,
+		commitContext: Context,
+	): Promise<CommitResult> {
+		if (this.closed) return this.current.commit(batches, receive, commitContext);
 		try {
-			return await this.current.commit(writes, commitContext);
+			return await this.current.commit(batches, receive, commitContext);
 		} finally {
 			await this.current.close(context);
 			this.current = await openNodeSqliteStorage(this.path, this.options);
 		}
 	}
 
-	mintId: Storage["mintId"] = () => this.current.mintId();
+	mintId<I extends Id<string>>(): Promise<I> {
+		return this.current.mintId<I>();
+	}
 	conversation: Storage["conversation"] = (id, readContext) => this.current.conversation(id, readContext);
-	scanConversations: Storage["scanConversations"] = (cursor, limit, readContext) =>
-		this.current.scanConversations(cursor, limit, readContext);
-	entry: Storage["entry"] = (id, readContext) => this.current.entry(id, readContext);
+	scanConversations: Storage["scanConversations"] = (query, limit, cursor, readContext) =>
+		this.current.scanConversations(query, limit, cursor, readContext);
+	entry(id: EntryId, readContext: Context): ReturnType<Storage["entry"]>;
+	entry(conversationId: ConversationId, id: EntryId, readContext: Context): ReturnType<Storage["entry"]>;
+	entry(idOrConversationId: EntryId | ConversationId, idOrContext: EntryId | Context, readContext?: Context) {
+		if (readContext === undefined) {
+			return this.current.entry(idFromNumber<EntryId>(idOrConversationId), idOrContext as Context);
+		}
+		if (typeof idOrContext !== "number") throw new TypeError("Storage.entry() requires an entry ID");
+		return this.current.entry(
+			idFromNumber<ConversationId>(idOrConversationId),
+			idFromNumber<EntryId>(idOrContext),
+			readContext,
+		);
+	}
 	findLatestHeadMarker: Storage["findLatestHeadMarker"] = (conversationId, at, readContext) =>
 		this.current.findLatestHeadMarker(conversationId, at, readContext);
-	scanEntries: Storage["scanEntries"] = (query, cursor, limit, readContext) =>
-		this.current.scanEntries(query, cursor, limit, readContext);
+	scanEntries: Storage["scanEntries"] = (query, limit, cursor, readContext) =>
+		this.current.scanEntries(query, limit, cursor, readContext);
 	task: Storage["task"] = (id, readContext) => this.current.task(id, readContext);
-	scanTasks: Storage["scanTasks"] = (query, cursor, limit, readContext) =>
-		this.current.scanTasks(query, cursor, limit, readContext);
+	scanTasks: Storage["scanTasks"] = (query, limit, cursor, readContext) =>
+		this.current.scanTasks(query, limit, cursor, readContext);
 	submission: Storage["submission"] = (id, readContext) => this.current.submission(id, readContext);
+	scanSubmissions: Storage["scanSubmissions"] = (query, limit, cursor, readContext) =>
+		this.current.scanSubmissions(query, limit, cursor, readContext);
 	submissionByRequest: Storage["submissionByRequest"] = (conversationId, requestId, readContext) =>
 		this.current.submissionByRequest(conversationId, requestId, readContext);
 	findDocument: Storage["findDocument"] = (address, at, readContext) =>
 		this.current.findDocument(address, at, readContext);
 	document: Storage["document"] = (id, at, readContext) => this.current.document(id, at, readContext);
-	scanDocuments: Storage["scanDocuments"] = (query, cursor, limit, readContext) =>
-		this.current.scanDocuments(query, cursor, limit, readContext);
+	scanDocuments: Storage["scanDocuments"] = (query, limit, cursor, readContext) =>
+		this.current.scanDocuments(query, limit, cursor, readContext);
 
 	async close(closeContext: Parameters<Storage["close"]>[0]): Promise<void> {
 		if (this.closed) return;
@@ -81,30 +121,33 @@ class ReopeningStorage implements Storage {
 	}
 }
 
-registerStorageConformance("Pico SqliteStorage conformance", async () => (await createSqliteStorage()).storage);
+registerStorageConformance({ describe, expect, it }, "SqliteStorage", async (use) =>
+	use((await createSqliteStorage()).storage),
+);
 
-registerStorageConformance("Pico SqliteStorage conformance across reopen", async () => {
+registerStorageConformance({ describe, expect, it }, "SqliteStorage across reopen", async (use) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-durable-sqlite-conformance-"));
 	const path = join(directory, "storage.sqlite");
 	const created = await openNodeSqliteStorage(path);
 	await created.close(context);
 	const storage = new ReopeningStorage(await openNodeSqliteStorage(path), path);
-	onTestFinished(async () => {
+	try {
+		await use(storage);
+	} finally {
 		await storage.close(context);
 		await rm(directory, { recursive: true, force: true });
-	});
-	return storage;
+	}
 });
 
-function entry(id: number, conversationId: number, data?: JsonValue): EntryRecord {
+function entry(id: EntryId, conversationId: ConversationId, data?: JsonValue): EntryRecord {
 	return { id, conversationId, kind: "message", ...(data === undefined ? {} : { data }) };
 }
 
-async function createRoot(storage: Storage): Promise<number> {
-	return storage.commit([{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }], context);
+async function createRoot(storage: Storage): Promise<Seq> {
+	return commitWrites(storage, [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }], context);
 }
 
-function pendingTask(id: number): TaskRecord<JsonValue, JsonValue, JsonValue> {
+function pendingTask(id: TaskId<JsonValue>): TaskRecord<JsonValue, JsonValue, JsonValue> {
 	return {
 		id,
 		conversationId: ROOT_CONVERSATION_ID,
@@ -112,7 +155,6 @@ function pendingTask(id: number): TaskRecord<JsonValue, JsonValue, JsonValue> {
 		version: 1,
 		input: null,
 		state: { status: "pending", checkpoint: { phase: "ready" } },
-		after: [],
 		background: false,
 		abortRequested: false,
 	};
@@ -123,7 +165,7 @@ function scalar(db: DatabaseSync, sql: string): number {
 	return row.value;
 }
 
-function revisionCount(path: string, documentId: number): number {
+function revisionCount(path: string, documentId: DocumentId): number {
 	const db = new DatabaseSync(path, { readOnly: true });
 	try {
 		const row = db
@@ -139,8 +181,10 @@ describe("Pico SqliteStorage", () => {
 	it("persists records, sequence allocation, and global ID allocation across reopen", async () => {
 		const { storage, path } = await createSqliteStorage();
 		expect(await createRoot(storage)).toBe(1);
-		const entryId = await storage.mintId();
-		expect(await storage.commit([{ type: "entry", value: entry(entryId, ROOT_CONVERSATION_ID) }], context)).toBe(2);
+		const entryId = await storage.mintId<EntryId>();
+		expect(
+			await commitWrites(storage, [{ type: "entry", value: entry(entryId, ROOT_CONVERSATION_ID) }], context),
+		).toBe(2);
 		await storage.close(context);
 		openStorages.delete(storage);
 
@@ -150,8 +194,54 @@ describe("Pico SqliteStorage", () => {
 			entry: entry(entryId, ROOT_CONVERSATION_ID),
 			commitSeq: 2,
 		});
-		expect(await reopened.mintId()).toBe(entryId + 1);
-		expect(await reopened.commit([{ type: "task", value: pendingTask(await reopened.mintId()) }], context)).toBe(3);
+		expect(await reopened.mintId<EntryId>()).toBe(entryId + 1);
+		expect(
+			await commitWrites(
+				reopened,
+				[{ type: "task", value: pendingTask(await reopened.mintId<TaskId<JsonValue>>()) }],
+				context,
+			),
+		).toBe(3);
+	});
+
+	it("namespaces tables and indexes with a prefix across reopen", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "pi-durable-sqlite-"));
+		tempDirectories.add(directory);
+		const path = join(directory, "storage.sqlite");
+		const host = new DatabaseSync(path);
+		try {
+			host.exec("CREATE TABLE tasks (text TEXT)");
+		} finally {
+			host.close();
+		}
+		const storage = await openNodeSqliteStorage(path, { prefix: "pi_" });
+		expect(await createRoot(storage)).toBe(1);
+		await storage.close(context);
+
+		const reopened = await openNodeSqliteStorage(path, { prefix: "pi_" });
+		openStorages.add(reopened);
+		expect(await reopened.conversation(ROOT_CONVERSATION_ID, context)).toEqual({ id: ROOT_CONVERSATION_ID });
+		const database = new DatabaseSync(path);
+		try {
+			const names = database
+				.prepare("SELECT name FROM sqlite_master WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%'")
+				.all()
+				.map((row) => String(row.name));
+			expect(names.filter((name) => !name.startsWith("pi_"))).toEqual(["tasks"]);
+			expect(names).toContain("pi_tasks");
+		} finally {
+			database.close();
+		}
+	});
+
+	it("rejects an invalid prefix before creating the database", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "pi-durable-sqlite-"));
+		tempDirectories.add(directory);
+		const databaseDirectory = join(directory, "nested");
+		await expect(
+			openNodeSqliteStorage(join(databaseDirectory, "storage.sqlite"), { prefix: "bad-prefix" }),
+		).rejects.toThrow("Invalid SQLite schema prefix");
+		await expect(stat(databaseDirectory)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
 	it("rejects persisted metadata corruption on reopen", async () => {
@@ -170,8 +260,9 @@ describe("Pico SqliteStorage", () => {
 	it("rejects a document whose required base is missing", async () => {
 		const { storage, path } = await createSqliteStorage();
 		await createRoot(storage);
-		const id = await storage.mintId();
-		await storage.commit(
+		const id = await storage.mintId<DocumentId>();
+		await commitWrites(
+			storage,
 			[
 				{
 					type: "document.create",
@@ -192,15 +283,96 @@ describe("Pico SqliteStorage", () => {
 		);
 	});
 
+	it("replays detached root replacements and follow-up edits while rejecting corrupt operations", async () => {
+		const { storage, path } = await createSqliteStorage();
+		await createRoot(storage);
+		const id = await storage.mintId<DocumentId>();
+		await commitWrites(
+			storage,
+			[
+				{
+					type: "document.create",
+					record: { id, kind: "replay", scope: { kind: "session" } },
+					content: { kind: "base", version: 1, value: { nested: { value: 1 }, rows: [] } },
+				},
+			],
+			context,
+		);
+		await commitWrites(
+			storage,
+			[
+				{
+					type: "document.change",
+					id,
+					content: {
+						kind: "delta",
+						version: 1,
+						ops: [["r", { nested: { value: 2 }, rows: [{ id: 1 }] }]],
+					},
+				},
+			],
+			context,
+		);
+		await commitWrites(
+			storage,
+			[
+				{
+					type: "document.change",
+					id,
+					content: {
+						kind: "delta",
+						version: 1,
+						ops: [
+							["s", ["nested", "value"], 3],
+							["p", ["rows"], 1, 0, [{ id: 2 }]],
+							["m", ["rows"], [1, 0]],
+						],
+					},
+				},
+			],
+			context,
+		);
+		await commitWrites(
+			storage,
+			[
+				{
+					type: "document.change",
+					id,
+					content: { kind: "delta", version: 1, ops: [["s", ["nested", "value"], 4]] },
+				},
+			],
+			context,
+		);
+
+		const expected = { nested: { value: 4 }, rows: [{ id: 2 }, { id: 1 }] };
+		const first = (await storage.document(id, "current", context))!;
+		expect(first.value).toEqual(expected);
+		(first.value.nested as { value: number }).value = 99;
+		(first.value.rows as Array<{ id: number }>)[0]!.id = 99;
+		expect((await storage.document(id, "current", context))?.value).toEqual(expected);
+
+		const database = new DatabaseSync(path);
+		try {
+			database
+				.prepare(`UPDATE document_revisions SET content = ? WHERE document_id = ? AND seq =
+					(SELECT max(seq) FROM document_revisions WHERE document_id = ?)`)
+				.run('[["unknown"]]', id, id);
+		} finally {
+			database.close();
+		}
+		await expect(storage.document(id, "current", context)).rejects.toThrow("unknown op verb");
+	});
+
 	it("rolls SQL rows and sequence allocation back as one transaction", async () => {
 		const { storage, path } = await createSqliteStorage();
 		await createRoot(storage);
-		const transientId = await storage.mintId();
-		const transientTaskId = await storage.mintId();
+		const transientId = await storage.mintId<EntryId>();
+		const transientTaskId = await storage.mintId<TaskId<JsonValue>>();
 		const circular: { self?: unknown } = {};
 		circular.self = circular;
 		await expect(
-			storage.commit(
+			commitWrites(
+				storage,
 				[
 					{ type: "entry", value: entry(transientId, ROOT_CONVERSATION_ID) },
 					{
@@ -213,10 +385,10 @@ describe("Pico SqliteStorage", () => {
 		).rejects.toThrow("circular structure");
 		expect(await storage.entry(transientId, context)).toBeUndefined();
 		expect(await storage.task(transientTaskId, context)).toBeUndefined();
-		const committedId = await storage.mintId();
-		expect(await storage.commit([{ type: "entry", value: entry(committedId, ROOT_CONVERSATION_ID) }], context)).toBe(
-			2,
-		);
+		const committedId = await storage.mintId<EntryId>();
+		expect(
+			await commitWrites(storage, [{ type: "entry", value: entry(committedId, ROOT_CONVERSATION_ID) }], context),
+		).toBe(2);
 
 		const db = new DatabaseSync(path, { readOnly: true });
 		try {
@@ -230,7 +402,7 @@ describe("Pico SqliteStorage", () => {
 	it("reconstructs recent and ancient rewindable points after reopen", async () => {
 		const { storage, path } = await createSqliteStorage();
 		await createRoot(storage);
-		const id = await storage.mintId();
+		const id = await storage.mintId<DocumentId>();
 		const record = {
 			id,
 			kind: "history",
@@ -238,14 +410,16 @@ describe("Pico SqliteStorage", () => {
 			history: "rewindable",
 			fork: "asOf",
 		} satisfies DocumentCreate;
-		const createdAt = await storage.commit(
+		const createdAt = await commitWrites(
+			storage,
 			[{ type: "document.create", record, content: { kind: "base", version: 1, value: { count: 0 } } }],
 			context,
 		);
 		let ancientAt = createdAt;
 		let recentAt = createdAt;
 		for (let count = 1; count <= 40; count++) {
-			recentAt = await storage.commit(
+			recentAt = await commitWrites(
+				storage,
 				[
 					{
 						type: "document.change",
@@ -329,8 +503,9 @@ describe("Pico SqliteStorage", () => {
 	it("reclaims current-only revisions only after a base or retirement", async () => {
 		const { storage, path } = await createSqliteStorage();
 		await createRoot(storage);
-		const id = await storage.mintId();
-		await storage.commit(
+		const id = await storage.mintId<DocumentId>();
+		await commitWrites(
+			storage,
 			[
 				{
 					type: "document.create",
@@ -341,7 +516,8 @@ describe("Pico SqliteStorage", () => {
 			context,
 		);
 		for (let count = 1; count <= 10; count++) {
-			await storage.commit(
+			await commitWrites(
+				storage,
 				[{ type: "document.change", id, content: { kind: "delta", version: 1, ops: [["s", ["count"], count]] } }],
 				context,
 			);
@@ -358,12 +534,14 @@ describe("Pico SqliteStorage", () => {
 		} finally {
 			revisions.close();
 		}
-		await storage.commit(
+		await commitWrites(
+			storage,
 			[{ type: "document.change", id, content: { kind: "base", version: 1, value: { count: 11 } } }],
 			context,
 		);
 		expect(revisionCount(path, id)).toBe(1);
-		await storage.commit(
+		await commitWrites(
+			storage,
 			[
 				{
 					type: "document.change",
@@ -374,7 +552,7 @@ describe("Pico SqliteStorage", () => {
 			context,
 		);
 		expect(revisionCount(path, id)).toBe(2);
-		await storage.commit([{ type: "document.retire", id }], context);
+		await commitWrites(storage, [{ type: "document.retire", id }], context);
 		expect(revisionCount(path, id)).toBe(0);
 	});
 
@@ -382,11 +560,15 @@ describe("Pico SqliteStorage", () => {
 		const { storage, path } = await createSqliteStorage({ walAutoCheckpointPages: 1 });
 		await createRoot(storage);
 		for (let index = 0; index < 20; index++) {
-			await storage.commit(
+			await commitWrites(
+				storage,
 				[
 					{
 						type: "entry",
-						value: entry(await storage.mintId(), ROOT_CONVERSATION_ID, { text: "x".repeat(32 * 1024), index }),
+						value: entry(await storage.mintId<EntryId>(), ROOT_CONVERSATION_ID, {
+							text: "x".repeat(32 * 1024),
+							index,
+						}),
 					},
 				],
 				context,
@@ -408,9 +590,10 @@ describe("Pico SqliteStorage", () => {
 	it("reuses pages released by current-only checkpoints", async () => {
 		const { storage, path } = await createSqliteStorage();
 		await createRoot(storage);
-		const id = await storage.mintId();
+		const id = await storage.mintId<DocumentId>();
 		const large = "x".repeat(512 * 1024);
-		await storage.commit(
+		await commitWrites(
+			storage,
 			[
 				{
 					type: "document.create",
@@ -420,7 +603,8 @@ describe("Pico SqliteStorage", () => {
 			],
 			context,
 		);
-		await storage.commit(
+		await commitWrites(
+			storage,
 			[{ type: "document.change", id, content: { kind: "base", version: 1, value: { text: "small" } } }],
 			context,
 		);
@@ -434,7 +618,8 @@ describe("Pico SqliteStorage", () => {
 			before.close();
 		}
 		expect(freeAfterDelete).toBeGreaterThan(0);
-		await storage.commit(
+		await commitWrites(
+			storage,
 			[{ type: "document.change", id, content: { kind: "base", version: 1, value: { text: large } } }],
 			context,
 		);
@@ -453,18 +638,23 @@ describe("Pico SqliteStorage", () => {
 		const { storage, path } = await createSqliteStorage();
 		await createRoot(storage);
 		for (let index = 0; index < 100; index++) {
-			await storage.commit(
+			await commitWrites(
+				storage,
 				[
 					{
 						type: "entry",
-						value: entry(await storage.mintId(), ROOT_CONVERSATION_ID, { index, text: "x".repeat(1_024) }),
+						value: entry(await storage.mintId<EntryId>(), ROOT_CONVERSATION_ID, {
+							index,
+							text: "x".repeat(1_024),
+						}),
 					},
 				],
 				context,
 			);
 		}
-		const documentId = await storage.mintId();
-		await storage.commit(
+		const documentId = await storage.mintId<DocumentId>();
+		await commitWrites(
+			storage,
 			[
 				{
 					type: "document.create",
@@ -481,7 +671,8 @@ describe("Pico SqliteStorage", () => {
 			context,
 		);
 		for (let count = 1; count <= 100; count++) {
-			await storage.commit(
+			await commitWrites(
+				storage,
 				[
 					{
 						type: "document.change",
@@ -496,4 +687,131 @@ describe("Pico SqliteStorage", () => {
 		openStorages.delete(storage);
 		expect((await stat(path)).size).toBeLessThan(1024 * 1024);
 	});
+});
+
+describe("SqliteStorage batches", () => {
+	for (const mode of ["undefined rejection", "synchronous throw"] as const) {
+		it(`rejects the whole call, the batches before it included, when a later batch's check read fails with a ${mode}`, async () => {
+			// Sol's: the first batch passes its checks and is written; the second batch's check read fails.
+			const directory = await mkdtemp(join(tmpdir(), "pi-durable-sqlite-"));
+			tempDirectories.add(directory);
+			const database = await openNodeSqliteDatabase(join(directory, "storage.sqlite"));
+			let failCheck = false;
+			let reads = 0;
+			const faulty: SqliteDatabase = {
+				exec: (sql) => database.exec(sql),
+				run: (sql, ...params) => database.run(sql, ...params),
+				runCounted: (sql, ...params) => database.runCounted(sql, ...params),
+				get: (sql, ...params) => database.get(sql, ...params),
+				all: (sql, ...params) => database.all(sql, ...params),
+				close: () => database.close(),
+				transaction: (callback) =>
+					database.transaction((transaction) =>
+						callback({
+							exec: (sql) => transaction.exec(sql),
+							run: (sql, ...params) => transaction.run(sql, ...params),
+							runCounted: (sql, ...params) => transaction.runCounted(sql, ...params),
+							all: (sql, ...params) => transaction.all(sql, ...params),
+							get: (sql, ...params) => {
+								if (failCheck && sql.includes("record_type") && ++reads === 2) {
+									if (mode === "synchronous throw") throw new Error("sync driver failure");
+									return Promise.reject(undefined);
+								}
+								return transaction.get(sql, ...params);
+							},
+						}),
+					),
+			};
+			const storage = await SqliteStorageClass.open(faulty);
+			openStorages.add(storage);
+			await commitWrites(storage, [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }], context);
+			const ids = [await storage.mintId<EntryId>(), await storage.mintId<EntryId>()];
+			const batches: StorageWrite[][] = ids.map((id) => [
+				{ type: "entry", value: { id, conversationId: ROOT_CONVERSATION_ID, kind: "note" } },
+			]);
+			failCheck = true;
+			const receipts: number[] = [];
+			const outcome = await storage
+				.commit(batches, (index) => receipts.push(index), context)
+				.then(
+					() => "resolved",
+					() => "rejected",
+				);
+			failCheck = false;
+			expect(outcome).toBe("rejected");
+			expect(receipts).toEqual([]);
+			expect(await storage.entry(ids[0]!, context)).toBeUndefined();
+		});
+	}
+
+	/** How a check's read of record types fails in the database. */
+	const failures: Record<string, () => Promise<never>> = {
+		"an Error rejection": () => Promise.reject(new Error("disk I/O error")),
+		"a synchronous throw": () => {
+			throw new Error("disk I/O error");
+		},
+		"a primitive rejection": () => Promise.reject("disk I/O error"),
+		"an undefined rejection": () => Promise.reject(undefined),
+	};
+	for (const [name, fail] of Object.entries(failures)) {
+		it(`rejects a batch call whose check read fails in the database with ${name}, and refuses only for its own checks`, async () => {
+			const directory = await mkdtemp(join(tmpdir(), "pi-durable-sqlite-"));
+			tempDirectories.add(directory);
+			const database = await openNodeSqliteDatabase(join(directory, "storage.sqlite"));
+			// A driver failure in a check's read, armed for the next batch call.
+			let failCheck = false;
+			const faulty: SqliteDatabase = {
+				exec: (sql) => database.exec(sql),
+				run: (sql, ...params) => database.run(sql, ...params),
+				runCounted: (sql, ...params) => database.runCounted(sql, ...params),
+				get: (sql, ...params) => database.get(sql, ...params),
+				all: (sql, ...params) => database.all(sql, ...params),
+				close: () => database.close(),
+				transaction: (callback) =>
+					database.transaction((transaction) =>
+						callback({
+							exec: (sql) => transaction.exec(sql),
+							run: (sql, ...params) => transaction.run(sql, ...params),
+							runCounted: (sql, ...params) => transaction.runCounted(sql, ...params),
+							all: (sql, ...params) => transaction.all(sql, ...params),
+							get: (sql, ...params) => {
+								if (failCheck && sql.includes("record_type")) return fail();
+								return transaction.get(sql, ...params);
+							},
+						}),
+					),
+			};
+			const storage = await SqliteStorageClass.open(faulty);
+			openStorages.add(storage);
+			await commitWrites(storage, [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }], context);
+			const first = await storage.mintId<EntryId>();
+			const second = await storage.mintId<EntryId>();
+			const batches: StorageWrite[][] = [first, second].map((id) => [
+				{ type: "entry", value: { id, conversationId: ROOT_CONVERSATION_ID, kind: "note" } },
+			]);
+			failCheck = true;
+			const receipts: number[] = [];
+			const outcome = await storage
+				.commit(batches, (index) => receipts.push(index), context)
+				.then(
+					(result) => ({ kind: "resolved", result }),
+					() => ({ kind: "rejected" }),
+				);
+			failCheck = false;
+			// Unknown outcome, rolled back whole: nothing received, nothing stored.
+			expect(outcome).toEqual({ kind: "rejected" });
+			expect(receipts).toEqual([]);
+			expect(await storage.entry(first, context)).toBeUndefined();
+			// Durable's own check still refuses, keeping the batches before it.
+			const refused = await storage.commit(
+				[batches[0]!, [{ type: "conversation", value: { id: ROOT_CONVERSATION_ID } }]],
+				(index) => receipts.push(index),
+				context,
+			);
+			expect(refused.stored).toBe(1);
+			expect(String(refused.refused)).toContain("already belongs to conversation");
+			expect(receipts).toEqual([0]);
+			expect(await storage.entry(first, context)).toBeDefined();
+		});
+	}
 });

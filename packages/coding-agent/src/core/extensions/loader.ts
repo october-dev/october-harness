@@ -11,13 +11,15 @@ import type { Provider } from "@earendil-works/pi-ai";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { createJiti } from "jiti";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../config.ts";
-import { resolvePath } from "../../utils/paths.ts";
+import { pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
+import { type McpServerConfig, McpServerRegistry, mcpNamespace, validateMcpServerConfig } from "../mcp-servers.ts";
 import { readPiManifest } from "../pi-manifest.ts";
-import { createSyntheticSourceInfo } from "../source-info.ts";
+import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
 import { time } from "../timings.ts";
+import type { ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
 import { readCapabilityManifest } from "./capabilities.ts";
 import type {
 	EntryRenderer,
@@ -25,12 +27,14 @@ import type {
 	ExtensionAPI,
 	ExtensionFactory,
 	ExtensionRuntime,
+	ExtensionVirtualModel,
 	LoadExtensionsResult,
 	MarkdownTransformer,
 	MessageRenderer,
 	ProviderConfig,
 	RegisteredCommand,
 	ToolDefinition,
+	ToolRendererResolver,
 } from "./types.ts";
 
 const require = createRequire(import.meta.url);
@@ -85,10 +89,12 @@ function getAliases(): Record<string, string> {
 	const piCodingAgentEntry = packageIndex;
 	const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
 	const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
-	// Extensions resolve the pi-ai root to the compat entrypoint (a strict
-	// superset of the core entrypoint): existing extensions using the old
-	// global API keep working at runtime until compat is removed.
-	const piAiCompatEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai/compat");
+	// Extensions resolve the pi-ai root to the extension view: the compat
+	// entrypoint (a strict superset of the core entrypoint) plus TypeBox's Type,
+	// Static and TSchema, so extensions using the old global API and pi-ai's
+	// former TypeBox re-exports keep working.
+	const piAiCompatEntry = path.resolve(__dirname, "pi-ai-extension-view.js");
+	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@earendil-works/pi-ai/models");
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
 	const piAiProvidersEntry = resolveWorkspaceOrImport(
 		"ai/dist/providers/all.js",
@@ -101,6 +107,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
 		"@earendil-works/pi-ai/compat": piAiCompatEntry,
+		"@earendil-works/pi-ai/models": piAiModelsEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@earendil-works/pi-ai": piAiCompatEntry,
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
@@ -108,6 +115,7 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-tui": piTuiEntry,
 		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
 		"@mariozechner/pi-ai/compat": piAiCompatEntry,
+		"@mariozechner/pi-ai/models": piAiModelsEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
 		"@mariozechner/pi-ai": piAiCompatEntry,
 		typebox: typeboxEntry,
@@ -140,7 +148,7 @@ export function clearExtensionCache(): void {
 
 function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
 	const resolvedCwd = resolvePath(cwd);
-	if (extensionCacheCwd !== undefined && extensionCacheCwd !== resolvedCwd) {
+	if (extensionCacheCwd !== undefined && !pathsEqual(extensionCacheCwd, resolvedCwd)) {
 		clearExtensionCache();
 	}
 	extensionCacheCwd = resolvedCwd;
@@ -172,6 +180,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setLabel: notInitialized,
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
+		getSettings: notInitialized,
 		setActiveTools: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
@@ -182,6 +191,9 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],
+		mcpServers: new McpServerRegistry(),
+		pendingVirtualModelRegistrations: [],
+		createContext: notInitialized,
 		assertActive,
 		invalidate: (message) => {
 			if (state.staleMessage) return;
@@ -214,6 +226,14 @@ export function createExtensionRuntime(): ExtensionRuntime {
 			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
 			runtime.pendingNativeProviderRegistrations = runtime.pendingNativeProviderRegistrations.filter(
 				(r) => r.provider.id !== name,
+			);
+		},
+		registerVirtualModel: (definition, extensionPath = "<unknown>") => {
+			runtime.pendingVirtualModelRegistrations.push({ definition, extensionPath });
+		},
+		unregisterVirtualModel: (provider, id) => {
+			runtime.pendingVirtualModelRegistrations = runtime.pendingVirtualModelRegistrations.filter(
+				({ definition }) => definition.provider !== provider || definition.id !== id,
 			);
 		},
 	};
@@ -287,6 +307,14 @@ function createExtensionAPI(
 
 		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
 			assertActive();
+			if (typeof name !== "string" || name.length === 0) {
+				throw new Error(
+					`Command registered by extension "${extension.path}" must have a non-empty string name. Use pi.registerCommand("name", { description, handler }).`,
+				);
+			}
+			if (typeof options?.handler !== "function") {
+				throw new Error(`Command "/${name}" registered by extension "${extension.path}" must define handler().`);
+			}
 			extension.commands.set(name, {
 				name,
 				sourceInfo: extension.sourceInfo,
@@ -339,6 +367,12 @@ function createExtensionAPI(
 			assertActive();
 			extension.entryRenderers ??= new Map();
 			extension.entryRenderers.set(customType, renderer as EntryRenderer);
+		},
+
+		registerToolRenderer(resolver: ToolRendererResolver): void {
+			assertActive();
+			extension.toolRenderers ??= [];
+			extension.toolRenderers.push(resolver);
 		},
 
 		// Flag access - checks extension registered it, reads from runtime
@@ -394,6 +428,11 @@ function createExtensionAPI(
 			return runtime.getAllTools();
 		},
 
+		getSettings() {
+			assertActive();
+			return runtime.getSettings();
+		},
+
 		setActiveTools(toolNames: string[]): void {
 			assertActive();
 			runtime.setActiveTools(toolNames);
@@ -432,6 +471,51 @@ function createExtensionAPI(
 		unregisterProvider(name: string) {
 			assertActive();
 			applyRuntimeChange(() => runtime.unregisterProvider(name, extension.path));
+		},
+
+		registerMcpServer(name: string, config: McpServerConfig) {
+			assertActive();
+			const validated = validateMcpServerConfig(name, config);
+			if (typeof validated === "string") {
+				throw new Error(`Invalid MCP server registered by extension "${extension.path}": ${validated}`);
+			}
+			const owner = runtime.mcpServers.get(name)?.extensionPath;
+			if (owner !== undefined && owner !== extension.path) {
+				throw new Error(`MCP server "${name}" is already registered by extension "${owner}"`);
+			}
+			// Names that differ only in `-` and `_` would share a namespace.
+			const clash = runtime.mcpServers
+				.list()
+				.find((server) => server.name !== name && mcpNamespace(server.name) === mcpNamespace(name));
+			if (clash) throw new Error(`MCP server "${name}" conflicts with registered server "${clash.name}"`);
+			const server = { name, config: structuredClone(validated), extensionPath: extension.path };
+			applyRuntimeChange(() => runtime.mcpServers.register(server));
+		},
+
+		unregisterMcpServer(name: string) {
+			assertActive();
+			applyRuntimeChange(() => runtime.mcpServers.unregister(name, extension.path));
+		},
+
+		getMcpServers() {
+			assertActive();
+			return runtime.mcpServers.list();
+		},
+
+		registerVirtualModel<TState>(model: ExtensionVirtualModel<TState>) {
+			assertActive();
+			// Routing runs after the runner binds, so the context is created per request. The state
+			// comes from the session branch that this router wrote.
+			const definition: VirtualModelDefinition = {
+				...model,
+				route: (request) => model.route(request as ModelRouteRequest<TState>, runtime.createContext()),
+			};
+			applyRuntimeChange(() => runtime.registerVirtualModel(definition, extension.path));
+		},
+
+		unregisterVirtualModel(provider: string, id: string) {
+			assertActive();
+			applyRuntimeChange(() => runtime.unregisterVirtualModel(provider, id));
 		},
 
 		events: {
@@ -514,11 +598,8 @@ async function loadExtensionModule(extensionPath: string, cacheToken?: Extension
  * Create an Extension object with empty collections.
  */
 function createExtension(extensionPath: string, resolvedPath: string): Extension {
-	const source =
-		extensionPath.startsWith("<") && extensionPath.endsWith(">")
-			? extensionPath.slice(1, -1).split(":")[0] || "temporary"
-			: "local";
-	const baseDir = extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath);
+	const source = getSyntheticPathSource(extensionPath) ?? "local";
+	const baseDir = isSyntheticPath(extensionPath) ? undefined : path.dirname(resolvedPath);
 
 	return {
 		path: extensionPath,

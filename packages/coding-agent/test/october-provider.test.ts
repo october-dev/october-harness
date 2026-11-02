@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
-import type { ProviderConfig, ProviderModelConfig } from "../src/core/extensions/types.ts";
+import type { ProviderChatModelConfig, ProviderConfig } from "../src/core/extensions/types.ts";
 import { findInitialModel, resolveCliModel } from "../src/core/model-resolver.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
@@ -24,7 +24,7 @@ import {
 const servers: Server[] = [];
 
 // Kimi is paused and no longer seeded; these fixtures model a catalogue that still lists it.
-const CATALOG_KIMI: ProviderModelConfig = {
+const CATALOG_KIMI: ProviderChatModelConfig = {
 	...OCTOBER_SEED_MODELS[0]!,
 	id: "october/Kimi-K2.7-Code",
 	name: "Kimi K2.7 Code",
@@ -111,11 +111,9 @@ describe("october inference provider", () => {
 		vi.spyOn(runtime, "getAvailableSnapshot").mockReturnValue(runtime.getModels("october"));
 		const selected = await findInitialModel({ scopedModels: [], isContinuing: false, modelRuntime: runtime });
 		expect(selected.model?.id).toBe("october/Qwen/Qwen3.6-35B-A3B-FP8");
-		const explicit = await findInitialModel({
+		const explicit = resolveCliModel({
 			cliProvider: "october",
 			cliModel: "october/Kimi-K2.7-Code",
-			scopedModels: [],
-			isContinuing: false,
 			modelRuntime: runtime,
 		});
 		expect(explicit.model?.id).toBe("october/Kimi-K2.7-Code");

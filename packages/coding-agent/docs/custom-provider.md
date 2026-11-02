@@ -27,7 +27,97 @@ There are two registration forms:
 
 Prefer a complete provider for new integrations that own more than static endpoint and model metadata. Pi composes `models.json` overrides above a registered native provider.
 
-Registering only `baseUrl` or `headers` for an existing provider preserves its built-in models. Supplying `models` in the legacy form replaces the models supplied by that registration.
+Registering only `baseUrl` or `headers` for an existing provider preserves its built-in models. Supplying `models` in the legacy form replaces that provider's models across chat, image, and classifier operations. An omitted `type` means `"chat"`; image and classifier models require explicit discriminants and implementations keyed by their `api` values through the `images` and `classifiers` fields.
+
+### Redirect an existing provider
+
+Register only the fields that should change. This keeps the provider's built-in catalog, authentication, API implementation, and compatibility settings:
+
+```typescript
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerProvider("anthropic", {
+    baseUrl: "https://gateway.example.com/anthropic",
+    headers: {
+      "X-Gateway-Key": "$GATEWAY_API_KEY",
+    },
+  });
+}
+```
+
+Use this form for a proxy or gateway that preserves the upstream protocol. Do not copy the built-in model list into the extension because doing so turns a small endpoint override into a catalog replacement that can drift.
+
+### Register a compatible endpoint
+
+When a service implements a supported protocol but has its own model catalog, register the endpoint and only the models the service actually exposes:
+
+```typescript
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerProvider("acme", {
+    name: "Acme AI",
+    baseUrl: "https://api.acme.example/v1",
+    apiKey: "$ACME_API_KEY",
+    api: "openai-completions",
+    models: [
+      {
+        type: "chat",
+        id: "acme-chat",
+        name: "Acme Chat",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128000,
+        maxTokens: 8192,
+      },
+    ],
+  });
+}
+```
+
+Prefer `models.json` for this case when no executable extension behavior is needed. Use an extension when registration depends on runtime discovery, custom authentication, or code shared with other extension features.
+
+### Register mixed-operation models
+
+A mixed-operation provider can register non-chat models and their implementations together:
+
+```typescript
+pi.registerProvider("media-tools", {
+  apiKey: "$MEDIA_TOOLS_API_KEY",
+  models: [
+    {
+      type: "image",
+      id: "image-v1",
+      name: "Image V1",
+      api: "media-images",
+      baseUrl: "https://media.example.com/v1",
+      input: ["text"],
+      output: ["image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+    {
+      type: "classifier",
+      id: "classifier-v1",
+      name: "Classifier V1",
+      api: "media-classifier",
+      baseUrl: "https://media.example.com/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 64000,
+    },
+  ],
+  images: {
+    "media-images": { generateImages: async (model, context, options) => result },
+  },
+  classifiers: {
+    "media-classifier": { classify: async (model, context, options) => result },
+  },
+});
+```
+
+Model-level `baseUrl` values take precedence over the provider endpoint. If no `models` list is supplied, built-in models of every operation remain registered. Equal model IDs in different operations remain distinct, including their model-specific headers.
 
 Calls made after initial extension loading take effect immediately. Use `pi.unregisterProvider()` to remove the dynamic provider and restore built-in behavior that it replaced.
 
@@ -48,11 +138,13 @@ An OAuth provider supplies a display name, login flow, token refresh, and access
 
 OAuth callbacks are UI-neutral. They can open an authorization URL, show a device code, report progress, request input, or ask the user to choose a login method. Honor cancellation and the supplied abort signal during network requests.
 
+Press Enter (`tui.select.confirm`) to open the device-login URL and copy the code, or log in manually. Providers can disable either action with `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false` in `onDeviceCode` or native `AuthEvent` notifications.
+
 Never write access tokens, refresh tokens, authorization headers, or complete provider responses to ordinary logs.
 
 ## Supply and refresh models
 
-Every model needs an ID, display name, input capabilities, context window, output limit, reasoning support, and cost metadata. Choose the API implementation at the provider level unless one model requires an override.
+Every model needs an ID, display name, input capabilities, and cost metadata. Chat and classifier models also need a context window; chat models need an output limit and reasoning support; image models declare their output modalities. Choose the API implementation at the provider level unless one model requires an override.
 
 Set `promptCache.short` or `promptCache.long` to the provider's best-effort cache lifetime in seconds when Pi should keep an idle prompt cache warm. Leave them unset to disable cache warming for that retention tier.
 
@@ -65,7 +157,7 @@ Use `refreshModels` when the available catalog comes from a live service. Pass `
 The two registration forms have different refresh contracts:
 
 - A complete `Provider` returns nothing. It calls `context.publish({ update })` to install provider-owned model state, after which its synchronous `getModels()` exposes the latest list.
-- Legacy `ProviderConfig.refreshModels` returns model definitions. Pi replaces that registration’s live models with the returned list and applies any requested persistence.
+- Legacy `ProviderConfig.refreshModels` returns mixed-operation model definitions. Pi replaces that registration’s live models with the returned list and applies any requested persistence.
 
 Publish persisted catalog data only when it should survive across runs. A live service such as llama.cpp can update its in-memory list without persisting it; a remote catalog can retain a snapshot for offline startup.
 
@@ -102,9 +194,10 @@ The stream must also honor request instrumentation supplied through `SimpleStrea
 
 - Call `options.onPayload` before sending the provider request and use any replacement payload it returns.
 - Call `options.onResponse` after receiving the response but before consuming its body.
+- Await `options.onProviderStreamEvent?.(providerEvent, model)` for each parsed provider event before normalizing it.
 - Pass through the abort signal and provider-scoped environment.
 
-These hooks power extension request inspection and response-header events. Omitting them makes the provider behave differently from Pi’s built-in providers.
+These hooks power extension request inspection, response-header events, and provider-stream observation. Omitting them makes the provider behave differently from Pi’s built-in providers.
 
 ## Report failures and usage
 

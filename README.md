@@ -103,6 +103,13 @@ October can read, write, and edit files, run shell commands, inspect the reposit
 
 Use `/model` inside October to choose or change your model.
 
+### Nix
+
+From a checkout of this repository, run `nix run .#october` or install with
+`nix profile install .#october`. The flake supports Linux and macOS on x86-64 and
+ARM64, pins its model catalog, and builds the October CLI with the local workspace
+packages. Nix with flakes enabled is required.
+
 ## Update October Harness
 
 From your shell, use the built-in updater for a supported global installation:
@@ -401,10 +408,12 @@ The open harness should be enough to run, study, extend, and use as a reference 
 | [`@earendil-works/pi-agent-core`](packages/agent) | Agent loop, tool calling, and state management |
 | [`@earendil-works/pi-ai`](packages/ai) | Unified multi-provider model API |
 | [`@earendil-works/pi-tui`](packages/tui) | Differentially rendered terminal UI |
-| [`@earendil-works/pi-protocol`](packages/protocol) | RPC protocol types and transport contract |
-| [`@earendil-works/pi-client`](packages/client) | Client for remote agent sessions |
-| [`@earendil-works/pi-server`](packages/server) | Server runtime for remote sessions |
 | [`@earendil-works/pi-telemetry`](packages/telemetry) | Shared, privacy-aware telemetry primitives |
+| [`@earendil-works/pi-schema`](packages/schema) | JSON Schema validation |
+| [`@earendil-works/pi-codemode`](packages/codemode) | Sandboxed JavaScript tool orchestration |
+| [`@earendil-works/pi-mcp`](packages/mcp) | MCP client and server primitives |
+| [`@earendil-works/pi-durable`](packages/durable) | Durable conversation, task, and document runtime |
+| [`@earendil-works/pi-env`](packages/env) | Execution environments |
 
 ## Contributing and upstream sync
 
@@ -414,6 +423,7 @@ October welcomes fixes, documentation, new provider support, extensions, and imp
 git clone https://github.com/october-dev/october-harness.git
 cd october-harness
 npm install --ignore-scripts
+npm run hydrate:model-data
 npm run build:offline
 npm run check
 ./test.sh
@@ -429,6 +439,48 @@ Our upstream policy is straightforward:
 - document meaningful divergence so contributors can tell which project owns a behavior.
 
 For substantial October-specific work, open an issue before implementation. If a change belongs cleanly in Pi, contributors are encouraged to coordinate it upstream first and then bring it back through the normal sync path.
+
+### Using local packages outside the monorepo
+
+Build every public package into one coherent local artifact set:
+
+```bash
+npm run pack:packages -- --out .artifacts/pi-packages
+```
+
+This refreshes model data before building `pi-ai`. To avoid network access when
+model data is already hydrated, pass `--offline-model-data`.
+
+Then configure an external project to consume one package and resolve all of
+its Pi dependencies from the same artifact set. npm is the default:
+
+```bash
+node scripts/use-local-packages.mjs \
+  --manifest .artifacts/pi-packages/manifest.json \
+  --consumer ../my-project \
+  --package @earendil-works/pi-durable \
+  --package @earendil-works/pi-agent-core
+cd ../my-project
+npm install --ignore-scripts
+```
+
+For a pnpm project, point `--consumer` at the workspace root:
+
+```bash
+node scripts/use-local-packages.mjs \
+  --manifest .artifacts/pi-packages/manifest.json \
+  --consumer ../my-project \
+  --package @earendil-works/pi-agent-core \
+  --package-manager pnpm
+cd ../my-project
+pnpm install --ignore-scripts
+```
+
+Repeat `--package` for each direct dependency. The command updates the
+consumer's `package.json` with content-addressed local `file:` references. It
+writes transitive overrides to `package.json` for npm or `pnpm-workspace.yaml`
+for pnpm. Keep the artifact directory available while installing or updating
+the consumer. Re-run both commands after changing Pi source.
 
 ## Roadmap
 

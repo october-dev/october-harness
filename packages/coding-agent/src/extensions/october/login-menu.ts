@@ -18,8 +18,16 @@ export function getLoginProviderOptions(
 					source: authStatus.label ?? authStatus.source,
 				}
 			: undefined;
+		const subscription = provider.auth.oauth?.isSubscription === true;
 		if ((!authType || authType === "oauth") && provider.auth.oauth) {
-			options.push({ id: provider.id, name: provider.name, authType: "oauth", method: provider.auth.oauth, status });
+			options.push({
+				id: provider.id,
+				name: provider.name,
+				authType: "oauth",
+				method: provider.auth.oauth,
+				status,
+				subscription,
+			});
 		}
 		if ((!authType || authType === "api_key") && provider.auth.apiKey) {
 			options.push({
@@ -28,6 +36,7 @@ export function getLoginProviderOptions(
 				authType: "api_key",
 				method: provider.auth.apiKey,
 				status,
+				subscription,
 			});
 		}
 	}

@@ -17,12 +17,15 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	APP_NAME,
 	CONFIG_DIR_NAME,
+	detectInstallChange,
 	detectInstallMethod,
 	formatPackageManagerPermissionError,
 	getAgentDir,
+	getConfiguredSelfUpdateArgv,
 	getPackageDir,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
+	makeConfiguredSelfUpdateCommand,
 	PACKAGE_NAME,
 	type SelfUpdateCommand,
 	type SelfUpdatePackageTarget,
@@ -32,12 +35,13 @@ import type { InlineExtension } from "./core/extensions/types.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { DefaultPackageManager } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
-import { DefaultResourceLoader } from "./core/resource-loader.ts";
+import { DefaultResourceLoader, formatPackageInstallWarning, isBuiltinExtension } from "./core/resource-loader.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { spawnProcess, spawnProcessSync, waitForChildProcess } from "./utils/child-process.ts";
 import { canonicalizePath, getCwdRelativePath } from "./utils/paths.ts";
 import { getPiUserAgent } from "./utils/pi-user-agent.ts";
+import { stripBom } from "./utils/text.ts";
 import {
 	formatVersionCheckError,
 	getLatestPiRelease,
@@ -71,7 +75,7 @@ function getActiveManagedInstallRoot(): string | undefined {
 
 	const markerPath = join(managedRoot, MANAGED_INSTALL_MARKER);
 	try {
-		const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+		const marker = JSON.parse(stripBom(readFileSync(markerPath, "utf8"))) as {
 			kind?: unknown;
 			layout?: unknown;
 			schemaVersion?: unknown;
@@ -95,10 +99,11 @@ async function fetchInstallerArtifact(url: string, label: string): Promise<strin
 }
 
 async function runManagedNpmCi(stageDir: string): Promise<void> {
+	// No age-gate override: the release lockfile pins every package, so npm never
+	// resolves versions and a configured min-release-age does not apply.
 	const args = [
 		"ci",
 		"--ignore-scripts",
-		"--min-release-age=0",
 		"--omit=dev",
 		"--include=optional",
 		"--no-fund",
@@ -141,6 +146,26 @@ function activateManagedRelease(managedRoot: string, version: string): void {
 		renameSync(temporaryPath, currentPath);
 	} finally {
 		rmSync(temporaryPath, { force: true });
+	}
+}
+
+// Keep the active release and the one running this update, which other open
+// sessions likely still use and which allows rolling back by editing current-version.
+function pruneManagedReleases(managedRoot: string, activeVersion: string): void {
+	const releasesRoot = join(managedRoot, "releases");
+	let entries: string[];
+	try {
+		entries = readdirSync(releasesRoot);
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		if (entry === activeVersion || entry === VERSION || !MANAGED_RELEASE_VERSION_RE.test(entry)) continue;
+		try {
+			rmSync(join(releasesRoot, entry), { force: true, recursive: true });
+		} catch {
+			// Files may be in use (e.g. loaded native modules on Windows); retry on the next update.
+		}
 	}
 }
 
@@ -211,6 +236,7 @@ async function runManagedSelfUpdate(managedRoot: string, version: string): Promi
 		if (existsSync(releaseDir)) {
 			verifyManagedRelease(releaseDir, version);
 			activateManagedRelease(managedRoot, version);
+			pruneManagedReleases(managedRoot, version);
 			return;
 		}
 
@@ -227,6 +253,7 @@ async function runManagedSelfUpdate(managedRoot: string, version: string): Promi
 		verifyManagedRelease(stageDir, version);
 		renameSync(stageDir, releaseDir);
 		activateManagedRelease(managedRoot, version);
+		pruneManagedReleases(managedRoot, version);
 	} finally {
 		if (stageDir) rmSync(stageDir, { force: true, recursive: true });
 		await releaseLock();
@@ -627,6 +654,9 @@ function printSelfUpdateUnavailable(
 ): void {
 	console.error(`error: ${APP_NAME} cannot self-update this installation.`);
 	console.error(getSelfUpdateUnavailableInstruction(PACKAGE_NAME, npmCommand, updatePackageTarget));
+	console.error(
+		`To make \`${APP_NAME} update\` run your own update command, set PI_SELF_UPDATE_COMMAND or the selfUpdateCommand setting.`,
+	);
 
 	const entrypoint = process.argv[1];
 	if (entrypoint) {
@@ -709,6 +739,48 @@ async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
 			});
 		});
 	}
+}
+
+/** Run the user-configured self-update command, then report the version installed on disk. */
+async function runConfiguredSelfUpdate(argv: string[], plan: SelfUpdatePlan): Promise<void> {
+	const command = makeConfiguredSelfUpdateCommand(argv, plan);
+	if (plan.note) {
+		printSelfUpdateNote(plan.note);
+	}
+	try {
+		await runSelfUpdate(command);
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : "Unknown self-update command error";
+		console.error(chalk.red(`Error: ${message}`));
+		process.exitCode = 1;
+		return;
+	}
+	// Exit code 0 does not prove an update. Wrappers such as mise or Nix install each version into a
+	// new directory and leave this installation untouched, so fall back to the pi on PATH.
+	const change = detectInstallChange();
+	const installedVersion =
+		change?.kind === "updated" && change.version === plan.version ? change.version : readVersionOnPath();
+	if (installedVersion === plan.version) {
+		console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${plan.version}`));
+		return;
+	}
+	console.log(
+		chalk.yellow(
+			`Ran ${command.display}, but \`${APP_NAME} --version\` reports ${installedVersion ?? "no version"}, not ${plan.version}.`,
+		),
+	);
+}
+
+/** Version printed by `pi --version` as resolved from PATH, the pi the user runs next. */
+function readVersionOnPath(): string | undefined {
+	// PI_PACKAGE_DIR points at this installation and would make the new pi report the old version.
+	const { PI_PACKAGE_DIR: _, ...env } = process.env;
+	const result = spawnProcessSync(APP_NAME, ["--version"], {
+		encoding: "utf-8",
+		stdio: ["ignore", "pipe", "pipe"],
+		env,
+	});
+	return result.status === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
 function prepareWindowsNpmSelfUpdate(): void {
@@ -839,15 +911,27 @@ export async function handleConfigCommand(
 		return true;
 	}
 	reportSettingsErrors(settingsManager, "config command");
+	const builtinExtensions = (runtimeOptions.extensionFactories ?? [])
+		.filter(isBuiltinExtension)
+		.map((input) => input.name);
 	const globalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const globalResolvedPaths = await new DefaultPackageManager({
 		cwd,
 		agentDir,
 		settingsManager: globalSettingsManager,
+		builtinExtensions,
 	}).resolve();
 	const projectResolvedPaths = settingsManager.isProjectTrusted()
-		? await new DefaultPackageManager({ cwd, agentDir, settingsManager }).resolve()
+		? await new DefaultPackageManager({ cwd, agentDir, settingsManager, builtinExtensions }).resolve()
 		: globalResolvedPaths;
+	const installWarnings = new Set(
+		[...(globalResolvedPaths.installFailures ?? []), ...(projectResolvedPaths.installFailures ?? [])].map(
+			formatPackageInstallWarning,
+		),
+	);
+	for (const warning of installWarnings) {
+		console.error(chalk.yellow(`Warning: ${warning}`));
+	}
 
 	await selectConfig({
 		resolvedPaths: { global: globalResolvedPaths, project: projectResolvedPaths },
@@ -946,6 +1030,8 @@ export async function handlePackageCommand(
 	packageManager.setProgressCallback((event) => {
 		if (event.type === "start") {
 			process.stdout.write(chalk.dim(`${event.message}\n`));
+		} else if (event.type === "progress" && event.message) {
+			process.stdout.write(chalk.yellow(`${event.message}\n`));
 		}
 	});
 
@@ -1020,7 +1106,11 @@ export async function handlePackageCommand(
 					}
 				}
 				if (updateTargetIncludesSelf(target)) {
-					const managedInstallRoot = getActiveManagedInstallRoot();
+					const configuredSelfUpdateArgv = getConfiguredSelfUpdateArgv(
+						settingsManager.getGlobalSettings().selfUpdateCommand,
+					);
+					// A configured command is explicit user intent, so it replaces the managed install path too.
+					const managedInstallRoot = configuredSelfUpdateArgv ? undefined : getActiveManagedInstallRoot();
 					if (managedInstallRoot && options.force) {
 						console.error(
 							chalk.red(
@@ -1032,6 +1122,10 @@ export async function handlePackageCommand(
 					}
 					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
 					if (!selfUpdatePlan.shouldRun) {
+						return true;
+					}
+					if (configuredSelfUpdateArgv) {
+						await runConfiguredSelfUpdate(configuredSelfUpdateArgv, selfUpdatePlan);
 						return true;
 					}
 					if (managedInstallRoot) {
@@ -1089,6 +1183,12 @@ export async function handlePackageCommand(
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
+					// October release artifacts are the source for managed installations.
+					if (installMethod === "npm") {
+						console.log();
+						console.log(chalk.yellow(`This npm installation of ${APP_NAME} does not pin its dependencies.`));
+						console.log(chalk.yellow(`Managed release artifacts: ${MANAGED_RELEASES_URL}`));
+					}
 				}
 				return true;
 			}

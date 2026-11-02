@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import type { ExtensionContext } from "../src/core/extensions/types.ts";
+import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
 import {
 	type BashOperations,
 	createBashTool,
@@ -89,6 +89,7 @@ describe("Coding Agent Tools", () => {
 			// No truncation message since file fits within limits
 			expect(getTextOutput(result)).not.toContain("Use offset=");
 			expect(result.details).toBeUndefined();
+			expect(result.structuredContent).toBe(content);
 		});
 
 		it("should handle non-existent files", async () => {
@@ -217,6 +218,13 @@ describe("Coding Agent Tools", () => {
 			expect(imageBlock?.mimeType).toBe("image/png");
 			expect(typeof imageBlock?.data).toBe("string");
 			expect((imageBlock?.data ?? "").length).toBeGreaterThan(0);
+			// Programmatic callers get the same image as a block. https://github.com/earendil-works/pi/issues/10251
+			expect(result.structuredContent).toEqual({
+				type: "image",
+				data: imageBlock?.data,
+				mimeType: "image/png",
+				note: getTextOutput(result),
+			});
 		});
 
 		it("should read BMP files from disk as PNG image attachments", async () => {
@@ -490,10 +498,49 @@ describe("Coding Agent Tools", () => {
 			expect(result.details).toBeUndefined();
 		});
 
-		it("should handle command errors", async () => {
-			await expect(bashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
-				/(Command failed|code 1)/,
-			);
+		it("should report non-zero exit codes as error results with structured content", async () => {
+			const result = await bashTool.execute("test-call-9", { command: "echo out; exit 3" });
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toBe("out\n\n\nCommand exited with code 3");
+			expect(result.structuredContent).toEqual({
+				output: "out\n",
+				truncated: false,
+				exit_code: 3,
+				wall_time_seconds: expect.any(Number),
+			});
+
+			const ok = await bashTool.execute("test-call-9b", { command: "echo fine" });
+			expect(ok.isError).toBeUndefined();
+			expect(ok.structuredContent).toMatchObject({ output: "fine\n", exit_code: 0 });
+
+			const empty = await bashTool.execute("test-call-9c", { command: "true" });
+			expect(getTextOutput(empty)).toBe("(no output)");
+			expect(empty.structuredContent).toMatchObject({ output: "", truncated: false });
+		});
+
+		it("should return up to 1 MiB of output in structured content", async () => {
+			// 3000 lines exceed the model-facing 2000 line limit but not 1 MiB.
+			const medium = await bashTool.execute("test-call-9d", { command: "seq 1 3000" });
+			expect(getTextOutput(medium)).not.toContain("\n1\n2\n");
+			expect(medium.details?.truncation?.truncated).toBe(true);
+			const mediumOutput = medium.structuredContent as { output: string; truncated: boolean };
+			expect(mediumOutput.truncated).toBe(false);
+			expect(mediumOutput.output).toBe(`${Array.from({ length: 3000 }, (_, i) => i + 1).join("\n")}\n`);
+
+			// About 2 MB: keeps the first and last 512 KiB around an omission marker.
+			const large = await bashTool.execute("test-call-9e", { command: "seq 1 300000" });
+			const largeOutput = large.structuredContent as {
+				output: string;
+				truncated: boolean;
+				full_output_path?: string;
+			};
+			expect(largeOutput.truncated).toBe(true);
+			expect(largeOutput.output.startsWith("1\n2\n3\n")).toBe(true);
+			expect(largeOutput.output.endsWith("299999\n300000\n")).toBe(true);
+			expect(largeOutput.output).toMatch(/\n\n\[\.\.\. \d+ bytes omitted \.\.\.\]\n\n/);
+			expect(Buffer.byteLength(largeOutput.output)).toBeLessThan(1024 * 1024 + 100);
+			expect(largeOutput.full_output_path).toBe(large.details?.fullOutputPath);
+			expect(readFileSync(largeOutput.full_output_path!, "utf-8").endsWith("300000\n")).toBe(true);
 		});
 
 		// Regression tests for https://github.com/earendil-works/pi/issues/9577
@@ -512,16 +559,17 @@ describe("Coding Agent Tools", () => {
 		);
 
 		it.skipIf(process.platform === "win32")(
-			"should reject signal-killed commands while preserving partial output",
+			"should report signal-killed commands as errors while preserving partial output",
 			async () => {
 				for (const { signal, exitCode } of [
 					{ signal: "KILL", exitCode: 137 },
 					{ signal: "TERM", exitCode: 143 },
 				]) {
-					const execution = bashTool.execute(`test-call-signal-${signal}`, {
+					const result = await bashTool.execute(`test-call-signal-${signal}`, {
 						command: `printf 'before-kill\\n'; kill -${signal} $$`,
 					});
-					await expect(execution).rejects.toThrow(
+					expect(result.isError).toBe(true);
+					expect(getTextOutput(result)).toMatch(
 						new RegExp(`before-kill\\s+Command exited with code ${exitCode}$`),
 					);
 				}
@@ -868,6 +916,48 @@ describe("Coding Agent Tools", () => {
 			expect(output).not.toContain("match two");
 		});
 
+		// https://github.com/earendil-works/pi/issues/11398
+		it("should keep context line numbers aligned with ripgrep when a file contains a lone CR", async () => {
+			const testFile = join(testDir, "lone-cr.txt");
+			writeFileSync(testFile, "before\rprogress\nneedle\nafter");
+
+			const result = await grepTool.execute("test-call-lone-cr", {
+				pattern: "needle",
+				path: testFile,
+				context: 1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("lone-cr.txt-1- beforeprogress");
+			expect(output).toContain("lone-cr.txt:2: needle");
+			expect(output).toContain("lone-cr.txt-3- after");
+		});
+
+		// https://github.com/earendil-works/pi/issues/11203
+		it("should ignore RIPGREP_CONFIG_PATH", async () => {
+			const configFile = join(testDir, "rg-config");
+			const testFile = join(testDir, "fixture.txt");
+			writeFileSync(configFile, "--fixed-strings\n");
+			writeFileSync(testFile, "aXb\na.b\n");
+
+			const previous = process.env.RIPGREP_CONFIG_PATH;
+			process.env.RIPGREP_CONFIG_PATH = configFile;
+			try {
+				const result = await grepTool.execute("test-call-rg-config", {
+					pattern: "a.b",
+					path: testFile,
+					literal: false,
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("fixture.txt:1: aXb");
+				expect(output).toContain("fixture.txt:2: a.b");
+			} finally {
+				if (previous === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+				else process.env.RIPGREP_CONFIG_PATH = previous;
+			}
+		});
+
 		it("should treat flag-like patterns as search text", async () => {
 			const marker = join(testDir, "grep-injection-marker");
 			const payload = join(testDir, "payload.sh");
@@ -955,8 +1045,8 @@ describe("Coding Agent Tools", () => {
 	});
 });
 
-function fakeCtx(cwd: string): ExtensionContext {
-	return { cwd } as ExtensionContext;
+function fakeCtx(cwd: string): ExtensionToolContext {
+	return { cwd } as ExtensionToolContext;
 }
 
 describe("tool cwd resolution", () => {

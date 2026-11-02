@@ -16,6 +16,8 @@ pi install ./local-package
 
 `pi list` shows configured packages. Use `pi remove <source>` to remove one and `pi update --extensions` to reconcile package installations. See [Command Line](cli.md#package-commands) for every package command and option.
 
+If a configured package fails to install at startup, for example because npm cannot reach the registry, Pi warns about it, skips that package's resources, and keeps running. Pi tries to install it again on the next start or `/reload`. `pi install` and `pi update --extensions` still report the failure and exit non-zero.
+
 Personal installs are written to `~/.pi/agent/settings.json`. Add `--local` or `-l` to write the package declaration to `.pi/settings.json`. Pi reads declarations from that file only after project trust is granted.
 
 Project packages are installed and loaded only after project trust is resolved. Packages can execute extension code and can include skills that instruct the model to run programs. Review third-party package source before installing it. Review project package declarations before granting project trust.
@@ -25,6 +27,8 @@ Use `--extension` or `-e` to try a package for one invocation without adding it 
 ```bash
 pi -e npm:@example/pi-tools
 ```
+
+Pi caches `-e` packages under `~/.pi/agent/tmp/extensions/` and checks them on every start and `/reload`. An npm package is reinstalled when the registry has a newer version that matches the specification. A version pinned to an exact number, such as `@1.2.3`, is not checked. A git package is fetched and reset to the remote branch or ref. A ref that is a commit hash already checked out is not fetched. If the check fails or offline mode is on, Pi loads the cached copy.
 
 ## Choose a source
 
@@ -73,6 +77,26 @@ Paths are relative to the package root. Arrays accept glob patterns and exclusio
 
 The `pi-package` keyword makes an npm package eligible for discovery in the [Pi package gallery](https://pi.dev/packages). Optional `pi.image` and `pi.video` fields add gallery previews.
 
+## Show a changelog
+
+After a package update, Pi can show what changed. On the next fresh launch, Pi reads the package changelog and shows entries newer than the last seen version under "Extension Updates", the same way it shows its own changelog. The first time Pi sees a package, it records the version without showing anything.
+
+This applies to packages that load at least one extension. Packages that only provide skills, prompt templates, or themes do not show a changelog.
+
+By default Pi reads `CHANGELOG.md` from the package root. Point `pi.changelogPath` at another file inside the package, or set it to `""` to disable the changelog:
+
+```json
+{
+  "name": "my-pi-package",
+  "version": "1.2.0",
+  "pi": {
+    "changelogPath": "./docs/CHANGELOG.md"
+  }
+}
+```
+
+Use version headings in the same format as Pi's changelog, such as `## [1.2.0]` or `## 1.2.0 - 2026-01-01`. Entries are matched against the `version` field in `package.json`, so a git package only shows a changelog when that field increases. The `collapseChangelog` setting condenses the section to one line per package, such as `Updated my-pi-package to v1.2.0.` Unlike Pi's own changelog, `/changelog` does not show package changelogs, so read the package's changelog file or repository for details.
+
 ## Declare dependencies
 
 Put runtime packages imported by extensions in `dependencies`. Pi installs package dependencies when it installs an npm or git source.
@@ -118,7 +142,7 @@ For each resource type:
 
 Filters narrow the package manifest. They do not expose resources that the package itself did not declare.
 
-Run `pi config` to enable or disable discovered resources. It starts with personal configuration; press Tab to switch scope, or run `pi config --local` to start with project overrides.
+Run `pi config` to enable or disable discovered resources and pi's built-in extensions. It starts with personal configuration; press Tab to switch scope, or run `pi config --local` to start with project overrides.
 
 ## Understand scope and identity
 

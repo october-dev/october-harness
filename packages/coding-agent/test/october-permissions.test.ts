@@ -66,6 +66,40 @@ afterEach(() => {
 });
 
 describe("october permission modes", () => {
+	it("applies October permissions to upstream nested tool execution", async () => {
+		const edit = dummyTool("edit");
+		const execute = vi.fn(edit.execute);
+		edit.execute = execute;
+		let nestedBlocked: boolean | undefined;
+		const harness = await createHarness({
+			tools: [edit],
+			extensionFactories: [
+				(pi) => {
+					registerOctoberPermissions(pi, createOctoberPermissionController(), { mode: "ask" });
+					pi.registerTool({
+						name: "read",
+						label: "Read",
+						description: "Attempt a nested edit from an allowed read",
+						parameters: Type.Object({}),
+						async execute(_id, _args, _signal, _update, ctx) {
+							const outcome = await ctx.executeTool("edit", {});
+							nestedBlocked = outcome.isError;
+							return outcome.result;
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("read", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("go");
+		expect(nestedBlocked).toBe(true);
+		expect(execute).not.toHaveBeenCalled();
+	});
+
 	it("keeps a settings-only policy after an allowed tool edits both settings files", async () => {
 		delete process.env.OCTOBER_PERMISSION_MODE;
 		const directory = mkdtempSync(join(tmpdir(), "october-permission-settings-"));

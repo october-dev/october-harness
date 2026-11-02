@@ -223,7 +223,10 @@ export function registerOctoberHooks(pi: ExtensionAPI, env: OctoberDesktopBusEnv
 		);
 	});
 
-	pi.on("before_agent_start", async (_event, ctx) => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		// Upstream now emits this hook for idle custom messages too. A native inbox wake
+		// already carries its batch and receipt; pulling again would duplicate the handoff.
+		if (event.messageType === "custom") return;
 		const turn = randomUUID();
 		providerTurnId = turn;
 		pendingContext = undefined;
@@ -246,7 +249,7 @@ export function registerOctoberHooks(pi: ExtensionAPI, env: OctoberDesktopBusEnv
 
 	pi.on("agent_start", async () => {
 		completion = undefined;
-		// Native custom messages bypass before_agent_start. This event proves that the provider
+		// Native custom messages skip the pre-prompt pull. This event proves that the provider
 		// actually began work; preserve the same turn identity across its automatic retries.
 		providerTurnId ??= randomUUID();
 		const turn = providerTurnId;

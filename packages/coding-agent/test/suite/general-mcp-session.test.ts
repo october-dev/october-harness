@@ -8,7 +8,7 @@ import {
 	type SettingsManager,
 	SettingsManager as SettingsManagerClass,
 } from "../../src/core/settings-manager.ts";
-import generalMcpExtension from "../../src/extensions/mcp/index.ts";
+import generalMcpExtension from "../../src/extensions/mcp/settings-extension.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 const stdioFixture = fileURLToPath(new URL("../fixtures/general-mcp-stdio-server.mjs", import.meta.url));
@@ -17,7 +17,9 @@ function mcpExtensions(settingsManager: SettingsManager): InlineExtension[] {
 	return [
 		{
 			name: "mcp",
-			factory: (pi: ExtensionAPI) => generalMcpExtension(pi, () => settingsManager.getSettings().mcpServers),
+			factory: (pi: ExtensionAPI) => {
+				generalMcpExtension(pi, () => settingsManager.getSettings().mcpServers);
+			},
 			hidden: true,
 		},
 	];
@@ -41,7 +43,7 @@ describe("general MCP session integration", () => {
 	it("registers a session-owned stdio tool and completes a model tool-call turn", async () => {
 		const harness = await createHarness({
 			settings: { mcpServers: { fixture: stdioServer() } },
-			extensionFactories: mcpExtensions,
+			createExtensionFactories: mcpExtensions,
 		});
 		harnesses.push(harness);
 
@@ -64,7 +66,7 @@ describe("general MCP session integration", () => {
 	it("blocks every MCP tool when normalized names collide", async () => {
 		const harness = await createHarness({
 			settings: { mcpServers: { "A B": stdioServer(), a_b: stdioServer() } },
-			extensionFactories: mcpExtensions,
+			createExtensionFactories: mcpExtensions,
 		});
 		harnesses.push(harness);
 
@@ -80,7 +82,7 @@ describe("general MCP session integration", () => {
 		const untrustedSettings = SettingsManagerClass.fromStorage(storage, { projectTrusted: false });
 		const untrustedHarness = await createHarness({
 			settingsManager: untrustedSettings,
-			extensionFactories: mcpExtensions,
+			createExtensionFactories: mcpExtensions,
 		});
 		harnesses.push(untrustedHarness);
 
@@ -90,7 +92,7 @@ describe("general MCP session integration", () => {
 		const trustedSettings = SettingsManagerClass.fromStorage(storage, { projectTrusted: true });
 		const trustedHarness = await createHarness({
 			settingsManager: trustedSettings,
-			extensionFactories: mcpExtensions,
+			createExtensionFactories: mcpExtensions,
 		});
 		harnesses.push(trustedHarness);
 

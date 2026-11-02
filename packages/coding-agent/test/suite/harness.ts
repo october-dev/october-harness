@@ -13,17 +13,19 @@ import type {
 	FauxProviderRegistration,
 	FauxResponseStep,
 	Model,
+	ToolResultMessage,
 } from "@earendil-works/pi-ai/compat";
 import { registerFauxProvider, streamSimple } from "@earendil-works/pi-ai/compat";
 import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
-import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
+import type { ExtensionRunner, ExtensionUIContext } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
 import type { ShellRunnerSelection } from "../../src/core/shell-runner.ts";
 import type { InlineExtension, ResourceLoader } from "../../src/index.ts";
+import { theme } from "../../src/modes/interactive/theme/theme.ts";
 import {
 	type CreateTestExtensionsResultInput,
 	createTestExtensionsResult,
@@ -61,7 +63,54 @@ export function getAssistantTexts(harness: Harness): string[] {
 		.map((message) => getMessageText(message));
 }
 
+/** The latest result of `toolName` in the session transcript. */
+export function getToolResult(harness: Harness, toolName: string): ToolResultMessage {
+	const result = harness.session.messages.findLast(
+		(message): message is ToolResultMessage => message.role === "toolResult" && message.toolName === toolName,
+	);
+	if (!result) throw new Error(`No ${toolName} tool result`);
+	return result;
+}
+
+/** An extension UI context that does nothing, with `overrides` applied. */
+export function createTestUiContext(overrides: Partial<ExtensionUIContext> = {}): ExtensionUIContext {
+	return {
+		select: async () => undefined,
+		confirm: async () => false,
+		input: async () => undefined,
+		notify: () => {},
+		onTerminalInput: () => () => {},
+		setStatus: () => {},
+		setWorkingMessage: () => {},
+		setWorkingVisible: () => {},
+		setWorkingIndicator: () => {},
+		setHiddenThinkingLabel: () => {},
+		setWidget: () => {},
+		setFooter: () => {},
+		setHeader: () => {},
+		setTitle: () => {},
+		custom: async <T>() => undefined as T,
+		pasteToEditor: () => {},
+		setEditorText: () => {},
+		getEditorText: () => "",
+		editor: async () => undefined,
+		addAutocompleteProvider: () => {},
+		setEditorComponent: () => {},
+		getEditorComponent: () => undefined,
+		get theme() {
+			return theme;
+		},
+		getAllThemes: () => [],
+		getTheme: () => undefined,
+		setTheme: () => ({ success: false, error: "Theme switching not available in tests" }),
+		getToolsExpanded: () => false,
+		setToolsExpanded: () => {},
+		...overrides,
+	};
+}
+
 export interface HarnessOptions {
+	provider?: string;
 	models?: FauxModelDefinition[];
 	settings?: Partial<Settings>;
 	tools?: AgentTool[];
@@ -69,9 +118,10 @@ export interface HarnessOptions {
 	allowedToolNames?: string[];
 	excludedToolNames?: string[];
 	resourceLoader?: ResourceLoader;
-	extensionFactories?:
-		| Array<InlineExtension | CreateTestExtensionsResultInput>
-		| ((settingsManager: SettingsManager) => Array<InlineExtension | CreateTestExtensionsResultInput>);
+	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
+	createExtensionFactories?: (
+		settingsManager: SettingsManager,
+	) => Array<InlineExtension | CreateTestExtensionsResultInput>;
 	settingsManager?: SettingsManager;
 	withConfiguredAuth?: boolean;
 	modelsJson?: Record<string, unknown>;
@@ -107,6 +157,7 @@ function createTempDir(): string {
 export async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 	const tempDir = createTempDir();
 	const fauxProvider: FauxProviderRegistration = registerFauxProvider({
+		provider: options.provider,
 		models: options.models,
 	});
 	fauxProvider.setResponses([]);
@@ -180,10 +231,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 			return runner.emitContext(messages);
 		},
 	});
-	const extensionFactories =
-		typeof options.extensionFactories === "function"
-			? options.extensionFactories(settingsManager)
-			: options.extensionFactories;
+	const extensionFactories = options.createExtensionFactories?.(settingsManager) ?? options.extensionFactories;
 	const extensionsResult = extensionFactories
 		? await createTestExtensionsResult(extensionFactories, tempDir)
 		: undefined;
@@ -199,6 +247,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		resourceLoader,
 		baseToolsOverride: toolMap,
 		initialActiveToolNames: options.initialActiveToolNames,
+		usesDefaultTools: options.initialActiveToolNames === undefined,
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,

@@ -104,6 +104,8 @@ describe("October package branding", () => {
 			"!dist/experimental",
 			"!dist/cli/experimental",
 			"docs",
+			"schemas",
+			"containerization.md",
 			"CHANGELOG.md",
 		]);
 		expect(pkg.files).not.toContain("examples");

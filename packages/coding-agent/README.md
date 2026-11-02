@@ -397,10 +397,13 @@ The open harness should be enough to run, study, extend, and use as a reference 
 | [`@earendil-works/pi-agent-core`](https://github.com/october-dev/october-harness/blob/main/packages/agent) | Agent loop, tool calling, and state management |
 | [`@earendil-works/pi-ai`](https://github.com/october-dev/october-harness/blob/main/packages/ai) | Unified multi-provider model API |
 | [`@earendil-works/pi-tui`](https://github.com/october-dev/october-harness/blob/main/packages/tui) | Differentially rendered terminal UI |
-| [`@earendil-works/pi-protocol`](https://github.com/october-dev/october-harness/blob/main/packages/protocol) | RPC protocol types and transport contract |
-| [`@earendil-works/pi-client`](https://github.com/october-dev/october-harness/blob/main/packages/client) | Client for remote agent sessions |
-| [`@earendil-works/pi-server`](https://github.com/october-dev/october-harness/blob/main/packages/server) | Server runtime for remote sessions |
 | [`@earendil-works/pi-telemetry`](https://github.com/october-dev/october-harness/blob/main/packages/telemetry) | Shared, privacy-aware telemetry primitives |
+
+| [`@earendil-works/pi-schema`](https://github.com/october-dev/october-harness/blob/main/packages/schema) | JSON Schema validation |
+| [`@earendil-works/pi-codemode`](https://github.com/october-dev/october-harness/blob/main/packages/codemode) | Sandboxed JavaScript tool orchestration |
+| [`@earendil-works/pi-mcp`](https://github.com/october-dev/october-harness/blob/main/packages/mcp) | MCP client and server primitives |
+| [`@earendil-works/pi-durable`](https://github.com/october-dev/october-harness/blob/main/packages/durable) | Durable conversation, task, and document runtime |
+| [`@earendil-works/pi-env`](https://github.com/october-dev/october-harness/blob/main/packages/env) | Execution environments |
 
 ## Contributing and upstream sync
 

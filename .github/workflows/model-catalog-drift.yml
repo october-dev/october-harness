@@ -45,7 +45,7 @@ jobs:
       - name: Type-check against the live catalog
         id: typecheck
         continue-on-error: true
-        run: npx tsgo --noEmit 2>&1 | tee typecheck.log; exit "${PIPESTATUS[0]}"
+        run: npx --no-install tsc --noEmit 2>&1 | tee typecheck.log; exit "${PIPESTATUS[0]}"
 
       - name: Check that every provider default still exists
         id: defaults

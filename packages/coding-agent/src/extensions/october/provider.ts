@@ -1,5 +1,5 @@
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "../../core/extensions/types.ts";
+import type { ExtensionAPI, ProviderChatModelConfig, ProviderConfig } from "../../core/extensions/types.ts";
 import { buildOctoberOAuth, OCTOBER_PROVIDER_ID } from "./auth.ts";
 import { logOctoberDebug } from "./bus/log.ts";
 import { type OctoberPricing, parseOctoberPricing, setOctoberPricing } from "./pricing.ts";
@@ -100,7 +100,7 @@ export function octoberCatalogIsLive(): boolean {
 	return octoberCatalogLive;
 }
 
-function seedFallback(reason: string): ProviderModelConfig[] {
+function seedFallback(reason: string): ProviderChatModelConfig[] {
 	logOctoberDebug(`models fallback: ${reason}`);
 	octoberCatalogLive = false;
 	return OCTOBER_SEED_MODELS;
@@ -116,7 +116,7 @@ function modelFor(
 	contextWindow: number = DEFAULT_CONTEXT_WINDOW,
 	pricing?: OctoberPricing,
 	maxOutputTokens?: number,
-): ProviderModelConfig {
+): ProviderChatModelConfig {
 	const meta = MODEL_META[id] ?? DEFAULT_META;
 	return {
 		id,
@@ -133,7 +133,7 @@ function modelFor(
 }
 
 /** Static baseline so `--provider october` works before the first /models refresh. Qwen is first. */
-export const OCTOBER_SEED_MODELS: ProviderModelConfig[] = SEED_ORDER.map((id) => modelFor(id));
+export const OCTOBER_SEED_MODELS: ProviderChatModelConfig[] = SEED_ORDER.map((id) => modelFor(id));
 
 function tokenFromRefreshContext(context: RefreshModelsContext): string | undefined {
 	const credential = context.credential;
@@ -173,7 +173,7 @@ function maxOutputTokensFromEntry(entry: Record<string, unknown>): number | unde
  * lowercasing, prefix stripping, or slash rewriting (ids carry their own slashes,
  * e.g. `october/Qwen/Qwen3.6-35B-A3B-FP8`). Skip the network when no token is resolvable.
  */
-export async function refreshOctoberModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
+export async function refreshOctoberModels(context: RefreshModelsContext): Promise<ProviderChatModelConfig[]> {
 	const token = tokenFromRefreshContext(context);
 	if (!context.allowNetwork) {
 		// Offline/cache-only init always returns seeds; not a diagnostic event.
@@ -204,7 +204,7 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 			return seedFallback("bad shape");
 		}
 
-		const live: ProviderModelConfig[] = [];
+		const live: ProviderChatModelConfig[] = [];
 		const pricing = new Map<string, OctoberPricing>();
 		for (const entry of data) {
 			if (!entry || typeof entry !== "object") continue;
@@ -217,7 +217,7 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 		}
 
 		const byId = new Map(live.map((model) => [model.id, model]));
-		const ordered: ProviderModelConfig[] = [];
+		const ordered: ProviderChatModelConfig[] = [];
 		for (const seedId of SEED_ORDER) {
 			const match = byId.get(seedId);
 			if (match) {

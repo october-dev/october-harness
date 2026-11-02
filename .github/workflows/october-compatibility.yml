@@ -47,6 +47,9 @@ jobs:
       - name: Install Harness dependencies
         run: npm ci --ignore-scripts
 
+      - name: Build Harness workspace packages
+        run: npm run build
+
       - name: Checkout requested October Bus revision
         run: |
           set -euo pipefail

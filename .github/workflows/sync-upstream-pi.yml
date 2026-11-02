@@ -87,6 +87,7 @@ jobs:
         if: steps.merge.outputs.proceed == 'true'
         run: |
           npm ci --ignore-scripts
+          npm run build
           npm run check
           ./test.sh
 

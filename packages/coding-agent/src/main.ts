@@ -71,13 +71,14 @@ import { resolveShellRunner } from "./core/shell-runner.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { createBuiltInExtensions } from "./extensions/index.ts";
+import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
 import { OCTOBER_PROVIDER_ID } from "./extensions/october/auth.ts";
 import { seedOctoberDefaultPackages } from "./extensions/october/default-packages.ts";
 import { octoberCatalogIsLive } from "./extensions/october/provider.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
-import { validateThemeJson } from "./modes/interactive/theme/theme-json.ts";
+import { validateThemeJson } from "./modes/interactive/theme/theme-schema.ts";
 import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
@@ -644,6 +645,12 @@ function buildSessionOptions(
 	// Model from CLI
 	// - supports --provider <name> --model <pattern>
 	// - supports --model <provider>/<pattern>
+	if (parsed.provider && !parsed.model) {
+		diagnostics.push({
+			type: "error",
+			message: `--provider requires --model (for example: --provider ${parsed.provider} --model <pattern>)`,
+		});
+	}
 	if (octoberModel) {
 		if (octoberModel.diagnostic) diagnostics.push(octoberModel.diagnostic);
 		options.model = octoberModel.model;
@@ -656,6 +663,7 @@ function buildSessionOptions(
 			cliProvider: parsed.provider,
 			cliModel: parsed.model,
 			cliThinking: parsed.thinking,
+			inlineApiKey: Boolean(parsed.apiKey),
 			modelRuntime,
 		});
 		if (resolved.warning) {
@@ -751,6 +759,8 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	// Commands and startup selectors may load themes before runtime creation.
+	setThemeJsonValidator(validateThemeJson);
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
 		process.env.PI_OFFLINE = "1";
@@ -770,7 +780,18 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 	cleanupManagedInstall();
 
-	const cwd = process.cwd();
+	let cwd: string;
+	try {
+		cwd = process.cwd();
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		console.error(
+			chalk.red(
+				"Error: The current working directory no longer exists. Change to an existing directory and try again.",
+			),
+		);
+		process.exit(1);
+	}
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const bootstrapExtensionFactories = [
@@ -794,6 +815,12 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handleConfigCommand(args, { extensionFactories: bootstrapExtensionFactories })) {
+		return;
+	}
+
+	if (args[0] === "mcp") {
+		const { runMcpCommand } = await loadMcpCommand();
+		process.exitCode = await runMcpCommand(args.slice(1), { cwd, agentDir });
 		return;
 	}
 
@@ -963,12 +990,10 @@ export async function main(args: string[], options?: MainOptions) {
 			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustRequiringResources;
 		const projectTrusted = shouldResolveProjectTrust
 			? false
-			: (cachedProjectTrust ??
-				parsed.projectTrustOverride ??
-				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
+			: (cachedProjectTrust ?? parsed.projectTrustOverride ?? trustStore.get(cwd) ?? !hasTrustRequiringResources);
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
 		const extensionFactories = [
-			...createBuiltInExtensions(runtimeSettingsManager),
+			...createBuiltInExtensions(runtimeSettingsManager, { noMcp: parsed.noMcp }),
 			...(options?.extensionFactories ?? []),
 		];
 		const services = await createAgentSessionServices({
@@ -1009,6 +1034,7 @@ export async function main(args: string[], options?: MainOptions) {
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
 				additionalThemePaths: resolvedThemePaths,
 				noExtensions: parsed.noExtensions,
+				disabledBuiltinExtensions: parsed.noMcp ? ["mcp"] : undefined,
 				noSkills: parsed.noSkills,
 				noPromptTemplates: parsed.noPromptTemplates,
 				noThemes: parsed.noThemes,
@@ -1106,8 +1132,11 @@ export async function main(args: string[], options?: MainOptions) {
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 
+	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
+
 	if (parsed.help) {
-		reportDiagnostics(startupSettingsDiagnostics);
+		reportDiagnostics(startupDiagnostics);
 		const extensionFlags = resourceLoader
 			.getExtensions()
 			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
@@ -1116,7 +1145,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (parsed.listModels !== undefined) {
-		reportDiagnostics(startupSettingsDiagnostics);
+		reportDiagnostics(startupDiagnostics);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(LIST_MODELS_AVAILABILITY_TIMEOUT_MS));
 		process.exit(0);
@@ -1134,8 +1163,6 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, stdinContent);
 	time("prepareInitialMessage");
-	// pi reads user-authored themes, so it opts into full validation before any theme loads.
-	setThemeJsonValidator(validateThemeJson);
 	initTheme(settingsManager.getTheme(), appMode === "interactive");
 	time("initTheme");
 
@@ -1145,12 +1172,10 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	time("resolveModelScope");
-	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
 	// Interactive mode shows the runner policy itself, before command submission is enabled.
 	const shellRunnerNotice: AgentSessionRuntimeDiagnostic | undefined = shellRunner.notice
 		? { type: shellRunner.kind === "invalid" ? "warning" : "info", code: "shell_runner", message: shellRunner.notice }
 		: undefined;
-	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
 	if (appMode !== "interactive" || hasRuntimeErrors) {
 		reportDiagnostics(
 			shellRunnerNotice ? [shellRunnerNotice, ...startupDiagnostics] : startupDiagnostics,

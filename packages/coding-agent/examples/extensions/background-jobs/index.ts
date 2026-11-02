@@ -15,7 +15,6 @@
  */
 
 import { stripVTControlCharacters } from "node:util";
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -51,7 +50,7 @@ const ACTION_FIELDS: Record<Action, readonly Field[]> = {
 };
 
 const BackgroundJobsParams = Type.Object({
-	action: StringEnum(ACTIONS, { description: "Operation to perform" }),
+	action: Type.Enum(ACTIONS, { description: "Operation to perform" }),
 	command: Type.Optional(Type.String({ description: "Shell command to run (start only)" })),
 	id: Type.Optional(Type.String({ description: "Job ID returned by start (status, log, cancel)" })),
 	tail: Type.Optional(

@@ -41,7 +41,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.3.14
+          bun-version: 1.4.4
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -91,12 +91,12 @@ jobs:
           cd packages/coding-agent/binaries
 
           binary_assets=(
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            october-darwin-arm64.tar.gz
+            october-darwin-x64.tar.gz
+            october-linux-x64.tar.gz
+            october-linux-arm64.tar.gz
+            october-windows-x64.zip
+            october-windows-arm64.zip
           )
 
           for asset in "${binary_assets[@]}"; do
@@ -109,12 +109,12 @@ jobs:
           source_asset="pi-${VERSION}-source.tar.gz"
           release_assets=(
             "${source_asset}"
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            october-darwin-arm64.tar.gz
+            october-darwin-x64.tar.gz
+            october-linux-x64.tar.gz
+            october-linux-arm64.tar.gz
+            october-windows-x64.zip
+            october-windows-arm64.zip
             pi-coding-agent-install-package.json
             pi-coding-agent-install-package-lock.json
           )
@@ -128,9 +128,88 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  smoke-test-binaries:
+    runs-on: ${{ matrix.runner }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    permissions:
+      actions: read
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SOURCE_REF: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout smoke tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Download binary archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+
+      - name: Extract current-platform binary
+        id: binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runtime_platform="$(node -p '`${process.platform}-${process.arch}`')"
+          case "${runtime_platform}" in
+            darwin-arm64|darwin-x64|linux-arm64|linux-x64)
+              platform="${runtime_platform}"
+              archive="release-assets/october-${platform}.tar.gz"
+              root="extracted/october"
+              binary="${root}/october"
+              ;;
+            win32-arm64)
+              platform="windows-arm64"
+              archive="release-assets/october-${platform}.zip"
+              root="extracted"
+              binary="${root}/october.exe"
+              ;;
+            win32-x64)
+              platform="windows-x64"
+              archive="release-assets/october-${platform}.zip"
+              root="extracted"
+              binary="${root}/october.exe"
+              ;;
+            *)
+              echo "::error::Unsupported runner platform ${runtime_platform}"
+              exit 1
+              ;;
+          esac
+
+          mkdir -p extracted
+          if [[ "${archive}" == *.zip ]]; then
+            export ARCHIVE_PATH="$(cygpath -w "${archive}")"
+            export DESTINATION_PATH="$(cygpath -w extracted)"
+            powershell.exe -NoProfile -NonInteractive -Command \
+              'Expand-Archive -LiteralPath $env:ARCHIVE_PATH -DestinationPath $env:DESTINATION_PATH -Force'
+          else
+            tar -xf "${archive}" -C extracted
+          fi
+          echo "root=${root}" >> "${GITHUB_OUTPUT}"
+          echo "binary=${binary}" >> "${GITHUB_OUTPUT}"
+
+      - name: Smoke-test binary
+        shell: bash
+        run: |
+          "${{ steps.binary.outputs.binary }}" --help
+          "${{ steps.binary.outputs.binary }}" --version
+          node scripts/smoke-test-codemode-binary.mjs "${{ steps.binary.outputs.binary }}"
+
   stage-github-release:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, smoke-test-binaries]
     permissions:
       actions: read
       contents: write
@@ -154,12 +233,12 @@ jobs:
           source_asset="pi-${VERSION}-source.tar.gz"
           expected_assets=(
             "${source_asset}"
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            october-darwin-arm64.tar.gz
+            october-darwin-x64.tar.gz
+            october-linux-x64.tar.gz
+            october-linux-arm64.tar.gz
+            october-windows-x64.zip
+            october-windows-arm64.zip
             pi-coding-agent-install-package.json
             pi-coding-agent-install-package-lock.json
             SHA256SUMS
@@ -184,12 +263,12 @@ jobs:
           source_asset="pi-${VERSION}-source.tar.gz"
           release_assets=(
             "${source_asset}"
-            pi-darwin-arm64.tar.gz
-            pi-darwin-x64.tar.gz
-            pi-linux-x64.tar.gz
-            pi-linux-arm64.tar.gz
-            pi-windows-x64.zip
-            pi-windows-arm64.zip
+            october-darwin-arm64.tar.gz
+            october-darwin-x64.tar.gz
+            october-linux-x64.tar.gz
+            october-linux-arm64.tar.gz
+            october-windows-x64.zip
+            october-windows-arm64.zip
             pi-coding-agent-install-package.json
             pi-coding-agent-install-package-lock.json
             SHA256SUMS
@@ -220,9 +299,17 @@ jobs:
             exit 1
           fi
 
+  # The pi-env daemon for every remote system @earendil-works/pi-env supports; the npm package ships them all.
+  env-daemons:
+    uses: ./.github/workflows/env-daemons.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ github.event.inputs.source_ref || github.event.inputs.tag || github.ref_name }}
+
   publish-npm:
     runs-on: ubuntu-latest
-    needs: stage-github-release
+    needs: [stage-github-release, env-daemons]
     environment: npm-publish
     permissions:
       contents: read
@@ -253,11 +340,32 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      - name: Download pi-env daemons
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: pi-env-*
+          path: packages/env/bin
+
+      - name: Check pi-env daemons
+        run: |
+          set -euo pipefail
+          for name in linux-x64 linux-arm64 android-arm64 android-x64 darwin-arm64 darwin-x64; do
+            test -s "packages/env/bin/pi-env-${name}/pi-env"
+          done
+          for name in windows-x64 windows-arm64; do
+            test -s "packages/env/bin/pi-env-${name}/pi-env.exe"
+          done
+          chmod +x packages/env/bin/*/pi-env*
+          ls -lR packages/env/bin
+
       - name: Build
         run: npm run build
 
       - name: Check
         run: npm run check
+
+      - name: Build the pi-env daemon for tests
+        run: npm run build:daemon --workspace packages/env
 
       - name: Test
         run: npm test
@@ -269,6 +377,9 @@ jobs:
         run: |
           npm install -g npm@11.16.0 --ignore-scripts
           npm --version
+
+      - name: Validate npm tarball publication with provenance
+        run: node scripts/publish.mjs --dry-run
 
       - name: Publish npm packages
         run: node scripts/publish.mjs

@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, type Model, type Transport } from "@earendil-works/pi-ai";
-import type { TuiMode as RendererTuiMode, ScrollViewScrollbar, TerminalCapabilities } from "@earendil-works/pi-tui";
+import type { Model } from "@earendil-works/pi-ai";
+import type { ScrollViewScrollbar, TerminalCapabilities, WheelScrollLines } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
@@ -9,200 +9,60 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import { SETTINGS_DEFAULTS } from "./settings-defaults.ts";
+import type {
+	CacheWarmingMode,
+	CompactionModelOverride,
+	DefaultProjectTrust,
+	FullscreenExitOutput,
+	MermaidRenderingMode,
+	PackageSource,
+	QuietStartup,
+	SessionShareDestination,
+	Settings,
+	ShellRunnerSettings,
+	ThinkingBudgetsSettings,
+	TransportSetting,
+	TuiMode,
+	WarningSettings,
+} from "./settings-schema.ts";
 
-export interface CompactionModelOverride {
-	reserveTokens?: number;
-	keepRecentTokens?: number;
-}
+export type {
+	BranchSummarySettings,
+	CacheWarmingMode,
+	CodemodeMode,
+	CodemodeSettings,
+	CompactionModelOverride,
+	CompactionSettings,
+	DefaultProjectTrust,
+	FullscreenExitOutput,
+	ImageSettings,
+	MarkdownSettings,
+	McpHttpServerSettings,
+	McpServerSettings,
+	McpStdioServerSettings,
+	MermaidRenderingMode,
+	PackageSource,
+	ProviderRetrySettings,
+	QuietStartup,
+	RetrySettings,
+	SessionShareDestination,
+	Settings,
+	ShellRunnerMountSettings,
+	ShellRunnerSettings,
+	TerminalSettings,
+	ThinkingBudgetsSettings,
+	TransportSetting,
+	TuiMode,
+	WarningSettings,
+} from "./settings-schema.ts";
+/** Cache-warming profile. "idle" also warms between agent runs. */
+export const CACHE_WARMING_MODES = ["off", "streaming", "idle"] as const satisfies readonly CacheWarmingMode[];
 
 const DEFAULT_COMPACTION_TOKEN_SETTINGS: Required<CompactionModelOverride> = {
-	reserveTokens: 16384,
-	keepRecentTokens: 20000,
+	reserveTokens: SETTINGS_DEFAULTS.compaction.reserveTokens,
+	keepRecentTokens: SETTINGS_DEFAULTS.compaction.keepRecentTokens,
 };
-
-export interface CompactionSettings {
-	enabled?: boolean; // default: true
-	reserveTokens?: number; // default: 16384
-	keepRecentTokens?: number; // default: 20000
-	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
-}
-
-export interface BranchSummarySettings {
-	reserveTokens?: number; // default: 16384 (tokens reserved for prompt + LLM response)
-	skipPrompt?: boolean; // default: false - when true, skips "Summarize branch?" prompt and defaults to no summary
-}
-
-export interface ProviderRetrySettings {
-	timeoutMs?: number; // SDK/provider request timeout in milliseconds
-	maxRetries?: number; // SDK/provider retry attempts
-	maxRetryDelayMs?: number; // default: 60000 (max server-requested delay before failing)
-}
-
-export interface RetrySettings {
-	enabled?: boolean; // default: true
-	maxRetries?: number; // default: 3
-	baseDelayMs?: number; // default: 2000 (exponential backoff: 2s, 4s, 8s)
-	maxAgentDelayMs?: number; // default: 60000
-	provider?: ProviderRetrySettings;
-}
-
-export type TuiMode = RendererTuiMode;
-export type FullscreenExitOutput = "transcript" | "resume-hint";
-
-export interface TerminalSettings {
-	showImages?: boolean; // default: true (only relevant if terminal supports images)
-	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
-	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
-	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
-	hyperlinks?: boolean | "auto";
-	images?: "kitty" | "iterm2" | "auto" | false;
-	trueColor?: boolean | "auto";
-}
-
-export interface ImageSettings {
-	autoResize?: boolean; // default: true (resize images to 2000x2000 max for better model compatibility)
-	blockImages?: boolean; // default: false - when true, prevents all images from being sent to LLM providers
-}
-
-export interface ThinkingBudgetsSettings {
-	minimal?: number;
-	low?: number;
-	medium?: number;
-	high?: number;
-}
-
-export type MermaidRenderingMode = "off" | "final" | "streaming";
-
-/** Cache-warming profile. "idle" also warms between agent runs. */
-export const CACHE_WARMING_MODES = ["off", "streaming", "idle"] as const;
-export type CacheWarmingMode = (typeof CACHE_WARMING_MODES)[number];
-
-export interface MarkdownSettings {
-	codeBlockIndent?: string; // default: "  "
-	mermaid?: MermaidRenderingMode; // default: "streaming"
-}
-
-export interface WarningSettings {
-	anthropicExtraUsage?: boolean; // default: true
-}
-
-export type DefaultProjectTrust = "ask" | "always" | "never";
-
-export type TransportSetting = Transport;
-
-export interface McpStdioServerSettings {
-	transport: "stdio";
-	command: string;
-	args?: string[];
-	env?: Record<string, string>;
-	cwd?: string;
-	timeoutMs?: number;
-}
-
-export interface McpHttpServerSettings {
-	transport: "http";
-	url: string;
-	headers?: Record<string, string>;
-	timeoutMs?: number;
-}
-
-export type McpServerSettings = McpStdioServerSettings | McpHttpServerSettings;
-
-/**
- * Package source for npm/git packages.
- * - String form: load all resources from the package
- * - Object form: filter which resources to load
- * - autoload=false: start empty and only apply explicit resource patterns
- */
-export type PackageSource =
-	| string
-	| {
-			source: string;
-			autoload?: boolean;
-			extensions?: string[];
-			skills?: string[];
-			prompts?: string[];
-			themes?: string[];
-	  };
-
-export interface ShellRunnerMountSettings {
-	/** Absolute, `~`-prefixed, or relative to the initial session cwd. Mounted at the same path. */
-	path: string;
-	/** Default: false */
-	readOnly?: boolean;
-}
-
-export type ShellRunnerSettings =
-	| { type: "host" }
-	| {
-			type: "docker";
-			/** Local image with `bash` on PATH. It is never pulled. */
-			image: string;
-			/** Default: the initial session cwd, read-write. An explicit array replaces the default. */
-			mounts?: ShellRunnerMountSettings[];
-			/** Host environment variable names passed into the container. Default: none. */
-			envAllowlist?: string[];
-			/** Container user as `uid:gid`. Default: the host user's uid:gid. */
-			user?: string;
-	  };
-
-export interface Settings {
-	lastChangelogVersion?: string;
-	defaultProvider?: string;
-	defaultModel?: string;
-	defaultThinkingLevel?: ThinkingLevel;
-	modelThinkingLevels?: Record<string, ThinkingLevel>; // per-model default thinking level overrides keyed by "provider/modelId"
-	transport?: TransportSetting; // default: "auto"
-	steeringMode?: "all" | "one-at-a-time";
-	followUpMode?: "all" | "one-at-a-time";
-	theme?: string;
-	compaction?: CompactionSettings;
-	branchSummary?: BranchSummarySettings;
-	retry?: RetrySettings;
-	hideThinkingBlock?: boolean;
-	showCacheMissNotices?: boolean; // default: false - show cache cost and provider recovery notices
-	externalEditor?: string; // Command for Ctrl+G external editor; takes precedence over VISUAL/EDITOR
-	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows); supports leading ~ expansion
-	quietStartup?: boolean;
-	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
-	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
-	npmCommand?: string[]; // Command used for npm package lookup/install operations, argv-style (e.g., ["mise", "exec", "node@20", "--", "npm"])
-	collapseChangelog?: boolean; // Show condensed changelog after update (use /changelog for full)
-	enableInstallTelemetry?: boolean; // default: false - anonymous version/update ping after changelog-detected updates
-	enableAnalytics?: boolean; // default: false - opt-in analytics data sharing
-	trackingId?: string; // analytics tracking identifier, generated when analytics is enabled
-	packages?: PackageSource[]; // Array of npm/git package sources (string or object with filtering)
-	octoberDefaultPackagesVersion?: number; // highest October default-packages version already added to packages
-	extensions?: string[]; // Array of local extension file paths or directories
-	skills?: string[]; // Array of local skill file paths or directories
-	prompts?: string[]; // Array of local prompt template paths or directories
-	themes?: string[]; // Array of local theme file paths or directories
-	enableSkillCommands?: boolean; // default: true - register skills as /skill:name commands
-	terminal?: TerminalSettings;
-	images?: ImageSettings;
-	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
-	defaultTools?: string[]; // Initial built-in tool selection
-	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
-	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
-	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
-	editorPaddingX?: number; // Horizontal padding for input editor (default: 0)
-	outputPad?: 0 | 1; // Horizontal padding for chat message output (default: 1)
-	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
-	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
-	markdown?: MarkdownSettings;
-	warnings?: WarningSettings;
-	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
-	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
-	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
-	cacheWarming?: CacheWarmingMode; // default: "streaming"; global only because each refresh costs money
-	websocketConnectTimeoutMs?: number; // WebSocket connect/open handshake timeout in milliseconds; 0 disables it
-	tuiMode?: TuiMode; // default: "regular"
-	fullscreenExitOutput?: FullscreenExitOutput; // default: "transcript"; no effect in regular TUI mode
-	fullscreenScrollbar?: ScrollViewScrollbar; // default: "auto"; no effect in regular TUI mode
-	fullscreenCopyOnSelect?: boolean; // default: true; no effect in regular TUI mode
-	shellRunner?: ShellRunnerSettings; // global setting only; fixed for the process at startup
-	mcpServers?: Record<string, McpServerSettings>; // Optional third-party MCP servers
-}
 
 function isMergeableObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -227,9 +87,69 @@ function deepMergeObjects(base: Record<string, unknown>, overrides: Record<strin
 	return result;
 }
 
+/** Tools enabled at startup when `defaultTools` does not change them. */
+export const DEFAULT_TOOL_NAMES: readonly string[] = ["read", "bash", "edit", "write"];
+
+/** Whether a tool selection entry is a `+name` or `-name` modifier. */
+export function isToolModifier(entry: unknown): boolean {
+	return typeof entry === "string" && (entry.startsWith("+") || entry.startsWith("-"));
+}
+
+/**
+ * Validate a tool list from `--tools` or the SDK `tools` option. It is either an allowlist of plain
+ * names and patterns or a list of only `+name`/`-name` entries with exact names. Returns the
+ * problem, or undefined when the list is valid.
+ */
+export function getToolListError(entries: readonly string[]): string | undefined {
+	const modifiers = entries.filter(isToolModifier);
+	if (modifiers.length === 0) return undefined;
+	if (modifiers.length < entries.length) return "tool names cannot be mixed with +name or -name entries";
+	const pattern = modifiers.find((entry) => entry.includes("*"));
+	if (pattern) return `+name and -name entries take exact tool names, not patterns: ${pattern}`;
+	return undefined;
+}
+
+/**
+ * Apply the `+name` and `-name` entries of `entries` to `base` in order: `+name` adds a tool and
+ * `-name` removes one. Other entries are ignored.
+ */
+export function applyToolModifiers(base: readonly string[], entries: readonly string[]): string[] {
+	const tools = [...base];
+	for (const entry of entries) {
+		if (!isToolModifier(entry)) continue;
+		const name = entry.slice(1);
+		const index = tools.indexOf(name);
+		if (entry.startsWith("+") && index === -1 && name) tools.push(name);
+		else if (entry.startsWith("-") && index !== -1) tools.splice(index, 1);
+	}
+	return tools;
+}
+
+/**
+ * Merge `defaultTools` of two settings layers. A list with plain tool names replaces the inherited
+ * one; a list of only `+name`/`-name` entries is appended, so it modifies the inherited selection.
+ */
+function mergeDefaultTools(base: string[] | undefined, overrides: string[] | undefined): string[] | undefined {
+	if (overrides === undefined) return base;
+	// Settings files are not validated; a malformed value replaces instead of throwing here.
+	if (!Array.isArray(base) || !Array.isArray(overrides) || !overrides.every(isToolModifier)) return overrides;
+	return [...base, ...overrides];
+}
+
+/**
+ * Resolve a merged `defaultTools` list: plain names replace `DEFAULT_TOOL_NAMES`, then `+name` adds
+ * and `-name` removes a tool, in list order.
+ */
+function resolveDefaultTools(entries: string[]): string[] {
+	const plain = entries.filter((entry) => !isToolModifier(entry));
+	return applyToolModifiers(plain.length > 0 || entries.length === 0 ? plain : DEFAULT_TOOL_NAMES, entries);
+}
+
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
 function deepMergeSettings(base: Settings, overrides: Settings): Settings {
-	return deepMergeObjects(base as Record<string, unknown>, overrides as Record<string, unknown>) as Settings;
+	const merged = deepMergeObjects(base as Record<string, unknown>, overrides as Record<string, unknown>) as Settings;
+	const defaultTools = mergeDefaultTools(base.defaultTools, overrides.defaultTools);
+	return defaultTools === undefined ? merged : { ...merged, defaultTools };
 }
 
 function parseTimeoutSetting(value: unknown, settingName: string): number | undefined {
@@ -558,17 +478,17 @@ export class SettingsManager {
 		return settings as Settings;
 	}
 
+	/** A copy of the effective settings: global and project settings merged, with overrides. */
+	getSettings(): Settings {
+		return structuredClone(this.settings);
+	}
+
 	getGlobalSettings(): Settings {
 		return structuredClone(this.globalSettings);
 	}
 
 	getProjectSettings(): Settings {
 		return structuredClone(this.projectSettings);
-	}
-
-	/** Snapshot of global settings merged with trusted project overrides. */
-	getSettings(): Settings {
-		return structuredClone(this.settings);
 	}
 
 	isProjectTrusted(): boolean {
@@ -790,6 +710,19 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getExtensionChangelogVersion(key: string): string | undefined {
+		return this.settings.extensionChangelogVersions?.[key];
+	}
+
+	setExtensionChangelogVersion(key: string, version: string): void {
+		this.globalSettings.extensionChangelogVersions = {
+			...(this.globalSettings.extensionChangelogVersions ?? {}),
+			[key]: version,
+		};
+		this.markModified("extensionChangelogVersions", key);
+		this.save();
+	}
+
 	getSessionDir(): string | undefined {
 		const sessionDir = this.settings.sessionDir;
 		return sessionDir ? normalizePath(sessionDir) : sessionDir;
@@ -824,7 +757,7 @@ export class SettingsManager {
 	}
 
 	getSteeringMode(): "all" | "one-at-a-time" {
-		return this.settings.steeringMode || "one-at-a-time";
+		return this.settings.steeringMode || SETTINGS_DEFAULTS.steeringMode;
 	}
 
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
@@ -834,7 +767,7 @@ export class SettingsManager {
 	}
 
 	getFollowUpMode(): "all" | "one-at-a-time" {
-		return this.settings.followUpMode || "one-at-a-time";
+		return this.settings.followUpMode || SETTINGS_DEFAULTS.followUpMode;
 	}
 
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
@@ -898,7 +831,7 @@ export class SettingsManager {
 	}
 
 	getTransport(): TransportSetting {
-		return this.settings.transport ?? "auto";
+		return this.settings.transport ?? SETTINGS_DEFAULTS.transport;
 	}
 
 	setTransport(transport: TransportSetting): void {
@@ -907,8 +840,21 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getSessionShareDestination(): SessionShareDestination {
+		const destination = this.settings.sessionShareDestination;
+		return destination === "gist" || destination === "radius"
+			? destination
+			: SETTINGS_DEFAULTS.sessionShareDestination;
+	}
+
+	setSessionShareDestination(destination: SessionShareDestination): void {
+		this.globalSettings.sessionShareDestination = destination;
+		this.markModified("sessionShareDestination");
+		this.save();
+	}
+
 	getCompactionEnabled(): boolean {
-		return this.settings.compaction?.enabled ?? true;
+		return this.settings.compaction?.enabled ?? SETTINGS_DEFAULTS.compaction.enabled;
 	}
 
 	setCompactionEnabled(enabled: boolean): void {
@@ -971,17 +917,17 @@ export class SettingsManager {
 
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean } {
 		return {
-			reserveTokens: this.settings.branchSummary?.reserveTokens ?? 16384,
-			skipPrompt: this.settings.branchSummary?.skipPrompt ?? false,
+			reserveTokens: this.settings.branchSummary?.reserveTokens ?? SETTINGS_DEFAULTS.branchSummary.reserveTokens,
+			skipPrompt: this.settings.branchSummary?.skipPrompt ?? SETTINGS_DEFAULTS.branchSummary.skipPrompt,
 		};
 	}
 
 	getBranchSummarySkipPrompt(): boolean {
-		return this.settings.branchSummary?.skipPrompt ?? false;
+		return this.settings.branchSummary?.skipPrompt ?? SETTINGS_DEFAULTS.branchSummary.skipPrompt;
 	}
 
 	getRetryEnabled(): boolean {
-		return this.settings.retry?.enabled ?? true;
+		return this.settings.retry?.enabled ?? SETTINGS_DEFAULTS.retry.enabled;
 	}
 
 	setRetryEnabled(enabled: boolean): void {
@@ -996,9 +942,9 @@ export class SettingsManager {
 	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number; maxAgentDelayMs: number } {
 		return {
 			enabled: this.getRetryEnabled(),
-			maxRetries: this.settings.retry?.maxRetries ?? 3,
-			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
-			maxAgentDelayMs: this.settings.retry?.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
+			maxRetries: this.settings.retry?.maxRetries ?? SETTINGS_DEFAULTS.retry.maxRetries,
+			baseDelayMs: this.settings.retry?.baseDelayMs ?? SETTINGS_DEFAULTS.retry.baseDelayMs,
+			maxAgentDelayMs: this.settings.retry?.maxAgentDelayMs ?? SETTINGS_DEFAULTS.retry.maxAgentDelayMs,
 		};
 	}
 
@@ -1018,7 +964,7 @@ export class SettingsManager {
 	/** Read from global settings only because warming costs money. */
 	getCacheWarmingMode(): CacheWarmingMode {
 		const mode = this.globalSettings.cacheWarming;
-		return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : "streaming";
+		return mode !== undefined && CACHE_WARMING_MODES.includes(mode) ? mode : SETTINGS_DEFAULTS.cacheWarming;
 	}
 
 	setCacheWarmingMode(mode: CacheWarmingMode): void {
@@ -1031,7 +977,8 @@ export class SettingsManager {
 		return {
 			timeoutMs: this.settings.retry?.provider?.timeoutMs,
 			maxRetries: this.settings.retry?.provider?.maxRetries,
-			maxRetryDelayMs: this.settings.retry?.provider?.maxRetryDelayMs ?? 60000,
+			maxRetryDelayMs:
+				this.settings.retry?.provider?.maxRetryDelayMs ?? SETTINGS_DEFAULTS.retry.provider.maxRetryDelayMs,
 		};
 	}
 
@@ -1040,11 +987,11 @@ export class SettingsManager {
 	}
 
 	getHideThinkingBlock(): boolean {
-		return this.settings.hideThinkingBlock ?? false;
+		return this.settings.hideThinkingBlock ?? SETTINGS_DEFAULTS.hideThinkingBlock;
 	}
 
 	getShowCacheMissNotices(): boolean {
-		return this.settings.showCacheMissNotices ?? false;
+		return this.settings.showCacheMissNotices ?? SETTINGS_DEFAULTS.showCacheMissNotices;
 	}
 
 	getExternalEditorCommand(): string {
@@ -1082,11 +1029,12 @@ export class SettingsManager {
 		this.save();
 	}
 
-	getQuietStartup(): boolean {
-		return this.settings.quietStartup ?? false;
+	getQuietStartup(): QuietStartup {
+		const value = this.settings.quietStartup;
+		return value === true || value === "header" ? value : SETTINGS_DEFAULTS.quietStartup;
 	}
 
-	setQuietStartup(quiet: boolean): void {
+	setQuietStartup(quiet: QuietStartup): void {
 		this.globalSettings.quietStartup = quiet;
 		this.markModified("quietStartup");
 		this.save();
@@ -1113,7 +1061,7 @@ export class SettingsManager {
 
 	getDefaultProjectTrust(): DefaultProjectTrust {
 		const value = this.globalSettings.defaultProjectTrust;
-		return value === "always" || value === "never" ? value : "ask";
+		return value === "always" || value === "never" ? value : SETTINGS_DEFAULTS.defaultProjectTrust;
 	}
 
 	setDefaultProjectTrust(defaultProjectTrust: DefaultProjectTrust): void {
@@ -1143,7 +1091,7 @@ export class SettingsManager {
 	}
 
 	getCollapseChangelog(): boolean {
-		return this.settings.collapseChangelog ?? false;
+		return this.settings.collapseChangelog ?? SETTINGS_DEFAULTS.collapseChangelog;
 	}
 
 	setCollapseChangelog(collapse: boolean): void {
@@ -1153,7 +1101,7 @@ export class SettingsManager {
 	}
 
 	getEnableInstallTelemetry(): boolean {
-		return this.settings.enableInstallTelemetry ?? false;
+		return this.settings.enableInstallTelemetry ?? SETTINGS_DEFAULTS.enableInstallTelemetry;
 	}
 
 	setEnableInstallTelemetry(enabled: boolean): void {
@@ -1163,7 +1111,7 @@ export class SettingsManager {
 	}
 
 	getEnableAnalytics(): boolean {
-		return this.settings.enableAnalytics ?? false;
+		return this.settings.enableAnalytics ?? SETTINGS_DEFAULTS.enableAnalytics;
 	}
 
 	getTrackingId(): string | undefined {
@@ -1189,6 +1137,20 @@ export class SettingsManager {
 		this.globalSettings.octoberDefaultPackagesVersion = version;
 		this.markModified("octoberDefaultPackagesVersion");
 		this.save();
+	}
+
+	/**
+	 * Stable ID of this installation, e.g. sent to OpenAI as its agent host ID.
+	 * Created on first use. Project settings are ignored so a committed project
+	 * settings file cannot give every clone the same ID.
+	 */
+	getOrCreateDeviceId(): string {
+		if (!this.globalSettings.deviceId) {
+			this.globalSettings.deviceId = randomUUID();
+			this.markModified("deviceId");
+			this.save();
+		}
+		return this.globalSettings.deviceId;
 	}
 
 	getPackages(): PackageSource[] {
@@ -1272,7 +1234,7 @@ export class SettingsManager {
 	}
 
 	getEnableSkillCommands(): boolean {
-		return this.settings.enableSkillCommands ?? true;
+		return this.settings.enableSkillCommands ?? SETTINGS_DEFAULTS.enableSkillCommands;
 	}
 
 	setEnableSkillCommands(enabled: boolean): void {
@@ -1296,7 +1258,7 @@ export class SettingsManager {
 	}
 
 	getShowImages(): boolean {
-		return this.settings.terminal?.showImages ?? true;
+		return this.settings.terminal?.showImages ?? SETTINGS_DEFAULTS.terminal.showImages;
 	}
 
 	setShowImages(show: boolean): void {
@@ -1311,7 +1273,7 @@ export class SettingsManager {
 	getImageWidthCells(): number {
 		const width = this.settings.terminal?.imageWidthCells;
 		if (typeof width !== "number" || !Number.isFinite(width)) {
-			return 60;
+			return SETTINGS_DEFAULTS.terminal.imageWidthCells;
 		}
 		return Math.max(1, Math.floor(width));
 	}
@@ -1330,7 +1292,8 @@ export class SettingsManager {
 		if (this.settings.terminal?.clearOnShrink !== undefined) {
 			return this.settings.terminal.clearOnShrink;
 		}
-		return process.env.PI_CLEAR_ON_SHRINK === "1";
+		if (process.env.PI_CLEAR_ON_SHRINK === "1") return true;
+		return SETTINGS_DEFAULTS.terminal.clearOnShrink;
 	}
 
 	setClearOnShrink(enabled: boolean): void {
@@ -1343,7 +1306,7 @@ export class SettingsManager {
 	}
 
 	getShowTerminalProgress(): boolean {
-		return this.settings.terminal?.showTerminalProgress ?? false;
+		return this.settings.terminal?.showTerminalProgress ?? SETTINGS_DEFAULTS.terminal.showTerminalProgress;
 	}
 
 	setShowTerminalProgress(enabled: boolean): void {
@@ -1356,7 +1319,7 @@ export class SettingsManager {
 	}
 
 	getTuiMode(): TuiMode {
-		return this.settings.tuiMode === "fullscreen" ? "fullscreen" : "regular";
+		return this.settings.tuiMode === "regular" ? "regular" : SETTINGS_DEFAULTS.tuiMode;
 	}
 
 	setTuiMode(mode: TuiMode): void {
@@ -1366,7 +1329,9 @@ export class SettingsManager {
 	}
 
 	getFullscreenExitOutput(): FullscreenExitOutput {
-		return this.settings.fullscreenExitOutput === "resume-hint" ? "resume-hint" : "transcript";
+		return this.settings.fullscreenExitOutput === "resume-hint"
+			? "resume-hint"
+			: SETTINGS_DEFAULTS.fullscreenExitOutput;
 	}
 
 	setFullscreenExitOutput(output: FullscreenExitOutput): void {
@@ -1377,7 +1342,7 @@ export class SettingsManager {
 
 	getFullscreenScrollbar(): ScrollViewScrollbar {
 		const mode = this.settings.fullscreenScrollbar;
-		return mode === "always" || mode === "hidden" ? mode : "auto";
+		return mode === "always" || mode === "hidden" ? mode : SETTINGS_DEFAULTS.fullscreenScrollbar;
 	}
 
 	setFullscreenScrollbar(mode: ScrollViewScrollbar): void {
@@ -1387,7 +1352,7 @@ export class SettingsManager {
 	}
 
 	getFullscreenCopyOnSelect(): boolean {
-		return this.settings.fullscreenCopyOnSelect ?? true;
+		return this.settings.fullscreenCopyOnSelect ?? SETTINGS_DEFAULTS.fullscreenCopyOnSelect;
 	}
 
 	setFullscreenCopyOnSelect(enabled: boolean): void {
@@ -1396,8 +1361,22 @@ export class SettingsManager {
 		this.save();
 	}
 
+	getFullscreenWheelScrollLines(): WheelScrollLines {
+		const lines = this.settings.fullscreenWheelScrollLines;
+		return typeof lines === "number" && Number.isFinite(lines)
+			? Math.max(1, Math.min(100, Math.floor(lines)))
+			: SETTINGS_DEFAULTS.fullscreenWheelScrollLines;
+	}
+
+	setFullscreenWheelScrollLines(lines: WheelScrollLines): void {
+		this.globalSettings.fullscreenWheelScrollLines =
+			lines === "auto" ? lines : Math.max(1, Math.min(100, Math.floor(lines)));
+		this.markModified("fullscreenWheelScrollLines");
+		this.save();
+	}
+
 	getImageAutoResize(): boolean {
-		return this.settings.images?.autoResize ?? true;
+		return this.settings.images?.autoResize ?? SETTINGS_DEFAULTS.images.autoResize;
 	}
 
 	setImageAutoResize(enabled: boolean): void {
@@ -1410,7 +1389,7 @@ export class SettingsManager {
 	}
 
 	getBlockImages(): boolean {
-		return this.settings.images?.blockImages ?? false;
+		return this.settings.images?.blockImages ?? SETTINGS_DEFAULTS.images.blockImages;
 	}
 
 	setBlockImages(blocked: boolean): void {
@@ -1426,9 +1405,11 @@ export class SettingsManager {
 		return this.settings.enabledModels;
 	}
 
+	/** The resolved `defaultTools` selection, or undefined when no settings layer sets it. */
 	getDefaultTools(): string[] | undefined {
 		const tools = this.settings.defaultTools;
-		return tools ? [...tools] : undefined;
+		if (tools === undefined) return undefined;
+		return resolveDefaultTools(Array.isArray(tools) ? tools.filter((tool) => typeof tool === "string") : []);
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {
@@ -1438,7 +1419,7 @@ export class SettingsManager {
 	}
 
 	getDoubleEscapeAction(): "fork" | "tree" | "none" {
-		return this.settings.doubleEscapeAction ?? "tree";
+		return this.settings.doubleEscapeAction ?? SETTINGS_DEFAULTS.doubleEscapeAction;
 	}
 
 	setDoubleEscapeAction(action: "fork" | "tree" | "none"): void {
@@ -1450,7 +1431,7 @@ export class SettingsManager {
 	getTreeFilterMode(): "default" | "no-tools" | "user-only" | "labeled-only" | "all" {
 		const mode = this.settings.treeFilterMode;
 		const valid = ["default", "no-tools", "user-only", "labeled-only", "all"];
-		return mode && valid.includes(mode) ? mode : "default";
+		return mode && valid.includes(mode) ? mode : SETTINGS_DEFAULTS.treeFilterMode;
 	}
 
 	setTreeFilterMode(mode: "default" | "no-tools" | "user-only" | "labeled-only" | "all"): void {
@@ -1470,7 +1451,7 @@ export class SettingsManager {
 	}
 
 	getEditorPaddingX(): number {
-		return this.settings.editorPaddingX ?? 0;
+		return this.settings.editorPaddingX ?? SETTINGS_DEFAULTS.editorPaddingX;
 	}
 
 	setEditorPaddingX(padding: number): void {
@@ -1480,7 +1461,7 @@ export class SettingsManager {
 	}
 
 	getOutputPad(): 0 | 1 {
-		return this.settings.outputPad === 0 ? 0 : 1;
+		return this.settings.outputPad === 0 ? 0 : SETTINGS_DEFAULTS.outputPad;
 	}
 
 	setOutputPad(padding: 0 | 1): void {
@@ -1490,7 +1471,7 @@ export class SettingsManager {
 	}
 
 	getAutocompleteMaxVisible(): number {
-		return this.settings.autocompleteMaxVisible ?? 5;
+		return this.settings.autocompleteMaxVisible ?? SETTINGS_DEFAULTS.autocompleteMaxVisible;
 	}
 
 	setAutocompleteMaxVisible(maxVisible: number): void {
@@ -1500,12 +1481,12 @@ export class SettingsManager {
 	}
 
 	getCodeBlockIndent(): string {
-		return this.settings.markdown?.codeBlockIndent ?? "  ";
+		return this.settings.markdown?.codeBlockIndent ?? SETTINGS_DEFAULTS.markdown.codeBlockIndent;
 	}
 
 	getMermaidRenderingMode(): MermaidRenderingMode {
 		const mode = this.settings.markdown?.mermaid;
-		return mode === "off" || mode === "final" ? mode : "streaming";
+		return mode === "off" || mode === "final" ? mode : SETTINGS_DEFAULTS.markdown.mermaid;
 	}
 
 	setMermaidRenderingMode(mode: MermaidRenderingMode): void {

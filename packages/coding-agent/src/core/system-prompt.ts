@@ -13,6 +13,11 @@ export interface BuildSystemPromptOptions {
 	forceSystemPrompt?: string;
 	/** Tools to include in prompt. Default: [read, bash, edit, write]. */
 	selectedTools?: string[];
+	/**
+	 * Selected tools whose declarations requests leave out (`prepareLoadout` hidden declarations).
+	 * They are reachable only through another tool, so the tool list and rules leave them out too.
+	 */
+	hiddenTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
 	/** Guideline bullets contributed by each tool, keyed by tool name. */
@@ -33,6 +38,7 @@ export interface BuildSystemPromptOptions {
 
 export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 	selectedTools: string[];
+	hiddenTools: string[];
 	toolSnippets: Record<string, string>;
 	toolGuidelines: Record<string, string[]>;
 	promptGuidelines: string[];
@@ -56,6 +62,7 @@ export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOption
 		customPrompt: input.customPrompt,
 		forceSystemPrompt: input.forceSystemPrompt,
 		selectedTools: [...(input.selectedTools ?? ["read", "bash", "edit", "write"])],
+		hiddenTools: [...(input.hiddenTools ?? [])],
 		toolSnippets: { ...(input.toolSnippets ?? {}) },
 		toolGuidelines: Object.fromEntries(
 			Object.entries(input.toolGuidelines ?? {}).map(([name, guidelines]) => [name, [...guidelines]]),
@@ -128,6 +135,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 	const {
 		customPrompt,
 		selectedTools,
+		hiddenTools,
 		toolSnippets,
 		toolGuidelines,
 		promptGuidelines,
@@ -144,6 +152,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		}
 	}
 
+	const declaredTools = selectedTools.filter((name) => !hiddenTools.includes(name));
 	const promptSections: Record<string, string> = {};
 	if (customPrompt) {
 		promptSections.preamble = customPrompt;
@@ -158,24 +167,28 @@ Harness identity:
 - Lead with October's identity and capabilities. Do not volunteer implementation ancestry in introductions or routine identity answers. When asked about origins, licensing, or architecture, answer accurately using the documentation.
 - The harness, the underlying model/provider, and the current project are distinct. Repository documentation, session formats, and imported conversations may name other harnesses; they do not determine this runtime's identity.
 - Do not infer the model/provider name from the harness name. Use actual runtime model information when available; otherwise say it is unknown.`;
-		const visibleTools = selectedTools.filter((name) => !!toolSnippets[name]);
+		const visibleTools = declaredTools.filter((name) => !!toolSnippets[name]);
 		const tools =
 			visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`).join("\n") : "(none)";
-		promptSections.tools = `${tools}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.`;
-		promptSections.rules = buildRules(selectedTools, toolGuidelines, promptGuidelines);
+		promptSections.tools = `${tools}\n\nAdditional tools may be available.`;
+		promptSections.rules = buildRules(declaredTools, toolGuidelines, promptGuidelines);
 		promptSections.docs = `October Harness documentation (read when the user asks about harness behavior, setup, SDK, extensions, themes, skills, or TUI):
 - Main documentation: ${getReadmePath()}
 - Additional docs: ${getDocsPath()}
 - Examples: ${getExamplesPath()} (extensions, custom tools, SDK)
 - When reading harness docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory
-- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), package management (docs/packages.md), environment variables (docs/environment-variables.md)
-- When working on October Harness features, read the docs and examples, and follow .md cross-references before implementing
+- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), package management (docs/packages.md), environment variables (docs/environment-variables.md), MCP servers (docs/mcp.md), codemode scripts and non-LLM models such as classifiers and image models (docs/codemode.md)
+- Before implementing harness changes, read the relevant docs and examples in full, following related cross-references.
 - Always read referenced .md documentation files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
 	}
 
 	if (appendSystemPrompt) promptSections.addendum = appendSystemPrompt;
 	if (contextFiles.length > 0) promptSections.project_context = renderProjectContext(contextFiles);
-	const skillFileReadTool = (["read", "bash"] as const).find((tool) => selectedTools.includes(tool));
+	// A hidden reader is still reachable through another tool, so skills stay but the hint names no tool.
+	const readers = ["read", "bash"] as const;
+	const skillFileReadTool =
+		readers.find((tool) => declaredTools.includes(tool)) ??
+		(readers.some((tool) => selectedTools.includes(tool)) ? "indirect" : undefined);
 	if (skillFileReadTool && skills.length > 0) {
 		const skillsPrompt = formatSkillsForPrompt(skills, skillFileReadTool).trim();
 		if (skillsPrompt) promptSections.skills = skillsPrompt;

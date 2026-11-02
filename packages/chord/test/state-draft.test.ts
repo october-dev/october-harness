@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { applyImmutable, type Draft, track } from "../src/delta/index.ts";
+import { applyImmutable, type Draft, type JsonValue, track } from "../src/delta/index.ts";
 
-describe("copy-on-write change drafts", () => {
+describe("transactional overlay drafts", () => {
 	it("copies only changed branches", () => {
 		const tracker = track({
 			changed: { count: 1, sibling: { value: "kept" } },
@@ -36,7 +36,7 @@ describe("copy-on-write change drafts", () => {
 		expect(prepared.value).toEqual({ values: [5, 5, 9, 2] });
 	});
 
-	it("copies inserted draft values without aliasing their original handle", () => {
+	it("copies inserted draft values without aliasing their original reference", () => {
 		const tracker = track({ values: [{ value: 1 }, { value: 2 }] });
 		const change = tracker.beginChange();
 		const held = change.state.values[0]!;
@@ -65,7 +65,7 @@ describe("copy-on-write change drafts", () => {
 		expect(prepared.value.rows.map((row) => row.comparisons)).toEqual([1, 1]);
 	});
 
-	it("drops writes through detached child handles", () => {
+	it("drops writes through detached child references", () => {
 		const tracker = track({ child: { value: "removed" }, items: [{ value: "removed" }, { value: "kept" }] });
 		const change = tracker.beginChange();
 		const child = change.state.child;
@@ -89,15 +89,28 @@ describe("copy-on-write change drafts", () => {
 		expect(applyImmutable(prepared.base, prepared.ops)).toEqual(prepared.value);
 	});
 
-	it("rejects invalid writes without mutating the committed base", () => {
-		const tracker = track({ values: [1, 2] });
-		let change = tracker.beginChange();
-		expect(() => delete change.state.values[0]).toThrow(/dense|holes/);
-		change.abort();
-		change = tracker.beginChange();
+	it("rejects non-strict JSON placements without mutating the draft or base", () => {
+		const tracker = track({ number: 0, payload: null as JsonValue, values: [1, 2] as JsonValue[] });
+		const change = tracker.beginChange();
 		expect(() => {
-			change.state.values[0] = undefined as unknown as number;
-		}).toThrow(/undefined/);
+			change.state.values[0] = undefined as unknown as JsonValue;
+		}).toThrow(/strict JSON/);
+		expect(() => change.state.values.push({ nested: undefined } as unknown as JsonValue)).toThrow(/strict JSON/);
+		expect(() => {
+			change.state.number = Number.NaN;
+		}).toThrow(/strict JSON/);
+		expect(() => {
+			change.state.payload = new Date() as unknown as JsonValue;
+		}).toThrow(/plain objects/);
+		expect(change.state).toEqual(tracker.value);
+		change.abort();
+		expect(tracker.value).toEqual({ number: 0, payload: null, values: [1, 2] });
+	});
+
+	it("rejects array holes without mutating the committed base", () => {
+		const tracker = track({ values: [1, 2] });
+		const change = tracker.beginChange();
+		expect(() => delete change.state.values[0]).toThrow(/dense|holes/);
 		change.abort();
 		expect(tracker.value.values).toEqual([1, 2]);
 	});
