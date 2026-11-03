@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.5.0-october.1] - 2026-11-03
+
+### New Features
+
+- **Docker shell runner**: route the built-in shell tool and shell commands through a container with configured mounts and an environment allowlist. See [Docker runner setup](docs/containerization.md#route-shell-commands-through-the-docker-runner).
+- **Bus cockpit**: use `/cockpit` for a read-only view of October Bus agents, tasks, and pending questions ([#35](https://github.com/october-dev/october-harness/pull/35)).
+- **Background jobs**: keep long-running commands active while the conversation continues, with bounded logs, cancellation, and shutdown cleanup. See the [opt-in reference extension](https://github.com/october-dev/october-harness/tree/october-v1.5.0-october.1/packages/coding-agent/examples/extensions/background-jobs).
+- **Scenario evaluations**: test agent behavior with repeatable scenarios for editing, command recovery, permissions, context pressure, and Bus responses. See the [evaluation kit](https://github.com/october-dev/october-harness/blob/october-v1.5.0-october.1/packages/evals/README.md#scenario-evals).
+
 ### Added
 
 - Added a read-only `/cockpit` view of October Bus agents, tasks, and pending questions ([#35](https://github.com/october-dev/october-harness/pull/35)).
