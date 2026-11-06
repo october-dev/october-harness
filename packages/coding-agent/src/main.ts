@@ -32,6 +32,7 @@ import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
+import { loadLocalModelsCommand } from "./cli/local-models.lazy.ts";
 import { handleOctoberLoginCommand } from "./cli/october-login.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
@@ -815,6 +816,12 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handleConfigCommand(args, { extensionFactories: bootstrapExtensionFactories })) {
+		return;
+	}
+
+	if (args[0] === "local-models") {
+		const { runLocalModelsCommand } = await loadLocalModelsCommand();
+		process.exitCode = await runLocalModelsCommand(args.slice(1), { agentDir });
 		return;
 	}
 

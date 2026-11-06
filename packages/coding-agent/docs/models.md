@@ -40,7 +40,25 @@ October integrates directly with the llama.cpp router. The router discovers GGUF
 
 Follow [Local Models with llama.cpp](llama-cpp.md) for server startup, model layout, downloads, and connection troubleshooting.
 
-For Ollama, LM Studio, vLLM, SGLang, and other compatible servers, [configure a compatible endpoint](#configure-a-compatible-endpoint) in `models.json`.
+For Ollama, LM Studio, vLLM, SGLang, and other compatible servers, [configure a compatible endpoint](#configure-a-compatible-endpoint) in `models.json`, or let `october local-models` write the entries for you.
+
+### Find local models automatically
+
+`october local-models` asks the servers on this machine which models they serve and offers to add them to `models.json`:
+
+```bash
+october local-models                                    # Ollama :11434, LM Studio :1234, vLLM :8000
+october local-models --url http://localhost:8080/v1 --provider sglang
+```
+
+- It runs only when you start it. October never scans for servers at startup.
+- It contacts only loopback addresses (`localhost`, `127.0.0.0/8`, `[::1]`), bypasses any configured HTTP proxy, and does not follow redirects. LAN and remote URLs are refused.
+- It prints every endpoint it checked and the exact entries it would add, then asks before writing. Pass `--yes` to skip the question, for example in scripts.
+- New providers get a placeholder `apiKey` equal to the provider ID, which local servers ignore. It does not ask for or store a secret, and it never changes `auth.json`.
+- Existing providers keep their settings. Only models missing from a provider with the same `baseUrl` are added; a same-named provider that points elsewhere is left unchanged.
+- A `models.json` with comments or trailing commas is not rewritten, because rewriting would drop them. The command prints the entries to add by hand instead.
+
+Added models use the default context window and output limits. Edit the entries to match the model, as described below. Servers that require an API key still need the manual setup.
 
 ## Configure a compatible endpoint
 
