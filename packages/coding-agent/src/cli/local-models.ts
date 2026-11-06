@@ -23,10 +23,13 @@ import { get as httpsGet } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import lockfile from "proper-lockfile";
 import { Compile } from "typebox/compile";
 import { APP_NAME } from "../config.ts";
 import { ModelsConfigSchema } from "../core/model-config.ts";
+import { LLAMA_PROVIDER_ID } from "../extensions/llama/provider.ts";
+import { OCTOBER_PROVIDER_ID } from "../extensions/october/auth.ts";
 import { stripJsonComments } from "../utils/json.ts";
 import { stripBom } from "../utils/text.ts";
 
@@ -74,6 +77,16 @@ const MAX_MODELS_PER_ENDPOINT = 500;
 const MAX_MODEL_ID_LENGTH = 256;
 const PROVIDER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+/** models.json's default maxTokens; a smaller reported context window lowers it. */
+const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
+
+/**
+ * Provider IDs October already ships. Reusing one would redirect its built-in models or clash with
+ * the October and llama.cpp extensions, so --provider refuses them.
+ */
+function reservedProviderIds(): ReadonlySet<string> {
+	return new Set([...builtinProviders().map((provider) => provider.id), OCTOBER_PROVIDER_ID, LLAMA_PROVIDER_ID]);
+}
 
 const HELP = `Usage:
   ${APP_NAME} local-models [--url <url>] [--provider <id>] [--timeout <ms>] [--yes]
@@ -86,7 +99,8 @@ ${KNOWN_LOCAL_ENDPOINTS.map((endpoint) => `  ${endpoint.label.padEnd(10)} ${endp
 Options:
   --url <url>        Probe one OpenAI-compatible server instead, for example http://localhost:8080/v1.
                      Only localhost, 127.0.0.0/8, and [::1] are accepted.
-  --provider <id>    Provider ID for --url (default: local-<port>)
+  --provider <id>    Provider ID for --url (default: local-<port>). Names of providers October
+                     already ships, such as openai or llama.cpp, are refused.
   --timeout <ms>     Time limit per endpoint (default: ${DEFAULT_PROBE_TIMEOUT_MS}, at most ${MAX_PROBE_TIMEOUT_MS})
   --yes, -y          Write without asking. Required when stdin is not a terminal.
 
@@ -155,28 +169,55 @@ export function endpointFromUrl(raw: string, providerId?: string): LocalEndpoint
 	if (!PROVIDER_ID_PATTERN.test(id)) {
 		throw new Error("--provider must start with a letter or digit and use only letters, digits, '.', '_' or '-'.");
 	}
+	if (reservedProviderIds().has(id)) {
+		throw new Error(`--provider "${id}" is a provider October already ships; choose another name.`);
+	}
 	return { providerId: id, label: id, baseUrl, listUrl: `${baseUrl}/models`, format: "openai" };
 }
 
-/** Extracts model IDs from an Ollama `/api/tags` or OpenAI-compatible `/v1/models` response. */
-export function parseModelList(format: ModelListFormat, body: unknown): string[] {
+export interface DiscoveredModel {
+	id: string;
+	/** Context length the server reports (vLLM's `max_model_len`). Ollama and LM Studio lists do not include one. */
+	contextWindow?: number;
+}
+
+/** Extracts models from an Ollama `/api/tags` or OpenAI-compatible `/v1/models` response. */
+export function parseModelList(format: ModelListFormat, body: unknown): DiscoveredModel[] {
 	const entries = format === "ollama" ? (body as { models?: unknown })?.models : (body as { data?: unknown })?.data;
 	if (!Array.isArray(entries)) {
 		throw new Error(format === "ollama" ? "response has no models array" : "response has no data array");
 	}
-	const ids: string[] = [];
+	const models: DiscoveredModel[] = [];
 	for (const entry of entries) {
 		const id = format === "ollama" ? (entry as { name?: unknown })?.name : (entry as { id?: unknown })?.id;
 		if (typeof id !== "string" || id.length === 0 || id.length > MAX_MODEL_ID_LENGTH || CONTROL_CHARACTERS.test(id)) {
 			continue;
 		}
-		if (!ids.includes(id)) ids.push(id);
-		if (ids.length >= MAX_MODELS_PER_ENDPOINT) break;
+		if (models.some((model) => model.id === id)) continue;
+		const contextWindow = format === "openai" ? (entry as { max_model_len?: unknown }).max_model_len : undefined;
+		const valid = typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0;
+		models.push(valid ? { id, contextWindow } : { id });
+		if (models.length >= MAX_MODELS_PER_ENDPOINT) break;
 	}
-	return ids;
+	return models;
 }
 
-export type ProbeResult = { endpoint: LocalEndpoint; models: string[] } | { endpoint: LocalEndpoint; error: string };
+/** The models.json entry for a newly added model. maxTokens never exceeds a reported context window. */
+function modelEntry(model: DiscoveredModel): Record<string, unknown> {
+	if (model.contextWindow === undefined) return { id: model.id };
+	return {
+		id: model.id,
+		contextWindow: model.contextWindow,
+		maxTokens: Math.min(DEFAULT_MAX_OUTPUT_TOKENS, model.contextWindow),
+	};
+}
+
+export interface FoundEndpoint {
+	endpoint: LocalEndpoint;
+	models: DiscoveredModel[];
+}
+
+export type ProbeResult = FoundEndpoint | { endpoint: LocalEndpoint; error: string };
 
 /**
  * Fetches an endpoint's model list. Uses node:http directly so a configured HTTP proxy never sees the
@@ -232,7 +273,8 @@ type ModelsJson = { providers: Record<string, Record<string, unknown>> } & Recor
 export interface PlannedChange {
 	providerId: string;
 	newProvider: boolean;
-	addedModels: string[];
+	/** models.json entries that will be appended. */
+	addedModels: Record<string, unknown>[];
 }
 
 export interface ModelsPlan {
@@ -243,10 +285,7 @@ export interface ModelsPlan {
 }
 
 /** Returns a new config with discovered models merged in. Existing provider settings and models are never changed. */
-export function planModelsConfig(
-	existing: ModelsJson,
-	found: readonly { endpoint: LocalEndpoint; models: string[] }[],
-): ModelsPlan {
+export function planModelsConfig(existing: ModelsJson, found: readonly FoundEndpoint[]): ModelsPlan {
 	const providers: ModelsJson["providers"] = { ...existing.providers };
 	const changes: PlannedChange[] = [];
 	const conflicts: string[] = [];
@@ -260,9 +299,9 @@ export function planModelsConfig(
 				api: "openai-completions",
 				// Local servers ignore the key, but a provider needs one to be selectable. Not a secret.
 				apiKey: endpoint.providerId,
-				models: models.map((id) => ({ id })),
+				models: models.map(modelEntry),
 			};
-			changes.push({ providerId: endpoint.providerId, newProvider: true, addedModels: models });
+			changes.push({ providerId: endpoint.providerId, newProvider: true, addedModels: models.map(modelEntry) });
 			continue;
 		}
 		if (!sameBaseUrl(current.baseUrl, endpoint.baseUrl)) {
@@ -271,11 +310,12 @@ export function planModelsConfig(
 			);
 			continue;
 		}
-		const currentModels = Array.isArray(current.models) ? (current.models as { id?: unknown }[]) : [];
+		// The loaded file has passed ModelsConfigSchema, so models is absent or an array of objects with an id.
+		const currentModels = (current.models ?? []) as { id: string }[];
 		const known = new Set(currentModels.map((model) => model.id));
-		const added = models.filter((id) => !known.has(id));
+		const added = models.filter((model) => !known.has(model.id)).map(modelEntry);
 		if (added.length === 0) continue;
-		providers[endpoint.providerId] = { ...current, models: [...currentModels, ...added.map((id) => ({ id }))] };
+		providers[endpoint.providerId] = { ...current, models: [...currentModels, ...added] };
 		changes.push({ providerId: endpoint.providerId, newProvider: false, addedModels: added });
 	}
 	return { config: { ...existing, providers }, changes, conflicts };
@@ -298,29 +338,39 @@ function sameBaseUrl(configured: unknown, discovered: string): boolean {
 
 interface LoadedModelsFile {
 	config: ModelsJson;
+	/** The file's text as read, or undefined when it does not exist. Compared again before writing. */
+	text: string | undefined;
 	/** Rewriting would drop comments or trailing commas, so the command prints a snippet instead. */
 	hasComments: boolean;
 }
 
+const validateModelsConfig = Compile(ModelsConfigSchema);
+
+function readText(path: string): string | undefined {
+	return existsSync(path) ? readFileSync(path, "utf8") : undefined;
+}
+
+/** Reads models.json and refuses anything October's own loader would reject, before any merge. */
 function loadModelsFile(path: string): LoadedModelsFile {
-	if (!existsSync(path)) return { config: { providers: {} }, hasComments: false };
-	const text = stripBom(readFileSync(path, "utf8"));
-	if (text.trim() === "") return { config: { providers: {} }, hasComments: false };
-	const stripped = stripJsonComments(text);
+	const text = readText(path);
+	if (text === undefined || stripBom(text).trim() === "") {
+		return { config: { providers: {} }, text, hasComments: false };
+	}
+	const stripped = stripJsonComments(stripBom(text));
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(stripped);
 	} catch (error) {
 		throw new Error(`${path} is not valid JSON (${(error as Error).message}). Fix it before adding models.`);
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-		throw new Error(`${path} must hold a JSON object.`);
-	const object = parsed as Record<string, unknown>;
-	const providers = object.providers ?? {};
-	if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
-		throw new Error(`${path}: "providers" must be an object.`);
+	if (!validateModelsConfig.Check(parsed)) {
+		const [first] = validateModelsConfig.Errors(parsed);
+		const where = first?.instancePath ? ` at ${first.instancePath}` : "";
+		throw new Error(
+			`${path} is not a valid models.json${where}: ${first?.message ?? "invalid"}. Fix it before adding models.`,
+		);
 	}
-	return { config: { ...object, providers } as ModelsJson, hasComments: stripped !== text };
+	return { config: parsed as ModelsJson, text, hasComments: stripped !== stripBom(text) };
 }
 
 /** Replaces the file atomically. A symlinked models.json stays a symlink: the link target is rewritten. */
@@ -338,14 +388,10 @@ function writeModelsFile(path: string, config: ModelsJson): void {
 }
 
 /**
- * Writes the previewed config under a lock, after checking that models.json still yields the same
- * result. An edit made while the prompt was open is never overwritten.
+ * Writes under a lock, and only if models.json is byte-for-byte what was read before the preview,
+ * so an edit made while the prompt was open is never overwritten.
  */
-function writeIfUnchanged(
-	path: string,
-	previewed: ModelsJson,
-	found: readonly { endpoint: LocalEndpoint; models: string[] }[],
-): string | undefined {
+function writeIfUnchanged(path: string, originalText: string | undefined, config: ModelsJson): string | undefined {
 	mkdirSync(dirname(path), { recursive: true });
 	let release: () => void;
 	try {
@@ -355,19 +401,13 @@ function writeIfUnchanged(
 		throw cause;
 	}
 	try {
-		const current = loadModelsFile(path);
-		const replanned = planModelsConfig(current.config, found).config;
-		if (current.hasComments || JSON.stringify(replanned) !== JSON.stringify(previewed)) {
-			return "it changed while waiting for confirmation. Run the command again.";
-		}
-		writeModelsFile(path, previewed);
+		if (readText(path) !== originalText) return "it changed while waiting for confirmation. Run the command again.";
+		writeModelsFile(path, config);
 		return undefined;
 	} finally {
 		release();
 	}
 }
-
-const validateModelsConfig = Compile(ModelsConfigSchema);
 
 async function askOnTerminal(question: string): Promise<boolean> {
 	const readline = createInterface({ input: process.stdin, output: process.stderr });
@@ -450,7 +490,7 @@ export async function runLocalModelsCommand(args: string[], options: LocalModels
 
 	log("Checking local servers (nothing leaves this machine):");
 	const results = await Promise.all(endpoints.map((endpoint) => probeEndpoint(endpoint, parsed.timeoutMs)));
-	const found: { endpoint: LocalEndpoint; models: string[] }[] = [];
+	const found: FoundEndpoint[] = [];
 	for (const result of results) {
 		const label = `  ${result.endpoint.label.padEnd(10)} ${result.endpoint.listUrl}`;
 		if ("error" in result) {
@@ -470,27 +510,27 @@ export async function runLocalModelsCommand(args: string[], options: LocalModels
 	const plan = planModelsConfig(loaded.config, found);
 	for (const conflict of plan.conflicts) error(`Skipped: ${conflict}`);
 	if (plan.changes.length === 0) {
+		if (plan.conflicts.length > 0) {
+			error(`Nothing written to ${modelsPath}.`);
+			return 1;
+		}
 		log(`Nothing to add: ${modelsPath} already lists every model found.`);
 		return 0;
 	}
 
-	if (!validateModelsConfig.Check(plan.config)) {
-		const [first] = validateModelsConfig.Errors(plan.config);
-		const where = first?.instancePath ? ` at ${first.instancePath}` : "";
-		error(
-			`${modelsPath} does not match the models.json schema${where}: ${first?.message ?? "invalid"}. Nothing was written.`,
-		);
-		return 1;
-	}
-
-	const preview = Object.fromEntries(
-		plan.changes.map((change) => [change.providerId, plan.config.providers[change.providerId]]),
-	);
+	// New providers are shown in full. For an existing provider only the appended models are shown,
+	// so settings such as a literal apiKey are not echoed.
 	log("");
+	const preview: Record<string, unknown> = {};
 	for (const change of plan.changes) {
-		log(
-			`${change.newProvider ? "New provider" : "Update provider"} "${change.providerId}": ${change.addedModels.join(", ")}`,
-		);
+		const ids = change.addedModels.map((model) => model.id).join(", ");
+		if (change.newProvider) {
+			log(`New provider "${change.providerId}": ${ids}`);
+			preview[change.providerId] = plan.config.providers[change.providerId];
+		} else {
+			log(`Add to provider "${change.providerId}" (other settings unchanged): ${ids}`);
+			preview[change.providerId] = { models: change.addedModels };
+		}
 	}
 	log(`\n${JSON.stringify({ providers: preview }, null, 2)}\n`);
 
@@ -511,7 +551,7 @@ export async function runLocalModelsCommand(args: string[], options: LocalModels
 		}
 	}
 	try {
-		const refused = writeIfUnchanged(modelsPath, plan.config, found);
+		const refused = writeIfUnchanged(modelsPath, loaded.text, plan.config);
 		if (refused) {
 			error(`Not written: ${modelsPath} ${refused}`);
 			return 1;

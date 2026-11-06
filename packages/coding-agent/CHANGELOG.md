@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `october local-models`, an opt-in command that finds models served by local Ollama, LM Studio, vLLM, or other OpenAI-compatible servers on loopback addresses, previews the `models.json` entries, and writes them only after confirmation. See [Find local models automatically](docs/models.md#find-local-models-automatically) ([#13](https://github.com/october-dev/october-harness/issues/13)).
+- Added `october local-models`, an opt-in command that finds models served by local Ollama, LM Studio, vLLM, or other OpenAI-compatible servers on loopback addresses, previews the `models.json` entries, and writes them only after confirmation. See [Find local models automatically](docs/models.md#find-local-models-automatically) ([#40](https://github.com/october-dev/october-harness/pull/40) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 
 ## [1.5.0-october.1] - 2026-11-03
 

@@ -17,9 +17,13 @@ import {
 import { ModelConfig } from "../src/core/model-config.ts";
 
 const servers: Server[] = [];
+let requestCount = 0;
 
 async function fakeServer(handler: RequestListener, host = "127.0.0.1"): Promise<string> {
-	const server = createServer(handler);
+	const server = createServer((request, response) => {
+		requestCount++;
+		handler(request, response);
+	});
 	servers.push(server);
 	await new Promise<void>((resolve) => server.listen(0, host, resolve));
 	return `http://${host}:${(server.address() as AddressInfo).port}`;
@@ -56,6 +60,7 @@ function openAiAt(origin: string, providerId = "lmstudio"): LocalEndpoint {
 }
 
 afterEach(async () => {
+	requestCount = 0;
 	await Promise.all(
 		servers.splice(0).map((server) => {
 			server.closeAllConnections();
@@ -67,10 +72,28 @@ afterEach(async () => {
 describe("parseModelList", () => {
 	it("reads Ollama tags and OpenAI-compatible model lists", () => {
 		expect(parseModelList("ollama", { models: [{ name: "qwen2.5-coder:7b" }, { name: "llama3.2:3b" }] })).toEqual([
-			"qwen2.5-coder:7b",
-			"llama3.2:3b",
+			{ id: "qwen2.5-coder:7b" },
+			{ id: "llama3.2:3b" },
 		]);
-		expect(parseModelList("openai", { object: "list", data: [{ id: "a" }, { id: "b" }] })).toEqual(["a", "b"]);
+		expect(parseModelList("openai", { object: "list", data: [{ id: "a" }, { id: "b" }] })).toEqual([
+			{ id: "a" },
+			{ id: "b" },
+		]);
+	});
+
+	it("keeps a positive integer max_model_len as the context window and ignores anything else", () => {
+		const data = [
+			{ id: "vllm", max_model_len: 8192 },
+			{ id: "zero", max_model_len: 0 },
+			{ id: "fraction", max_model_len: 8192.5 },
+			{ id: "text", max_model_len: "8192" },
+		];
+		expect(parseModelList("openai", { data })).toEqual([
+			{ id: "vllm", contextWindow: 8192 },
+			{ id: "zero" },
+			{ id: "fraction" },
+			{ id: "text" },
+		]);
 	});
 
 	it("drops duplicates and IDs that are empty, too long, non-strings, or contain control characters", () => {
@@ -84,7 +107,7 @@ describe("parseModelList", () => {
 			{},
 			null,
 		];
-		expect(parseModelList("openai", { data })).toEqual(["a"]);
+		expect(parseModelList("openai", { data })).toEqual([{ id: "a" }]);
 	});
 
 	it("rejects responses without a model array", () => {
@@ -131,6 +154,9 @@ describe("loopback restriction", () => {
 		expect(() => endpointFromUrl("ftp://localhost/models")).toThrow("http or https");
 		expect(() => endpointFromUrl("not a url")).toThrow("Not a valid URL");
 		expect(() => endpointFromUrl("http://localhost:8000", "../evil")).toThrow("--provider");
+		for (const reserved of ["openai", "llama.cpp", "october", "radius", "anthropic"]) {
+			expect(() => endpointFromUrl("http://localhost:8000", reserved), reserved).toThrow("already ships");
+		}
 	});
 });
 
@@ -169,12 +195,14 @@ describe("createLoopbackOnlyLookup", () => {
 describe("probeEndpoint", () => {
 	it("reaches a server through the localhost name", async () => {
 		const origin = await fakeServer(json({ data: [{ id: "via-name" }] }), "localhost");
-		await expect(probeEndpoint(endpointFromUrl(origin, "named"))).resolves.toMatchObject({ models: ["via-name"] });
+		await expect(probeEndpoint(endpointFromUrl(origin, "named"))).resolves.toMatchObject({
+			models: [{ id: "via-name" }],
+		});
 	});
 
 	it("returns the models a server reports", async () => {
 		const origin = await fakeServer(json({ models: [{ name: "qwen2.5-coder:7b" }] }));
-		await expect(probeEndpoint(ollamaAt(origin))).resolves.toMatchObject({ models: ["qwen2.5-coder:7b"] });
+		await expect(probeEndpoint(ollamaAt(origin))).resolves.toMatchObject({ models: [{ id: "qwen2.5-coder:7b" }] });
 	});
 
 	it("reports a server that is not running", async () => {
@@ -218,7 +246,7 @@ describe("planModelsConfig", () => {
 	const endpoint = openAiAt("http://127.0.0.1:1234");
 
 	it("adds a keyless provider without asking for a secret", () => {
-		const plan = planModelsConfig({ providers: {} }, [{ endpoint, models: ["m1"] }]);
+		const plan = planModelsConfig({ providers: {} }, [{ endpoint, models: [{ id: "m1" }] }]);
 		expect(plan.config.providers.lmstudio).toEqual({
 			name: "lmstudio",
 			baseUrl: "http://127.0.0.1:1234/v1",
@@ -226,7 +254,7 @@ describe("planModelsConfig", () => {
 			apiKey: "lmstudio",
 			models: [{ id: "m1" }],
 		});
-		expect(plan.changes).toEqual([{ providerId: "lmstudio", newProvider: true, addedModels: ["m1"] }]);
+		expect(plan.changes).toEqual([{ providerId: "lmstudio", newProvider: true, addedModels: [{ id: "m1" }] }]);
 	});
 
 	it("adds only missing models and keeps existing settings, other providers, and the input untouched", () => {
@@ -242,7 +270,9 @@ describe("planModelsConfig", () => {
 			},
 		};
 		const snapshot = structuredClone(existing);
-		const plan = planModelsConfig(existing, [{ endpoint, models: ["m1", "m2"] }]);
+		const plan = planModelsConfig(existing, [
+			{ endpoint, models: [{ id: "m1", contextWindow: 4096 }, { id: "m2" }] },
+		]);
 		expect(plan.config.providers.lmstudio).toEqual({
 			baseUrl: "http://127.0.0.1:1234/v1",
 			apiKey: "$MY_KEY",
@@ -250,13 +280,13 @@ describe("planModelsConfig", () => {
 		});
 		expect(plan.config.providers.other).toEqual(existing.providers.other);
 		expect(plan.config.$schema).toBe("kept");
-		expect(plan.changes).toEqual([{ providerId: "lmstudio", newProvider: false, addedModels: ["m2"] }]);
+		expect(plan.changes).toEqual([{ providerId: "lmstudio", newProvider: false, addedModels: [{ id: "m2" }] }]);
 		expect(existing).toEqual(snapshot);
 	});
 
 	it("treats localhost and a trailing slash as the same endpoint", () => {
 		const existing = { providers: { lmstudio: { baseUrl: "http://localhost:1234/v1/", models: [{ id: "m1" }] } } };
-		const plan = planModelsConfig(existing, [{ endpoint, models: ["m1", "m2"] }]);
+		const plan = planModelsConfig(existing, [{ endpoint, models: [{ id: "m1" }, { id: "m2" }] }]);
 		expect(plan.conflicts).toEqual([]);
 		expect(plan.config.providers.lmstudio).toEqual({
 			baseUrl: "http://localhost:1234/v1/",
@@ -266,7 +296,7 @@ describe("planModelsConfig", () => {
 
 	it("leaves a same-named provider that points elsewhere alone", () => {
 		const existing = { providers: { lmstudio: { baseUrl: "http://10.0.0.5:1234/v1", models: [] } } };
-		const plan = planModelsConfig(existing, [{ endpoint, models: ["m1"] }]);
+		const plan = planModelsConfig(existing, [{ endpoint, models: [{ id: "m1" }] }]);
 		expect(plan.config.providers.lmstudio).toBe(existing.providers.lmstudio);
 		expect(plan.changes).toEqual([]);
 		expect(plan.conflicts[0]).toContain("http://10.0.0.5:1234/v1");
@@ -400,6 +430,94 @@ describe("october local-models", () => {
 		expect(output.join("\n")).toContain("local-models [--url <url>]");
 		expect((await run(["--timeout", "9999999999"], [])).code).toBe(1);
 		expect(errors.at(-1)).toContain("from 1 to 60000");
+	});
+
+	it("writes the context window vLLM reports and keeps maxTokens within it", async () => {
+		const origin = await fakeServer(
+			json({
+				data: [
+					{ id: "small", max_model_len: 8192 },
+					{ id: "large", max_model_len: 131072 },
+				],
+			}),
+		);
+		expect((await run(["--yes"], [openAiAt(origin, "vllm")])).code).toBe(0);
+		const config = await ModelConfig.load(modelsPath);
+		expect(config.getError()).toBeUndefined();
+		expect(config.getProvider("vllm")?.models).toEqual([
+			{ id: "small", contextWindow: 8192, maxTokens: 8192 },
+			{ id: "large", contextWindow: 131072, maxTokens: 16384 },
+		]);
+	});
+
+	it("refuses provider names October already ships before probing", async () => {
+		const origin = await fakeServer(json({ data: [{ id: "m" }] }));
+		for (const reserved of ["openai", "llama.cpp"]) {
+			const { code, questions } = await run(["--url", origin, "--provider", reserved, "--yes"], []);
+			expect(code, reserved).toBe(1);
+			expect(questions).toHaveLength(0);
+			expect(errors.at(-1)).toContain("already ships");
+		}
+		expect(requestCount).toBe(0);
+		expect(() => statSync(modelsPath)).toThrow();
+	});
+
+	it("refuses an existing models.json that October's loader would reject, without probing or prompting", async () => {
+		const origin = await fakeServer(json({ data: [{ id: "m" }] }));
+		const invalid = [
+			{ providers: { lmstudio: { baseUrl: `${origin}/v1`, models: { id: "m", contextWindow: 8192 } } } },
+			{ providers: { lmstudio: { baseUrl: `${origin}/v1`, models: [null] } } },
+			{ providers: { lmstudio: null } },
+		];
+		for (const config of invalid) {
+			const text = `${JSON.stringify(config, null, 2)}\n`;
+			writeFileSync(modelsPath, text);
+			const { code, questions } = await run(["--yes"], [openAiAt(origin)]);
+			expect(code).toBe(1);
+			expect(questions).toHaveLength(0);
+			expect(errors.at(-1)).toContain("is not a valid models.json at /providers/lmstudio");
+			expect(readFileSync(modelsPath, "utf8")).toBe(text);
+		}
+		expect(requestCount).toBe(0);
+	});
+
+	it("does not restore a model the user deleted while the prompt was open", async () => {
+		const origin = await fakeServer(json({ data: [{ id: "a" }, { id: "b" }] }));
+		writeFileSync(
+			modelsPath,
+			`${JSON.stringify({ providers: { lmstudio: { baseUrl: `${origin}/v1`, models: [{ id: "a" }] } } })}\n`,
+		);
+		const deleted = `${JSON.stringify({ providers: { lmstudio: { baseUrl: `${origin}/v1`, models: [] } } })}\n`;
+		const { code } = await run([], [openAiAt(origin)], { whileAsking: () => writeFileSync(modelsPath, deleted) });
+		expect(code).toBe(1);
+		expect(errors.at(-1)).toContain("changed while waiting");
+		expect(readFileSync(modelsPath, "utf8")).toBe(deleted);
+	});
+
+	it("fails when every discovered provider conflicts with an existing one", async () => {
+		const origin = await fakeServer(json({ data: [{ id: "m" }] }));
+		writeFileSync(
+			modelsPath,
+			`${JSON.stringify({ providers: { lmstudio: { baseUrl: "http://10.0.0.5:1234/v1" } } })}\n`,
+		);
+		expect((await run([], [openAiAt(origin)])).code).toBe(1);
+		expect(errors.some((line) => line.includes("Skipped"))).toBe(true);
+		expect(output.some((line) => line.includes("Nothing to add"))).toBe(false);
+	});
+
+	it("previews only the added models for an existing provider, not its settings", async () => {
+		const origin = await fakeServer(json({ data: [{ id: "a" }, { id: "b" }] }));
+		writeFileSync(
+			modelsPath,
+			`${JSON.stringify({ providers: { lmstudio: { baseUrl: `${origin}/v1`, apiKey: "sk-literal", models: [{ id: "a" }] } } })}\n`,
+		);
+		expect((await run([], [openAiAt(origin)])).code).toBe(0);
+		expect(output.join("\n")).not.toContain("sk-literal");
+		expect(JSON.parse(readFileSync(modelsPath, "utf8")).providers.lmstudio).toEqual({
+			baseUrl: `${origin}/v1`,
+			apiKey: "sk-literal",
+			models: [{ id: "a" }, { id: "b" }],
+		});
 	});
 
 	it("fails clearly when no server answers", async () => {

@@ -14,6 +14,7 @@ october list
 october config [options]
 october auth <check|print-api-key|print-bearer-token> [options]
 october mcp <add|remove|list|login|logout> [options]
+october local-models [--url <url>] [--provider <id>] [--timeout <ms>] [--yes]
 ```
 
 <a id="modes"></a>
@@ -342,3 +343,16 @@ These commands work outside a session, so agents can run them through `bash`. Se
 `add` and `remove` change `~/.october/agent/mcp.json`, or `.october/mcp.json` in the current directory with `--local` (`-l`). `add` also takes `--exposure <mode>` (see [Exposure](mcp.md#control-tool-exposure)) and `--description <text>` and does not connect; run `october mcp list` to check the server.
 
 Project `.october/mcp.json` files are only read for projects that are already trusted.
+
+## Local model discovery
+
+`october local-models` asks inference servers on this machine which models they serve and offers to add them to `~/.october/agent/models.json`. It runs only when you start it. See [Find local models automatically](models.md#find-local-models-automatically).
+
+| Command | Description |
+|---|---|
+| `october local-models` | Probe Ollama (`127.0.0.1:11434`), LM Studio (`127.0.0.1:1234`), and vLLM (`127.0.0.1:8000`), preview the entries, and ask before writing |
+| `october local-models --url <url> [--provider <id>]` | Probe one OpenAI-compatible server on `localhost`, `127.0.0.0/8`, or `[::1]` instead. `--provider` names it (default `local-<port>`); names of providers October already ships, such as `openai` or `llama.cpp`, are refused |
+| `--timeout <ms>` | Time limit per endpoint, from 1 to 60000 (default 1500) |
+| `--yes`, `-y` | Write without asking. Required when stdin is not a terminal |
+
+The command exits with `1` when no server answers, when `models.json` is invalid or has comments, when a discovered provider name conflicts with an existing provider at another address, or when nothing was written because confirmation was unavailable.
