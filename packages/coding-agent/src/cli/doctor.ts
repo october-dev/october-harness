@@ -2,18 +2,19 @@
  * `october doctor`: local setup diagnostics.
  *
  * Default checks read files and the environment only. `--probe` adds bounded network and October Bus
- * daemon checks. The command never starts services, installs packages, loads extensions, or writes
- * configuration.
+ * daemon checks. The command never starts services, installs packages, loads extensions, refreshes a
+ * managed October session, or writes files, including settings locks and the debug log.
  */
 
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, sep } from "node:path";
+import { delimiter, dirname, join, sep } from "node:path";
 import type { Api, AuthCheck, Model, ModelsStoreEntry } from "@earendil-works/pi-ai";
 import chalk from "chalk";
 import { isSupportedNodeVersion, MIN_NODE_VERSION } from "../cli-node-version.ts";
 import {
 	APP_NAME,
+	CONFIG_DIR_NAME,
 	detectInstallMethod,
 	getExportTemplateDir,
 	getInteractiveAssetsDir,
@@ -21,6 +22,7 @@ import {
 	getPackageJsonPath,
 	getThemesDir,
 	isBunBinary,
+	PACKAGE_NAME,
 	VERSION,
 } from "../config.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "../core/auth-storage.ts";
@@ -29,14 +31,19 @@ import { ModelConfig } from "../core/model-config.ts";
 import { resolveModelScopeWithDiagnostics } from "../core/model-resolver.ts";
 import { ModelRuntime } from "../core/model-runtime.ts";
 import { InMemoryCodingAgentModelsStore } from "../core/models-store.ts";
-import { SettingsManager } from "../core/settings-manager.ts";
+import { SettingsManager, type SettingsScope, type SettingsStorage } from "../core/settings-manager.ts";
 import { createLlamaProvider } from "../extensions/llama/provider.ts";
-import { OCTOBER_PROVIDER_ID } from "../extensions/october/auth.ts";
+import {
+	inspectManagedOctoberSession,
+	type ManagedOctoberSessionSnapshot,
+	OCTOBER_PROVIDER_ID,
+} from "../extensions/october/auth.ts";
 import { parseOctoberBusEnv } from "../extensions/october/bus/env.ts";
 import { createOctoberProviderConfig } from "../extensions/october/provider.ts";
 import { BUS_PROTOCOL, BUS_RELEASE, readScopeStore, resolveBusReleaseAsset } from "../october-team-launcher.ts";
 import { spawnProcessSync } from "../utils/child-process.ts";
 import { stripJsonComments } from "../utils/json.ts";
+import { resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 
 /** Version of the `--json` report. Increase it when a field or check ID changes meaning. */
@@ -88,7 +95,9 @@ const HELP = `${chalk.bold("Usage:")}
   ${APP_NAME} doctor [--json] [--probe] [--timeout <ms>]
 
 Check the October installation, configuration, model credentials, and October Bus setup.
-By default only local files and environment variables are read. Nothing is started, installed, or written.
+By default only local files and environment variables are read. Nothing is started, installed, or written,
+and an October session from October Desktop or a launching app is inspected without refreshing it.
+Model checks use the global settings.json; project overrides are not applied.
 
 Options:
   --json             Print the versioned JSON report
@@ -166,22 +175,51 @@ function checkExecutable(context: DoctorContext): DoctorCheck {
 	};
 	const onPath = findOnPath(APP_NAME, context.env);
 	if (onPath) details.pathExecutable = context.path(onPath);
-	// Windows PATH entries are package-manager shims, so only compare real paths elsewhere.
-	if (process.platform !== "win32" && onPath && running && realPath(onPath) !== realPath(running)) {
+	const summary = `${APP_NAME} ${VERSION} at ${details.executable} (${installMethod})`;
+	if (!onPath || !running || realPath(onPath) === realPath(running)) {
+		return { id: "executable", status: "pass", summary, details };
+	}
+	// Wrappers and version-manager shims keep their own path, so a different path alone proves
+	// nothing. Warn only when the PATH entry belongs to another copy of this package.
+	const other = owningPackageDir(realPath(onPath));
+	if (other && realPath(other) !== realPath(getPackageDir())) {
+		const otherVersion = packageVersion(other);
 		return {
 			id: "executable",
 			status: "warn",
-			summary: `${APP_NAME} ${VERSION} is running from ${context.path(running)}, but PATH resolves "${APP_NAME}" to ${context.path(onPath)}`,
+			summary: `${APP_NAME} ${VERSION} is running from ${context.path(running)}, but PATH resolves "${APP_NAME}" to another installation${otherVersion ? ` (${otherVersion})` : ""} in ${context.path(other)}`,
 			remediation: `Remove the other installation or reorder PATH so "${APP_NAME}" is the installation you expect.`,
-			details,
+			details: { ...details, pathPackageDir: context.path(other) },
 		};
 	}
 	return {
 		id: "executable",
 		status: "pass",
-		summary: `${APP_NAME} ${VERSION} at ${details.executable} (${installMethod})`,
+		summary: `${summary}; "${APP_NAME}" on PATH is ${context.path(onPath)}, a wrapper or launcher`,
 		details,
 	};
+}
+
+function readPackageJson(dir: string): { name?: unknown; version?: unknown } | undefined {
+	try {
+		const parsed: unknown = JSON.parse(stripBom(readFileSync(join(dir, "package.json"), "utf-8")));
+		return parsed && typeof parsed === "object" ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function packageVersion(dir: string): string | undefined {
+	const version = readPackageJson(dir)?.version;
+	return typeof version === "string" ? version : undefined;
+}
+
+/** Root of the copy of this package that contains `file`, if any. */
+function owningPackageDir(file: string): string | undefined {
+	for (let dir = dirname(file); ; dir = dirname(dir)) {
+		if (readPackageJson(dir)?.name === PACKAGE_NAME) return dir;
+		if (dirname(dir) === dir) return undefined;
+	}
 }
 
 function checkRuntime(): DoctorCheck {
@@ -230,17 +268,76 @@ function checkAssets(context: DoctorContext): DoctorCheck {
 	};
 }
 
-function checkSettings(context: DoctorContext): DoctorCheck {
+/**
+ * Settings storage that only reads. Writable sessions lock settings files, which creates a
+ * `settings.json.lock` directory next to each one; doctor must not, least of all in an untrusted
+ * project. The SettingsManager parser and migrations still apply.
+ */
+class ReadOnlySettingsStorage implements SettingsStorage {
+	readonly paths: Readonly<Record<SettingsScope, string>>;
+
+	constructor(cwd: string, agentDir: string) {
+		this.paths = {
+			global: join(resolvePath(agentDir), "settings.json"),
+			project: join(resolvePath(cwd), CONFIG_DIR_NAME, "settings.json"),
+		};
+	}
+
+	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
+		let current: string | undefined;
+		try {
+			current = readFileSync(this.paths[scope], "utf-8");
+		} catch (error) {
+			// As in FileSettingsStorage, an unreadable file is an error and a missing one is absent.
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT" && !(scope === "project" && code === "ENOTDIR")) throw error;
+		}
+		if (fn(current) !== undefined) throw new Error(`${APP_NAME} doctor does not write settings`);
+	}
+}
+
+interface DoctorSettings {
+	/** Global settings only: these are the defaults every project starts from. */
+	global: SettingsManager;
+	errors: Array<{ path: string; message: string }>;
+}
+
+function loadSettings(context: DoctorContext): DoctorSettings {
+	const storage = new ReadOnlySettingsStorage(context.cwd, context.agentDir);
 	// Parse project settings even in untrusted projects: they are data, and parsing runs no project code.
-	const errors = SettingsManager.create(context.cwd, context.agentDir, { projectTrusted: true }).drainErrors();
-	if (errors.length === 0) return { id: "config.settings", status: "pass", summary: "settings.json files parse" };
+	const errors = SettingsManager.fromStorage(storage, { projectTrusted: true })
+		.drainErrors()
+		.map(({ scope, error }) => ({ path: storage.paths[scope], message: error.message }));
+	return { global: SettingsManager.fromStorage(storage, { projectTrusted: false }), errors };
+}
+
+/** Why `httpProxy` cannot be used, if it cannot. Startup reads it from the global settings. */
+function httpProxyProblem(value: unknown): string | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "string") {
+		return `httpProxy must be a string, found ${value === null ? "null" : Array.isArray(value) ? "an array" : `a ${typeof value}`}`;
+	}
+	const proxy = value.trim();
+	return proxy && !URL.canParse(proxy) ? "httpProxy is not a valid URL" : undefined;
+}
+
+function checkSettings(context: DoctorContext, settings: DoctorSettings): DoctorCheck {
+	const problems = settings.errors.map(({ path, message }) => `${context.path(path)}: ${message}`);
+	const proxyProblem = httpProxyProblem(settings.global.getGlobalSettings().httpProxy);
+	if (proxyProblem) problems.push(`${context.path(join(context.agentDir, "settings.json"))}: ${proxyProblem}`);
+	if (problems.length === 0) return { id: "config.settings", status: "pass", summary: "settings.json files parse" };
 	return {
 		id: "config.settings",
 		status: "fail",
-		summary: errors
-			.map(({ scope, path, error }) => `${path ? context.path(path) : `${scope} settings`}: ${error.message}`)
-			.join("; "),
-		remediation: `Fix the JSON in the listed file, or move it aside to use defaults, then restart ${APP_NAME}.`,
+		summary: problems.join("; "),
+		remediation: [
+			settings.errors.length > 0
+				? `Fix the JSON in the listed file, or move it aside to use defaults, then restart ${APP_NAME}.`
+				: undefined,
+			proxyProblem ? "Set httpProxy to a proxy URL such as http://proxy.example:8080, or remove it." : undefined,
+		]
+			.filter((entry) => entry !== undefined)
+			.join(" "),
 	};
 }
 
@@ -306,13 +403,105 @@ async function readCachedCatalogs(agentDir: string): Promise<InMemoryCodingAgent
 	return store;
 }
 
-async function createDoctorModelRuntime(context: DoctorContext, authValid: boolean): Promise<ModelRuntime> {
+const SESSION_OWNERS = { desktop: "October Desktop", app: "the launching app" } as const;
+const SESSION_REFRESHERS = { bus: "October Desktop", "token-command": "OCTOBER_TOKEN_COMMAND" } as const;
+
+/**
+ * The access token a session would send without refreshing first. An expired token that a session
+ * would refresh still counts, so the model checks reflect the configured credential; the session and
+ * default-model checks report that its refresh is unverified.
+ */
+function sessionAccessToken(session: ManagedOctoberSessionSnapshot | undefined): string | undefined {
+	if (!session?.accessToken) return undefined;
+	return session.state !== "expired" || session.refresher ? session.accessToken : undefined;
+}
+
+function sessionRemediation(session: ManagedOctoberSessionSnapshot): string {
+	return session.owner === "desktop"
+		? "Sign in to October Desktop again and start the agent from it."
+		: `Set OCTOBER_TOKEN_COMMAND, or run "${APP_NAME} login" so October requests can use a stored credential.`;
+}
+
+function minutesLeft(session: ManagedOctoberSessionSnapshot): string {
+	const minutes = Math.floor(((session.expiresAt ?? 0) - Date.now()) / 60_000);
+	return minutes < 1 ? "less than 1 min" : `${minutes} min`;
+}
+
+/** The managed October session, read from the environment without refreshing it. */
+function checkOctoberSession(session: ManagedOctoberSessionSnapshot | undefined): DoctorCheck {
+	const id = "october.session";
+	if (!session) {
+		return { id, status: "skip", summary: "No October session from October Desktop or a launching app" };
+	}
+	const owner = SESSION_OWNERS[session.owner];
+	const details = { owner: session.owner, state: session.state, refresher: session.refresher ?? "none" };
+	const restart = sessionRemediation(session);
+	if (session.state === "missing") {
+		return {
+			id,
+			status: "warn",
+			summary: "October Desktop started this process without an October session; October models have no credentials",
+			remediation: restart,
+			details,
+		};
+	}
+	const refresher = session.refresher && SESSION_REFRESHERS[session.refresher];
+	const cannotRefresh =
+		session.owner === "desktop" ? "OCTOBER_BUS_TOKEN is not set" : "OCTOBER_TOKEN_COMMAND is not set";
+	if (session.state === "valid") {
+		return { id, status: "pass", summary: `Session from ${owner}, valid for ${minutesLeft(session)}`, details };
+	}
+	if (session.state === "refresh-due") {
+		return refresher
+			? {
+					id,
+					status: "pass",
+					summary: `Session from ${owner} expires in ${minutesLeft(session)}; sessions ask ${refresher} for a new token, doctor does not`,
+					details,
+				}
+			: {
+					id,
+					status: "warn",
+					summary: `Session from ${owner} expires in ${minutesLeft(session)} and cannot be refreshed: ${cannotRefresh}`,
+					remediation: restart,
+					details,
+				};
+	}
+	if (refresher) {
+		return {
+			id,
+			status: "warn",
+			summary: `Session from ${owner} expired; sessions ask ${refresher} for a new token, which doctor does not do, so whether it still works is unverified`,
+			remediation: `If a session cannot use October models: ${restart}`,
+			details,
+		};
+	}
+	return {
+		id,
+		status: session.owner === "desktop" ? "fail" : "warn",
+		summary:
+			session.owner === "desktop"
+				? `Session from ${owner} expired and cannot be refreshed: ${cannotRefresh}`
+				: `Session from ${owner} expired and cannot be refreshed (${cannotRefresh}); October requests use the stored credential instead, if there is one`,
+		remediation: restart,
+		details,
+	};
+}
+
+async function createDoctorModelRuntime(
+	context: DoctorContext,
+	authValid: boolean,
+	session: ManagedOctoberSessionSnapshot | undefined,
+): Promise<ModelRuntime> {
+	const sessionToken = sessionAccessToken(session);
 	const runtime = await ModelRuntime.create({
 		credentials: authValid ? new ReadOnlyAuthStorage(join(context.agentDir, "auth.json")) : AuthStorage.inMemory(),
 		modelsPath: join(context.agentDir, "models.json"),
 		modelsStore: await readCachedCatalogs(context.agentDir),
 		allowModelNetwork: false,
 		refreshOnCreate: false,
+		// Installed before any provider is registered, so no refresh can reach the managed resolver.
+		managedOctoberAccessToken: async () => sessionToken,
 	});
 	// Providers that built-in extensions register at startup. Registering them directly avoids
 	// loading any extension, so the same model IDs resolve here as in a session.
@@ -322,9 +511,75 @@ async function createDoctorModelRuntime(context: DoctorContext, authValid: boole
 	return runtime;
 }
 
+interface CredentialState {
+	status: DoctorStatus;
+	/** Where the credential comes from, when there is one. */
+	source?: string;
+	/** Why the credential is missing or uncertain. */
+	note?: string;
+	remediation?: string;
+}
+
+async function checkCredentials(
+	runtime: ModelRuntime,
+	provider: string,
+	session: ManagedOctoberSessionSnapshot | undefined,
+): Promise<CredentialState> {
+	let auth: AuthCheck | undefined;
+	try {
+		auth = await runtime.checkAuth(provider);
+	} catch {
+		auth = undefined;
+	}
+	const stored = auth && `${auth.type}${auth.source ? ` from ${auth.source}` : ""}`;
+	const loginHint = `Run "${APP_NAME} login ${provider}", or set the provider's API key environment variable.`;
+	if (provider !== OCTOBER_PROVIDER_ID || !session) {
+		return auth ? { status: "pass", source: stored } : { status: "fail", remediation: loginHint };
+	}
+	// A managed session takes precedence over stored credentials, as in a session.
+	const owner = SESSION_OWNERS[session.owner];
+	const fromSession = sessionAccessToken(session) !== undefined;
+	if (auth && fromSession) {
+		const refresher = session.refresher && SESSION_REFRESHERS[session.refresher];
+		return session.state === "expired" && refresher
+			? {
+					status: "warn",
+					source: `session from ${owner}`,
+					note: `the session expired; sessions ask ${refresher} for a new token, which doctor does not verify`,
+					remediation: `If a session cannot use October models: ${sessionRemediation(session)}`,
+				}
+			: { status: "pass", source: `session from ${owner}` };
+	}
+	if (auth) {
+		// Only a non-Desktop session falls back to the stored credential; Desktop fails closed.
+		return {
+			status: "warn",
+			source: stored,
+			note: `the session from ${owner} expired, so October requests use this credential instead`,
+			remediation: sessionRemediation(session),
+		};
+	}
+	return {
+		status: "fail",
+		note:
+			session.state === "missing"
+				? `${owner} provided no session`
+				: `the session from ${owner} expired and cannot be refreshed`,
+		remediation: sessionRemediation(session),
+	};
+}
+
+/**
+ * Providers whose catalog doctor cannot complete offline. October's extension catalog has only its
+ * seed model until a session fetches the gateway catalog, and the composed extension provider does
+ * not restore a cached one. Built-in catalogs restore their cached overlay, so a miss there is real.
+ */
+const OFFLINE_INCOMPLETE_CATALOGS: ReadonlySet<string> = new Set([OCTOBER_PROVIDER_ID]);
+
 async function checkDefaultModel(
 	runtime: ModelRuntime,
 	settings: SettingsManager,
+	session: ManagedOctoberSessionSnapshot | undefined,
 ): Promise<{ check: DoctorCheck; model?: Model<Api> }> {
 	const provider = settings.getDefaultProvider();
 	const modelId = settings.getDefaultModel();
@@ -347,39 +602,55 @@ async function checkDefaultModel(
 					},
 				};
 	}
+	const name = `${provider}/${modelId}`;
 	const model = runtime.getModel(provider, modelId);
-	if (!model) {
+	const unverifiedCatalog = !model && OFFLINE_INCOMPLETE_CATALOGS.has(provider) && !!runtime.getProvider(provider);
+	if (!model && !unverifiedCatalog) {
 		return {
 			check: {
 				id: "models.default",
 				status: "fail",
-				summary: `Default model ${provider}/${modelId} is not in the model catalog`,
+				summary: `Default model ${name} is not in the model catalog`,
 				remediation: `Run "${APP_NAME} --list-models" and update defaultProvider and defaultModel in settings.json, or pick a model with /model.`,
 			},
 		};
 	}
-	let auth: AuthCheck | undefined;
-	try {
-		auth = await runtime.checkAuth(provider);
-	} catch {
-		auth = undefined;
-	}
-	if (!auth) {
+	const credentials = await checkCredentials(runtime, provider, session);
+	if (credentials.status === "fail") {
 		return {
 			check: {
 				id: "models.default",
 				status: "fail",
-				summary: `Default model ${provider}/${modelId} has no credentials`,
-				remediation: `Run "${APP_NAME} login ${provider}", or set the provider's API key environment variable.`,
+				summary: `Default model ${name} has no credentials${credentials.note ? `: ${credentials.note}` : ""}`,
+				remediation: credentials.remediation,
 			},
 			model,
 		};
 	}
+	const notes = [
+		unverifiedCatalog
+			? "it is not in the offline catalog, which lists only the built-in model, and doctor does not ask the gateway, so its availability is unverified"
+			: undefined,
+		credentials.note,
+	].filter((note) => note !== undefined);
+	const status = unverifiedCatalog ? "warn" : credentials.status;
 	return {
 		check: {
 			id: "models.default",
-			status: "pass",
-			summary: `${provider}/${modelId} (${auth.type}${auth.source ? ` from ${auth.source}` : ""})`,
+			status,
+			summary: `${name} (${credentials.source})${notes.length > 0 ? `: ${notes.join("; ")}` : ""}`,
+			...(status === "warn"
+				? {
+						remediation: [
+							unverifiedCatalog
+								? "Nothing to change if sessions can use this model. If a session reports it as unavailable, pick another with /model."
+								: undefined,
+							credentials.remediation,
+						]
+							.filter((entry) => entry !== undefined)
+							.join(" "),
+					}
+				: {}),
 		},
 		model,
 	};
@@ -412,12 +683,12 @@ async function checkEnabledModels(
 	};
 }
 
-function busOrigin(value: string | undefined): string {
-	try {
-		return value ? new URL(value).origin : "unset";
-	} catch {
-		return "an invalid URL";
-	}
+/** Origin of an http or https Bus address, or undefined when it is not one. */
+function busOrigin(value: string): string | undefined {
+	const trimmed = value.trim();
+	if (!URL.canParse(trimmed)) return undefined;
+	const url = new URL(trimmed);
+	return (url.protocol === "https:" || url.protocol === "http:") && url.hostname ? url.origin : undefined;
 }
 
 function isSet(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -446,13 +717,19 @@ function checkBusEnvironment(context: DoctorContext): DoctorCheck {
 			remediation: `Start ${APP_NAME} through "${APP_NAME} --team" or "october-bus agent run" so all of ${BUS_PUBLIC_KEYS.join(", ")} are set together, or unset them.`,
 		};
 	}
-	if (env.OCTOBER_BUS_ADDRESS !== undefined) {
-		if (isSet(env, "OCTOBER_BUS_SCOPE_TOKEN")) {
+	if (env.OCTOBER_BUS_ADDRESS) {
+		const origin = busOrigin(env.OCTOBER_BUS_ADDRESS);
+		if (!origin) {
 			return {
 				id: "bus.env",
-				status: "pass",
-				summary: `"${APP_NAME} --team" joins the October Bus at ${busOrigin(env.OCTOBER_BUS_ADDRESS)}`,
+				status: "fail",
+				summary: "OCTOBER_BUS_ADDRESS is not an http or https URL",
+				remediation:
+					"Set OCTOBER_BUS_ADDRESS to the address of the October Bus to join, such as https://bus.example.com, or unset it to use a local Bus.",
 			};
+		}
+		if (isSet(env, "OCTOBER_BUS_SCOPE_TOKEN")) {
+			return { id: "bus.env", status: "pass", summary: `"${APP_NAME} --team" joins the October Bus at ${origin}` };
 		}
 		return {
 			id: "bus.env",
@@ -600,6 +877,41 @@ async function probeProvider(context: DoctorContext, model: Model<Api> | undefin
 	}
 }
 
+const PROXY_VARIABLES = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
+
+/**
+ * Route probe requests like a session does: through `httpProxy` or the proxy variables. Failures
+ * become a check instead of aborting the report, and the Bus probe still runs.
+ */
+function setUpProbeNetwork(httpProxy: unknown): DoctorCheck {
+	const remediation =
+		"Set httpProxy in settings.json, or HTTPS_PROXY and HTTP_PROXY, to a proxy URL such as http://proxy.example:8080, or remove them.";
+	const problem = httpProxyProblem(httpProxy);
+	if (problem) return { id: "probe.proxy", status: "fail", summary: problem, remediation };
+	const configured = typeof httpProxy === "string" ? httpProxy.trim() : "";
+	const fromEnvironment = PROXY_VARIABLES.find((name) => process.env[name]?.trim());
+	try {
+		applyHttpProxySettings(configured || undefined);
+		configureHttpDispatcher();
+	} catch (error) {
+		return {
+			id: "probe.proxy",
+			status: "fail",
+			summary: `Could not set up the HTTP proxy: ${errorMessage(error)}`,
+			remediation,
+		};
+	}
+	return {
+		id: "probe.proxy",
+		status: "pass",
+		summary: fromEnvironment
+			? `Requests use the proxy from ${fromEnvironment}`
+			: configured
+				? "Requests use the proxy from the httpProxy setting"
+				: "No HTTP proxy",
+	};
+}
+
 /** Summarize `october-bus doctor --json`; the Bus owns the daemon diagnostics themselves. */
 function probeBus(context: DoctorContext, bus: ReturnType<typeof resolveBusExecutable>): DoctorCheck {
 	if (!bus.path) {
@@ -681,10 +993,18 @@ function collectSecrets(context: DoctorContext): string[] {
 	for (const [name, value] of Object.entries(context.env)) {
 		if (value && value.length >= 8 && SECRET_NAME.test(name)) secrets.add(value);
 	}
+	// Proxy URLs can carry credentials, and a malformed one defeats the URL redaction below.
+	for (const name of PROXY_VARIABLES) {
+		const value = process.env[name] ?? context.env[name];
+		if (value && value.length >= 8) secrets.add(value);
+	}
 	for (const file of ["auth.json", "models.json", "settings.json"]) {
 		try {
 			const content = stripJsonComments(stripBom(readFileSync(join(context.agentDir, file), "utf-8")));
-			collectSecretValues(JSON.parse(content), secrets);
+			const parsed: unknown = JSON.parse(content);
+			collectSecretValues(parsed, secrets);
+			const proxy = file === "settings.json" ? (parsed as { httpProxy?: unknown } | null)?.httpProxy : undefined;
+			if (typeof proxy === "string" && proxy.trim().length >= 8) secrets.add(proxy).add(proxy.trim());
 		} catch {
 			// Unparseable files are reported by their own check; their parse snippets are redacted below.
 		}
@@ -723,34 +1043,48 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 	const context = new DoctorContext(options);
 	const checks: DoctorCheck[] = [checkExecutable(context), checkRuntime(), checkAssets(context)];
 
-	checks.push(checkSettings(context), await checkModelsJson(context));
+	const settings = loadSettings(context);
+	checks.push(checkSettings(context, settings), await checkModelsJson(context));
 	const auth = await checkAuthFile(context);
-	checks.push(auth.check);
+	// The shared October authentication code reads process.env, so the session does too.
+	const session = inspectManagedOctoberSession(process.env);
+	checks.push(auth.check, checkOctoberSession(session));
 
-	// Project settings stay untrusted here: model checks use the configuration every project sees.
-	const settings = SettingsManager.create(context.cwd, context.agentDir, { projectTrusted: false });
+	// Model checks use global settings only: the defaults every project starts from.
 	let defaultModel: Model<Api> | undefined;
 	try {
-		const runtime = await createDoctorModelRuntime(context, auth.valid);
-		const result = await checkDefaultModel(runtime, settings);
+		const runtime = await createDoctorModelRuntime(context, auth.valid, session);
+		const result = await checkDefaultModel(runtime, settings.global, session);
 		defaultModel = result.model;
-		checks.push(result.check, await checkEnabledModels(context, runtime, settings));
+		checks.push(result.check, await checkEnabledModels(context, runtime, settings.global));
 	} catch (error) {
-		checks.push({
-			id: "models.default",
-			status: "fail",
-			summary: `Could not load the model catalog: ${errorMessage(error)}`,
-			remediation: `Run "${APP_NAME} --list-models" to see the full error.`,
-		});
+		checks.push(
+			{
+				id: "models.default",
+				status: "fail",
+				summary: `Could not load the model catalog: ${errorMessage(error)}`,
+				remediation: `Run "${APP_NAME} --list-models" to see the full error.`,
+			},
+			{ id: "models.enabled", status: "skip", summary: "Skipped because the model catalog could not be loaded" },
+		);
 	}
 
 	const bus = resolveBusExecutable(context);
 	checks.push(checkBusEnvironment(context), checkBusExecutable(context, bus), checkBusScopes(context));
 
 	if (options.probe) {
-		applyHttpProxySettings(settings.getGlobalSettings().httpProxy);
-		configureHttpDispatcher();
-		checks.push(await probeProvider(context, defaultModel), probeBus(context, bus));
+		const network = setUpProbeNetwork(settings.global.getGlobalSettings().httpProxy);
+		checks.push(
+			network,
+			network.status === "fail"
+				? {
+						id: "probe.provider",
+						status: "skip",
+						summary: "Skipped because the HTTP proxy could not be set up",
+					}
+				: await probeProvider(context, defaultModel),
+			probeBus(context, bus),
+		);
 	}
 
 	const secrets = collectSecrets(context);

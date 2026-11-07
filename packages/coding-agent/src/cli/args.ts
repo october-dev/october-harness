@@ -314,7 +314,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} auth <command>            Print credentials or check provider readiness
   ${APP_NAME} mcp <command>             Manage MCP servers
   ${APP_NAME} local-models              Find models on local servers (Ollama, LM Studio, vLLM) and add them
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/login/mcp/local-models
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/login/doctor/mcp/local-models
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider to search for --model (requires --model)
