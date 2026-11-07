@@ -70,6 +70,20 @@ afterEach(async () => {
 });
 
 describe("parseModelList", () => {
+	it("skips Ollama models that can only embed, and keeps models without capability data", () => {
+		const models = [
+			{ name: "nomic-embed-text:latest", capabilities: ["embedding"] },
+			{ name: "qwen3.5:9b", capabilities: ["completion", "vision", "tools", "thinking"] },
+			{ name: "hybrid", capabilities: ["completion", "embedding"] },
+			{ name: "older-ollama" },
+		];
+		expect(parseModelList("ollama", { models })).toEqual([
+			{ id: "qwen3.5:9b" },
+			{ id: "hybrid" },
+			{ id: "older-ollama" },
+		]);
+	});
+
 	it("reads Ollama tags and OpenAI-compatible model lists", () => {
 		expect(parseModelList("ollama", { models: [{ name: "qwen2.5-coder:7b" }, { name: "llama3.2:3b" }] })).toEqual([
 			{ id: "qwen2.5-coder:7b" },
