@@ -11,6 +11,7 @@ october remove <source> [options]
 october uninstall <source> [options]
 october update [target] [options]
 october list
+october doctor [--json] [--probe] [--timeout <ms>]
 october config [options]
 october auth <check|print-api-key|print-bearer-token> [options]
 october mcp <add|remove|list|login|logout> [options]
@@ -326,6 +327,35 @@ Authentication commands require `--provider <provider>` or `--model <model>`. Se
 | `--min-expiry <duration>` | `print-bearer-token` | Require remaining token lifetime using `ms`, `s`, `m`, or `h`, such as `30m` |
 
 Credential-printing commands write secrets to stdout.
+
+## Setup diagnostics
+
+```sh
+october doctor
+october doctor --json --probe
+```
+
+`october doctor` checks the local setup and prints one line per check with a suggested fix for each problem. It exits with `1` when a check fails and `0` otherwise, warnings included.
+
+By default it only reads files and environment variables. It does not load extensions, start services, install packages, or write configuration. `--probe` adds two checks that leave the machine: an HTTP request without credentials to the default model's provider, and `october-bus doctor --json`, whose result is summarized rather than repeated. Each probe stops after `--timeout <ms>` (default 3000, at most 60000).
+
+| Check | Reports |
+|---|---|
+| `executable` | Version, entry point, install method, and whether `october` on `PATH` is a different installation |
+| `runtime` | Node.js or Bun version and platform. On a Node.js older than the minimum, `october` stops before any command runs and prints the required version |
+| `assets` | Themes, HTML export templates, and other files shipped with the package |
+| `config.settings` | Parse errors in the global and project `settings.json` |
+| `config.models` | Parse and schema errors in `~/.october/agent/models.json` |
+| `config.auth` | Parse errors in `~/.october/agent/auth.json`, and which providers have stored credentials |
+| `models.default` | Whether the default model exists and its provider has credentials |
+| `models.enabled` | `enabledModels` patterns that match no model with credentials |
+| `bus.env` | Incomplete or invalid `OCTOBER_BUS_*` variables |
+| `bus.binary` | Which October Bus executable `october --team` would use |
+| `bus.scopes` | Whether `team-scopes.json` is valid and readable only by its owner |
+| `probe.provider` | With `--probe`: whether the default provider answers |
+| `bus.doctor` | With `--probe`: health and protocol version reported by October Bus |
+
+`--json` prints a report with `schemaVersion`, `version`, `ok`, `probe`, and `checks`. Each check has a stable `id`, a `status` of `pass`, `warn`, `fail`, or `skip`, a `summary`, and a `remediation` for problems. Credentials, tokens, and secret configuration values are replaced with `<redacted>`, and paths under the home directory start with `~`, so the output can be attached to an issue.
 
 ## MCP commands
 
