@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `october doctor` to check the installation, settings, model credentials, managed October session, and October Bus setup without changing anything. `--json` prints a versioned report with secrets redacted, and `--probe` adds provider, proxy, and October Bus connectivity checks. See [Setup diagnostics](docs/cli.md#setup-diagnostics) ([#53](https://github.com/october-dev/october-harness/pull/53) by [@RClaudiuM](https://github.com/RClaudiuM)).
+
 ## [1.5.0-october.1] - 2026-11-03
 
 ### New Features

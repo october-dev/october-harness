@@ -209,6 +209,8 @@ Use an extension when the provider needs custom streaming, model discovery, or a
 
 ## Troubleshooting
 
+Run `october doctor` first. It reports whether the default model exists, whether its provider has credentials, and which `enabledModels` patterns match nothing. See [Setup diagnostics](cli.md#setup-diagnostics).
+
 ### A model does not appear
 
 Confirm that its provider has usable authentication. Custom models can load from `models.json` but remain unavailable in `/model` until October can resolve credentials. For llama.cpp, only models currently loaded by the router appear.
