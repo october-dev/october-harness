@@ -70,9 +70,11 @@ afterEach(async () => {
 });
 
 describe("parseModelList", () => {
-	it("skips Ollama models that can only embed, and keeps models without capability data", () => {
+	it("skips Ollama models that cannot chat, and keeps models without capability data", () => {
 		const models = [
 			{ name: "nomic-embed-text:latest", capabilities: ["embedding"] },
+			{ name: "image-gen", capabilities: ["image"] },
+			{ name: "classifier", capabilities: ["decision", "vision"] },
 			{ name: "qwen3.5:9b", capabilities: ["completion", "vision", "tools", "thinking"] },
 			{ name: "hybrid", capabilities: ["completion", "embedding"] },
 			{ name: "older-ollama" },

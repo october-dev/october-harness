@@ -194,22 +194,17 @@ export function parseModelList(format: ModelListFormat, body: unknown): Discover
 			continue;
 		}
 		if (models.some((model) => model.id === id)) continue;
-		if (format === "ollama" && isEmbeddingOnly((entry as { capabilities?: unknown }).capabilities)) continue;
+		// Ollama's /api/tags lists each model's capabilities; its chat endpoint rejects any model without
+		// "completion" (embedding, decision, image and speech models), so those would only fail when picked.
+		// Older Ollama versions omit the field; those models are kept.
+		const capabilities = format === "ollama" ? (entry as { capabilities?: unknown }).capabilities : undefined;
+		if (Array.isArray(capabilities) && !capabilities.includes("completion")) continue;
 		const contextWindow = format === "openai" ? (entry as { max_model_len?: unknown }).max_model_len : undefined;
 		const valid = typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0;
 		models.push(valid ? { id, contextWindow } : { id });
 		if (models.length >= MAX_MODELS_PER_ENDPOINT) break;
 	}
 	return models;
-}
-
-/**
- * Ollama lists embedding models such as nomic-embed-text next to chat models and marks them with
- * `capabilities`. One that cannot complete text would only fail when picked, so it is skipped.
- * Older Ollama versions omit `capabilities`; those models are kept.
- */
-function isEmbeddingOnly(capabilities: unknown): boolean {
-	return Array.isArray(capabilities) && capabilities.includes("embedding") && !capabilities.includes("completion");
 }
 
 /** The models.json entry for a newly added model. maxTokens never exceeds a reported context window. */
