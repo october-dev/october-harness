@@ -355,7 +355,7 @@ The model checks use the global `~/.october/agent/settings.json` only: `defaultP
 | `bus.env` | Incomplete or invalid `OCTOBER_BUS_*` variables, including an `OCTOBER_BUS_ADDRESS` that is not an http or https URL |
 | `bus.binary` | Which October Bus executable `october --team` would use |
 | `bus.scopes` | Whether `team-scopes.json` is valid and readable only by its owner |
-| `probe.proxy` | With `--probe`: whether the `httpProxy` setting or the `HTTPS_PROXY` and `HTTP_PROXY` variables can be used. When they cannot, the provider probe is skipped |
+| `probe.proxy` | With `--probe`: whether the `httpProxy` setting or the `HTTPS_PROXY` and `HTTP_PROXY` variables (either case) can be used. When they cannot, the provider probe is skipped. Doctor sets up the proxy only here, so a malformed proxy variable does not stop the other checks |
 | `probe.provider` | With `--probe`: whether the default provider answers |
 | `bus.doctor` | With `--probe`: health and protocol version reported by October Bus |
 

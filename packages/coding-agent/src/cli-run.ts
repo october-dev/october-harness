@@ -15,7 +15,9 @@ try {
 }
 
 if (teamExitCode === undefined) {
-	setupCli();
+	// doctor configures the HTTP dispatcher in its own guarded probe setup, so a malformed proxy
+	// environment is reported instead of aborting startup.
+	setupCli({ http: args[0] !== "doctor" });
 	// Awaited so the entry point owns main()'s whole output lifecycle. main() failures stay outside
 	// the --team error boundary above.
 	await main(args);

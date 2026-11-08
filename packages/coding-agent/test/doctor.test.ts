@@ -695,6 +695,47 @@ describe("october doctor", () => {
 	});
 
 	it.skipIf(process.platform === "win32")(
+		"reports malformed proxy environment variables from the CLI instead of crashing at startup",
+		async () => {
+			const fixture = createFixtureHome();
+			writeTestProvider(fixture.agentDir);
+			const bus = join(fixture.bin, "october-bus");
+			writeFileSync(bus, `#!/bin/sh\necho '{"healthy":true,"protocolVersion":"0.1"}'\n`);
+			chmodSync(bus, 0o755);
+			const proxy = "http://env-user:env-proxy-secret-0123@[not-a-host";
+
+			// Undici reads the lowercase names first, so each spelling is tested on its own.
+			for (const name of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) {
+				const env = { OCTOBER_DOCTOR_TEST_KEY: "doctor-test-key-value", [name]: proxy };
+				for (const probe of [false, true]) {
+					const result = await runCli(fixture, ["doctor", "--json", ...(probe ? ["--probe"] : [])], env);
+					const context = `${name}${probe ? " --probe" : ""}: ${result.stderr}`;
+
+					expect(result.stderr, context).not.toContain("ERR_INVALID_URL");
+					expect(result.stdout + result.stderr, context).not.toContain("env-proxy-secret");
+					const report = JSON.parse(result.stdout) as DoctorReport;
+					expect(report, context).toMatchObject({ schemaVersion: 1, probe });
+					expect(check(report, "models.default").status, context).toBe("pass");
+					if (probe) {
+						expect(result.code, context).toBe(1);
+						expect(check(report, "probe.proxy"), context).toMatchObject({ status: "fail" });
+						expect(check(report, "probe.provider").status, context).toBe("skip");
+						expect(check(report, "bus.doctor").status, context).toBe("pass");
+					} else {
+						// Local checks do not need a usable proxy.
+						expect(result.code, context).toBe(0);
+						expect(
+							report.checks.some((entry) => entry.id.startsWith("probe.")),
+							context,
+						).toBe(false);
+					}
+				}
+			}
+		},
+		120_000,
+	);
+
+	it.skipIf(process.platform === "win32")(
 		"exits promptly from the CLI in a Desktop session, with and without probes",
 		async () => {
 			const fixture = createFixtureHome();
@@ -736,9 +777,10 @@ function runCli(
 	fixture: FixtureHome,
 	args: string[],
 	env: NodeJS.ProcessEnv = {},
-): Promise<{ code: number | null; stdout: string }> {
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolveRun, reject) => {
 		let stdout = "";
+		let stderr = "";
 		const child = spawn(process.execPath, ["--import", sourceResolverPath, cliPath, ...args], {
 			cwd: fixture.project,
 			env: {
@@ -755,10 +797,13 @@ function runCli(
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk.toString();
 		});
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk.toString();
+		});
 		child.on("error", reject);
 		child.on("close", (code) => {
 			clearTimeout(timer);
-			resolveRun({ code, stdout });
+			resolveRun({ code, stdout, stderr });
 		});
 	});
 }
