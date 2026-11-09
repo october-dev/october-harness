@@ -134,6 +134,11 @@ export interface CreateModelRuntimeOptions {
 	signal?: AbortSignal;
 	/** Skip initial catalog and availability refresh. Static models remain available. */
 	refreshOnCreate?: boolean;
+	/**
+	 * Replaces the managed October session resolver, which may refresh the session. Diagnostics pass a
+	 * read-only snapshot. Precedence over the stored credential is unchanged.
+	 */
+	managedOctoberAccessToken?: (signal?: AbortSignal) => Promise<string | undefined>;
 }
 
 export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
@@ -233,9 +238,10 @@ export class ModelRuntime implements Models {
 			// for this runtime even if Desktop later clears the injected session.
 			// Another launching app's session falls back to the stored /login credential once unusable.
 			const desktop = isOctoberDesktopMode();
+			const resolveAccessToken = options.managedOctoberAccessToken ?? resolveManagedOctoberAccessToken;
 			credentials.setRuntimeApiKey(
 				OCTOBER_PROVIDER_ID,
-				async (signal) => (isOctoberManagedSessionMode() ? resolveManagedOctoberAccessToken(signal) : undefined),
+				async (signal) => (isOctoberManagedSessionMode() ? resolveAccessToken(signal) : undefined),
 				{ fallbackToStore: !desktop },
 			);
 		}

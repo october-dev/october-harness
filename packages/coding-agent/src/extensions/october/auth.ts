@@ -155,6 +155,50 @@ function credentialFromEnv(session: SupabaseSessionEnv): OAuthCredentials {
 	};
 }
 
+/** A managed session as the environment describes it, read without refreshing it or changing any state. */
+export interface ManagedOctoberSessionSnapshot {
+	/** `desktop`: October Desktop owns the session. `app`: another launching app injected it without a refresh token. */
+	owner: "desktop" | "app";
+	/** What a session would ask for a new token: the Desktop Bus token route or OCTOBER_TOKEN_COMMAND. */
+	refresher?: "bus" | "token-command";
+	/** `refresh-due`: still valid, but inside the window in which a session refreshes it. */
+	state: "missing" | "valid" | "refresh-due" | "expired";
+	accessToken?: string;
+	/** Epoch ms after which the token is no longer used (its expiry minus safety head-room). */
+	expiresAt?: number;
+}
+
+/**
+ * Inspect the managed October session for diagnostics. Unlike resolveManagedOctoberAccessToken, this
+ * never refreshes, runs OCTOBER_TOKEN_COMMAND, schedules timers, sets OCTOBER_INFERENCE_TOKEN, or
+ * logs. Returns undefined outside managed-session mode.
+ */
+export function inspectManagedOctoberSession(
+	env: NodeJS.ProcessEnv = process.env,
+	now = Date.now(),
+): ManagedOctoberSessionSnapshot | undefined {
+	if (!isOctoberManagedSessionMode(env)) return undefined;
+	const desktop = isOctoberDesktopMode(env);
+	const owner = desktop ? "desktop" : "app";
+	const refresher = desktop
+		? busRefreshConfigured(env)
+			? "bus"
+			: undefined
+		: tokenCommand(env) !== undefined
+			? "token-command"
+			: undefined;
+	const session = readSupabaseSessionEnv(env);
+	if (!session) return { owner, refresher, state: "missing" };
+	const credential = credentialFromEnv(session);
+	const state =
+		credential.expires <= now
+			? "expired"
+			: now + DESKTOP_REFRESH_MARGIN_MS >= credential.expires
+				? "refresh-due"
+				: "valid";
+	return { owner, refresher, state, accessToken: credential.access, expiresAt: credential.expires };
+}
+
 /** True when the process carries a signed-in October session (i.e. it runs inside the October app). */
 export function octoberSessionAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
 	return readSupabaseSessionEnv(env) !== undefined;

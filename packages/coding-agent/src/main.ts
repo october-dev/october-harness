@@ -29,6 +29,7 @@ import {
 	validateAuthCommandArgs,
 } from "./cli/auth-command.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
+import { runDoctorCommand } from "./cli/doctor.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -773,6 +774,12 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handleOctoberLoginCommand(args)) {
+		return;
+	}
+
+	// Before install cleanup and settings bootstrap: doctor must not change anything it inspects.
+	if (args[0] === "doctor") {
+		process.exitCode = await runDoctorCommand(args.slice(1), { agentDir: getAgentDir() });
 		return;
 	}
 
