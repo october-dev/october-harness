@@ -36,7 +36,6 @@ For deterministic tests of extension factories and tools, see the [Public Extens
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Testing Extensions](#testing-extensions)
 - [Extension Locations](#extension-locations)
 - [Available Imports](#available-imports)
 - [Writing an Extension](#writing-an-extension)
@@ -64,6 +63,7 @@ For deterministic tests of extension factories and tools, see the [Public Extens
 - [Custom UI](#custom-ui)
 - [Error Handling](#error-handling)
 - [Mode Behavior](#mode-behavior)
+- [Testing Extensions](#testing-extensions)
 - [Examples Reference](#examples-reference)
 
 <a id="create-an-extension"></a>
@@ -3285,8 +3285,6 @@ const highlighted = highlightCode(code, lang);
 | Print (`-p`) | `"print"` | `false` | Extensions run but can't prompt |
 
 Use `ctx.mode === "tui"` before TUI-specific features (`custom()`, component factories, terminal input). Use `ctx.hasUI` before dialog and notification methods that work in both TUI and RPC modes.
-
-<a id="use-examples-as-the-implementation-reference"></a>
 
 ## Testing Extensions
 

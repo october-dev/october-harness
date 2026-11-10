@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a public extension testing kit with a deterministic faux model, runtime events and errors, cancellation, reload support, and cleanup. See [Testing Extensions](docs/extension-testing.md) ([#55](https://github.com/october-dev/october-harness/pull/55) by [@flam3z3122](https://github.com/flam3z3122)).
 - Added `october local-models`, an opt-in command that finds models served by local Ollama, LM Studio, vLLM, or other OpenAI-compatible servers on loopback addresses, previews the `models.json` entries, and writes them only after confirmation. See [Find local models automatically](docs/models.md#find-local-models-automatically) ([#40](https://github.com/october-dev/october-harness/pull/40) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 
 ## [1.5.0-october.1] - 2026-11-03

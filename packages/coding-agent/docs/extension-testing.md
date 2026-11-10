@@ -6,19 +6,23 @@ The harness does not make provider requests or need API credentials. It runs the
 
 ## Install
 
-Use Node.js 22.19 or newer. Install October and the public packages used to define tools and faux responses:
+Use Node.js 22.19 or newer. Install October and TypeBox for extension tool schemas:
 
 ```sh
-npm install --save-dev @october-dev/october @earendil-works/pi-ai typebox
+npm install --save-dev @october-dev/october typebox
 ```
 
 Import the harness from the public testing subpath:
 
 ```typescript
-import { createExtensionTestHarness } from "@october-dev/october/testing";
+import {
+  createExtensionTestHarness,
+  fauxAssistantMessage,
+  fauxToolCall,
+} from "@october-dev/october/testing";
 ```
 
-Faux response helpers are exported by `@earendil-works/pi-ai/compat`. They create scripted assistant messages and tool calls; they do not contact an AI provider.
+The testing subpath also exports `fauxText`, `fauxThinking`, and the faux model and response types. The helpers create scripted assistant messages and tool calls; they do not contact an AI provider.
 
 ## Complete example
 
@@ -26,9 +30,8 @@ This example registers a tool, scripts a model tool call and follow-up response,
 
 ```typescript
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { createExtensionTestHarness } from "@october-dev/october/testing";
+import { createExtensionTestHarness, fauxAssistantMessage, fauxToolCall } from "@october-dev/october/testing";
 
 let executions = 0;
 const harness = await createExtensionTestHarness({
@@ -92,13 +95,27 @@ The returned harness exposes:
 | `cwd` | Workspace path used by the session. |
 | `session` | Real `AgentSession` created by October's SDK, including its messages and session methods. |
 | `events` | Captured `AgentSessionEvent` values and the `session_shutdown` event emitted during disposal. |
+| `errors` | Read-only view of extension loading, registration, lifecycle, and command errors. |
 | `setResponses(responses)` | Replace the faux provider's remaining scripted responses. |
 | `appendResponses(responses)` | Add responses after the current queue. |
 | `prompt(input)` | Submit input and resolve when the run completes. |
 | `abort()` | Abort the active session operation and wait for the session to become idle. |
 | `dispose()` | Asynchronously abort active work and clean up harness resources. Safe to call repeatedly. |
 
-The relevant TypeScript types are exported with the subpath: `ExtensionTestHarnessOptions` and `ExtensionTestHarness`. `extensions` uses the SDK's `InlineExtension` type; faux model and response options use the public `@earendil-works/pi-ai/compat` types.
+The relevant TypeScript types are exported with the subpath: `ExtensionTestHarnessOptions`, `ExtensionTestHarness`, `FauxModelDefinition`, `FauxResponseStep`, and `FauxResponseFactory`. `extensions` uses the SDK's `InlineExtension` type.
+
+## Extension errors
+
+`harness.errors` contains error records with `extensionPath`, `event`, and `error` fields, plus an optional `stack`. It is a read-only view; new records may be appended as the session runs or reloads. Use the event field to distinguish where a failure occurred:
+
+```typescript
+assert.ok(harness.errors.some((error) => error.event === "load" && error.error.includes("factory failed")));
+assert.ok(harness.errors.some((error) => error.event === "registration"));
+assert.ok(harness.errors.some((error) => error.event === "session_start"));
+assert.ok(harness.errors.some((error) => error.event === "command"));
+```
+
+`load` records are produced by extension file or factory loading. `registration` records normalize startup diagnostics for queued provider or other extension registrations. Lifecycle failures use their event name, such as `session_start` or `session_shutdown`. Command handler failures use event `command` and an `extensionPath` such as `command:deploy`.
 
 ## Testing behaviors
 
@@ -143,10 +160,19 @@ Assert shutdown after disposal with `assert.ok(harness.events.some((event) => ev
 
 When `cwd` is supplied, it is caller-owned and is never removed. Bash operations that ignore cancellation and never settle can prevent `dispose()` from completing because cleanup waits for active Bash work before removing an owned workspace.
 
+Harness disposal emits one `session_shutdown` notification with reason `quit` to the currently loaded extensions. This is separate from an extension calling `ctx.shutdown()`: the harness does not bind an interactive host shutdown action, so `ctx.shutdown()` does not terminate the test process or dispose the harness. Call `await harness.dispose()` from the test.
+
+### Unsupported host actions
+
+The harness runs the SDK session without October's interactive host. Command-context actions that require that host are not implemented: `ctx.reload()`, `ctx.newSession()`, `ctx.fork()`, `ctx.navigateTree()`, `ctx.switchSession()`, and `ctx.waitForIdle()` do not perform their normal interactive session operations. `ctx.shutdown()` is also unbound as described above. For a real extension reload in a test, call `await harness.session.reload()` directly; that reloads the session's resource loader and emits `session_start` with reason `reload`.
+
+One core reload-order limitation remains: during reload, queued provider registrations are flushed before the saved extension error listener is attached to the replacement runner. An error from that registration phase may not appear in `harness.errors`. Initial registration diagnostics and errors emitted after the replacement runner is bound are captured.
+
 ## Limits
 
 - The faux model returns the responses you script; it does not simulate real AI provider calls, and the harness makes no provider network requests.
 - Extension-mediated `tool_call` blocking is testable. This does not simulate host or operating-system permission enforcement.
 - The harness does not reproduce interactive host approval dialogs.
+- The harness does not implement host-only command-context operations such as session replacement, command-context reload, waiting for host idleness, or process shutdown.
 - Tool and extension code executes in the test process. The harness is not a security sandbox.
 - Extension code and Bash operations must cooperate with cancellation. In particular, Bash work that never settles can keep disposal pending.

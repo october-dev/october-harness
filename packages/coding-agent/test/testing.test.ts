@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentToolResult } from "../src/core/extensions/types.ts";
 import type { BashOperations } from "../src/core/tools/bash.ts";
 import { createExtensionTestHarness, type ExtensionTestHarness } from "../src/testing.ts";
@@ -117,6 +118,149 @@ describe("public extension testing harness", () => {
 		} finally {
 			fetch.mockRestore();
 		}
+	});
+
+	it("keeps two faux providers isolated when one session reloads", async () => {
+		const firstStartupReasons: string[] = [];
+		const secondStartupReasons: string[] = [];
+		const first = await createHarness({
+			extensions: [
+				(pi) => {
+					pi.on("session_start", (event) => {
+						firstStartupReasons.push(event.reason);
+						if (event.reason === "reload") throw new Error("reload startup failed");
+					});
+				},
+			],
+			responses: [fauxAssistantMessage("first initial")],
+		});
+		const second = await createHarness({
+			extensions: [
+				(pi) => {
+					pi.on("session_start", (event) => {
+						secondStartupReasons.push(event.reason);
+					});
+				},
+			],
+			responses: [fauxAssistantMessage("second initial")],
+		});
+
+		try {
+			first.setResponses([fauxAssistantMessage("first set")]);
+			first.appendResponses([fauxAssistantMessage("first appended")]);
+			await first.session.reload();
+
+			expect(firstStartupReasons).toEqual(["startup", "reload"]);
+			expect(secondStartupReasons).toEqual(["startup"]);
+			expect(first.errors).toContainEqual(
+				expect.objectContaining({ event: "session_start", error: "reload startup failed" }),
+			);
+			await first.prompt("first one");
+			expect(first.session.getLastAssistantText()).toBe("first set");
+			await first.prompt("first two");
+			expect(first.session.getLastAssistantText()).toBe("first appended");
+			await second.prompt("second one");
+			expect(second.session.getLastAssistantText()).toBe("second initial");
+			second.appendResponses([fauxAssistantMessage("second appended after reload")]);
+			await second.prompt("second two");
+			expect(second.session.getLastAssistantText()).toBe("second appended after reload");
+		} finally {
+			await Promise.all([first.dispose(), second.dispose()]);
+		}
+	});
+
+	it("exposes extension factory load errors and still disposes", async () => {
+		const harness = await createHarness({
+			extensions: [
+				() => {
+					throw new Error("factory failed");
+				},
+			],
+		});
+
+		expect(harness.errors).toContainEqual(expect.objectContaining({ event: "load", error: "factory failed" }));
+		await expect(harness.dispose()).resolves.toBeUndefined();
+	});
+
+	it("exposes startup lifecycle errors", async () => {
+		const harness = await createHarness({
+			extensions: [
+				(pi) => {
+					pi.on("session_start", () => {
+						throw new Error("startup failed");
+					});
+				},
+			],
+		});
+
+		expect(harness.errors).toContainEqual(
+			expect.objectContaining({ event: "session_start", error: "startup failed" }),
+		);
+		await harness.dispose();
+	});
+
+	it("exposes command handler errors", async () => {
+		const harness = await createHarness({
+			extensions: [
+				(pi) =>
+					pi.registerCommand("testing-error", {
+						handler: async () => {
+							throw new Error("command failed");
+						},
+					}),
+			],
+		});
+
+		await harness.prompt("/testing-error");
+		expect(harness.errors).toContainEqual(
+			expect.objectContaining({ extensionPath: "command:testing-error", event: "command", error: "command failed" }),
+		);
+		await harness.dispose();
+	});
+
+	it("captures shutdown handler errors before removing the listener", async () => {
+		const harness = await createHarness({
+			extensions: [
+				(pi) => {
+					pi.on("session_shutdown", () => {
+						throw new Error("shutdown failed");
+					});
+				},
+			],
+		});
+
+		await harness.dispose();
+		expect(harness.errors).toContainEqual(
+			expect.objectContaining({ event: "session_shutdown", error: "shutdown failed" }),
+		);
+	});
+
+	it("exposes invalid queued provider registration diagnostics", async () => {
+		const harness = await createHarness({
+			extensions: [(pi) => pi.registerProvider("broken-provider", { streamSimple: (() => undefined) as never })],
+		});
+
+		expect(harness.errors).toContainEqual(
+			expect.objectContaining({ event: "registration", error: expect.stringContaining("broken-provider") }),
+		);
+		await harness.dispose();
+	});
+
+	it("captures a factory error that occurs only during reload", async () => {
+		let factoryCalls = 0;
+		const harness = await createHarness({
+			extensions: [
+				() => {
+					factoryCalls++;
+					if (factoryCalls === 2) throw new Error("reload factory failed");
+				},
+			],
+		});
+
+		await harness.session.reload();
+		expect(factoryCalls).toBe(2);
+		expect(harness.errors).toContainEqual(expect.objectContaining({ event: "load", error: "reload factory failed" }));
+		await harness.dispose();
 	});
 
 	it("reports extension tool failures as tool execution events", async () => {
@@ -328,18 +472,52 @@ export default (pi) => pi.registerTool({
 	});
 
 	it("cleans helper-owned resources after construction fails", async () => {
-		const existing = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith("october-extension-test-")));
-		await expect(
-			createExtensionTestHarness({
-				get responses(): never {
-					throw new Error("response setup failed");
-				},
-			}),
-		).rejects.toThrow("response setup failed");
-		const remaining = readdirSync(tmpdir()).filter(
-			(name) => name.startsWith("october-extension-test-") && !existing.has(name),
-		);
-		expect(remaining).toEqual([]);
+		const ownedWorkspace = mkdtempSync(join(tmpdir(), "october-construction-failure-root-"));
+		const tempNames = ["TEMP", "TMP", "TMPDIR"] as const;
+		const previousTempValues = new Map(tempNames.map((name) => [name, process.env[name]]));
+		for (const name of tempNames) process.env[name] = ownedWorkspace;
+		try {
+			await expect(
+				createExtensionTestHarness({
+					get responses(): never {
+						throw new Error("response setup failed");
+					},
+				}),
+			).rejects.toThrow("response setup failed");
+			expect(readdirSync(ownedWorkspace).filter((name) => name.startsWith("october-extension-test-"))).toEqual([]);
+		} finally {
+			for (const name of tempNames) {
+				const value = previousTempValues.get(name);
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+			rmSync(ownedWorkspace, { recursive: true, force: true });
+		}
+	});
+
+	it("disposes a created session and workspace when startup binding rejects", async () => {
+		const ownedWorkspace = mkdtempSync(join(tmpdir(), "october-bind-failure-root-"));
+		const tempNames = ["TEMP", "TMP", "TMPDIR"] as const;
+		const previousTempValues = new Map(tempNames.map((name) => [name, process.env[name]]));
+		for (const name of tempNames) process.env[name] = ownedWorkspace;
+		const disposeSpy = vi.spyOn(AgentSession.prototype, "dispose");
+		const bindSpy = vi
+			.spyOn(AgentSession.prototype, "bindExtensions")
+			.mockRejectedValueOnce(new Error("startup binding failed"));
+		try {
+			await expect(createExtensionTestHarness()).rejects.toThrow("startup binding failed");
+			expect(disposeSpy).toHaveBeenCalledOnce();
+			expect(readdirSync(ownedWorkspace).filter((name) => name.startsWith("october-extension-test-"))).toEqual([]);
+		} finally {
+			bindSpy.mockRestore();
+			disposeSpy.mockRestore();
+			for (const name of tempNames) {
+				const value = previousTempValues.get(name);
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+			rmSync(ownedWorkspace, { recursive: true, force: true });
+		}
 	});
 
 	it("captures the extension shutdown event during disposal", async () => {

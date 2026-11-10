@@ -2,18 +2,28 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import type { FauxModelDefinition, FauxProviderRegistration, FauxResponseStep } from "@earendil-works/pi-ai/compat";
-import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
+import {
+	type FauxModelDefinition,
+	type FauxResponseFactory,
+	type FauxResponseStep,
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxText,
+	fauxThinking,
+	fauxToolCall,
+	InMemoryCredentialStore,
+} from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionEvent } from "./core/agent-session.ts";
+import { createAgentSessionFromServices, createAgentSessionServices } from "./core/agent-session-services.ts";
 import { emitSessionShutdownEvent } from "./core/extensions/runner.ts";
-import type { InlineExtension, SessionShutdownEvent } from "./core/extensions/types.ts";
+import type { ExtensionError, InlineExtension, SessionShutdownEvent } from "./core/extensions/types.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { DefaultResourceLoader } from "./core/resource-loader.ts";
-import { type CreateAgentSessionResult, createAgentSession } from "./core/sdk.ts";
 import { SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { initTheme, theme } from "./modes/interactive/theme/theme.ts";
+
+export { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall };
+export type { FauxModelDefinition, FauxResponseFactory, FauxResponseStep };
 
 export interface ExtensionTestHarnessOptions {
 	/** Extension factories loaded by October's standard extension runtime. */
@@ -30,6 +40,7 @@ export interface ExtensionTestHarness {
 	readonly cwd: string;
 	readonly session: AgentSession;
 	readonly events: readonly (AgentSessionEvent | SessionShutdownEvent)[];
+	readonly errors: readonly ExtensionError[];
 	setResponses(responses: FauxResponseStep[]): void;
 	appendResponses(responses: FauxResponseStep[]): void;
 	prompt(input: string): Promise<void>;
@@ -43,11 +54,12 @@ export async function createExtensionTestHarness(
 	options: ExtensionTestHarnessOptions = {},
 ): Promise<ExtensionTestHarness> {
 	const cleanups: Array<() => void | Promise<void>> = [];
-	let result: CreateAgentSessionResult | undefined;
+	let session: AgentSession | undefined;
 	let unsubscribe: (() => void) | undefined;
 	let disposal: Promise<void> | undefined;
 	const events: Array<AgentSessionEvent | SessionShutdownEvent> = [];
-	let provider: FauxProviderRegistration | undefined;
+	const errors: ExtensionError[] = [];
+	let faux: ReturnType<typeof fauxProvider> | undefined;
 
 	try {
 		try {
@@ -61,15 +73,6 @@ export async function createExtensionTestHarness(
 		}
 
 		const providerId = `october-test-${randomUUID()}`;
-		const api = `october-test-api-${randomUUID()}`;
-		provider = registerFauxProvider({
-			api,
-			provider: providerId,
-			models: [{ id: options.model?.id ?? "test-model", ...options.model }],
-		});
-		cleanups.push(() => provider?.unregister());
-		provider.setResponses(options.responses ?? []);
-
 		const modelRuntime = await ModelRuntime.create({
 			credentials: new InMemoryCredentialStore(),
 			modelsPath: null,
@@ -77,76 +80,76 @@ export async function createExtensionTestHarness(
 			refreshOnCreate: false,
 		});
 		cleanups.push(() => modelRuntime.unregisterProvider(providerId));
-		const model = provider.getModel();
-		modelRuntime.registerProvider(providerId, {
-			api,
-			baseUrl: model.baseUrl,
-			apiKey: "faux-test-key",
-			models: provider.models.map((registeredModel) => ({
-				id: registeredModel.id,
-				name: registeredModel.name,
-				api: registeredModel.api,
-				reasoning: registeredModel.reasoning,
-				input: registeredModel.input,
-				inputLimits: registeredModel.inputLimits,
-				cost: registeredModel.cost,
-				contextWindow: registeredModel.contextWindow,
-				maxTokens: registeredModel.maxTokens,
-				baseUrl: registeredModel.baseUrl,
-			})),
+		faux = fauxProvider({
+			provider: providerId,
+			models: [{ ...options.model, id: options.model?.id ?? "test-model" }],
 		});
+		modelRuntime.registerNativeProvider(faux.provider);
+		faux.setResponses(options.responses ?? []);
 
 		const settingsManager = SettingsManager.inMemory();
-		const resourceLoader = new DefaultResourceLoader({
+		const agentDir = join(cwd, ".october-test-agent");
+		const services = await createAgentSessionServices({
 			cwd,
-			agentDir: join(cwd, ".october-test-agent"),
-			settingsManager,
-			extensionFactories: options.extensions ?? [],
-			noExtensions: true,
-			noSkills: true,
-			noPromptTemplates: true,
-			noThemes: true,
-			noContextFiles: true,
-		});
-		await resourceLoader.reload();
-		result = await createAgentSession({
-			cwd,
-			agentDir: join(cwd, ".october-test-agent"),
-			model,
+			agentDir,
 			modelRuntime,
 			settingsManager,
-			sessionManager: SessionManager.inMemory(cwd),
-			resourceLoader,
+			resourceLoaderOptions: {
+				extensionFactories: options.extensions ?? [],
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+				extensionsOverride(base) {
+					for (const { path, error } of base.errors) {
+						errors.push({ extensionPath: path, event: "load", error });
+					}
+					return base;
+				},
+			},
 		});
-		unsubscribe = result.session.subscribe((event) => events.push(event));
+		for (const diagnostic of services.diagnostics) {
+			if (diagnostic.type !== "error") continue;
+			const extensionPath = /^Extension "([^"]+)" error:/.exec(diagnostic.message)?.[1] ?? "<session>";
+			errors.push({ extensionPath, event: "registration", error: diagnostic.message });
+		}
+		const result = await createAgentSessionFromServices({
+			services,
+			sessionManager: SessionManager.inMemory(cwd),
+			model: faux.getModel(),
+		});
+		session = result.session;
+		unsubscribe = session.subscribe((event) => events.push(event));
 		cleanups.push(() => unsubscribe?.());
 		cleanups.push(async () => {
-			if (!result) return;
-			await result.session.abortBashAndWait();
+			if (!session) return;
+			await session.abortBashAndWait();
 			const event: SessionShutdownEvent = { type: "session_shutdown", reason: "quit" };
 			events.push(event);
 			try {
-				await emitSessionShutdownEvent(result.session.extensionRunner, event);
+				await emitSessionShutdownEvent(session.extensionRunner, event);
 			} finally {
-				result.session.dispose();
+				session.dispose();
 			}
 		});
-		await result.session.bindExtensions({});
+		await session.bindExtensions({ onError: (error) => errors.push(error) });
 
 		return {
 			cwd,
-			session: result.session,
+			session,
 			events,
-			setResponses: (responses) => provider?.setResponses(responses),
-			appendResponses: (responses) => provider?.appendResponses(responses),
-			prompt: (input) => result!.session.prompt(input),
-			abort: () => result!.session.abort(),
+			errors,
+			setResponses: (responses) => faux?.setResponses(responses),
+			appendResponses: (responses) => faux?.appendResponses(responses),
+			prompt: (input) => session!.prompt(input),
+			abort: () => session!.abort(),
 			async dispose() {
 				if (disposal) return disposal;
 				disposal = (async () => {
 					const errors: unknown[] = [];
 					try {
-						await result?.session.abort();
+						await session?.abort();
 					} catch (error) {
 						errors.push(error);
 					}

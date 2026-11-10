@@ -52,9 +52,13 @@ export function smokeTestCodingAgent(directory, runtime = process.execPath) {
 	try {
 		writeFileSync(entry, `import assert from "node:assert/strict";
 import { createAgentSession, SessionManager, ModelRuntime } from "${codingAgentName}";
+import { createExtensionTestHarness } from "${codingAgentName}/testing";
 import { createAgentSession as bundledCreateAgentSession } from "./node_modules/${codingAgentName}/dist/bundle/index.js";
+import { createExtensionTestHarness as bundledCreateExtensionTestHarness } from "./node_modules/${codingAgentName}/dist/bundle/testing.js";
 assert.equal(createAgentSession, bundledCreateAgentSession, "SDK must use this release's bundled workspace code");
+assert.equal(createExtensionTestHarness, bundledCreateExtensionTestHarness, "testing entry must use this release's bundled workspace code");
 assert.equal(typeof createAgentSession, "function");
+assert.equal(typeof createExtensionTestHarness, "function");
 assert.equal(typeof SessionManager.inMemory, "function");
 assert.equal(typeof ModelRuntime.create, "function");
 for (const name of ["pi-client", "pi-protocol", "pi-server"]) {
