@@ -52,6 +52,12 @@ export type RunScenarioOptions = {
 	modelRuntime?: ModelRuntime;
 };
 
+/**
+ * The `provider/id` a faux run reports (the faux provider's default model, `faux-1`). Results that never
+ * reached the model use it too, so one scenario failing does not make a whole report look like another model.
+ */
+export const FAUX_MODEL = "faux/faux-1";
+
 export type ScenarioResult = {
 	id: string;
 	/** What the run depended on, for baseline comparison. Null when the scenario could not be loaded. */
@@ -184,7 +190,7 @@ export function erroredResult(
 		id,
 		fingerprint,
 		mode: model ? "model" : "faux",
-		model: model ? `${model.provider}/${model.id}` : "faux/faux",
+		model: model ? `${model.provider}/${model.id}` : FAUX_MODEL,
 		score: 0,
 		passed: false,
 		checks: [],

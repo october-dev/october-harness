@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fingerprintScenario, loadScenario, type ScenarioFingerprint } from "../src/scenario.ts";
-import { compareScenarioReports, formatScenarioComparison } from "../src/scenario-compare.ts";
+import { compareScenarioReports, formatScenarioComparison, readScenarioReport } from "../src/scenario-compare.ts";
 import { buildScenarioReport, SCENARIO_REPORT_VERSION, type ScenarioReport } from "../src/scenario-report.ts";
-import type { ScenarioResult } from "../src/scenario-runner.ts";
+import { erroredResult, FAUX_MODEL, runScenario, type ScenarioResult } from "../src/scenario-runner.ts";
 
 const print: ScenarioFingerprint = { definition: "d1", checks: "c1", script: "s1", workspace: "w1" };
 
@@ -14,7 +14,7 @@ function result(id: string, checks: boolean[], overrides: Partial<ScenarioResult
 		id,
 		fingerprint: print,
 		mode: "faux",
-		model: "faux/faux",
+		model: FAUX_MODEL,
 		score: checks.filter(Boolean).length / checks.length,
 		passed: checks.every(Boolean),
 		checks: checks.map((passed, index) => ({ check: `check ${index}`, passed, weight: 1 })),
@@ -123,7 +123,7 @@ describe("scenario baseline comparison", () => {
 		expect(comparison.comparable).toBe(false);
 		expect(comparison.problems).toEqual([
 			"The baseline ran in faux mode and the current report in model mode.",
-			"The baseline used faux/faux and the current report anthropic/x.",
+			"The baseline used faux/faux-1 and the current report anthropic/x.",
 		]);
 	});
 
@@ -174,6 +174,103 @@ describe("scenario baseline comparison", () => {
 			reportVersion: 2,
 			runner: { october: expect.any(String), evals: expect.any(String), scenarioFormat: 1 },
 		});
+	});
+});
+
+describe("comparison input validation", () => {
+	const valid = () => JSON.parse(JSON.stringify(report([result("a", [true])])));
+	const breaks: Record<string, (value: Record<string, any>) => void> = {
+		"missing verdict": (value) => delete value.scenarios[0].passed,
+		"malformed check entry": (value) => {
+			value.scenarios[0].checks[0] = { check: 5, passed: "yes" };
+		},
+		"non-array errors": (value) => {
+			value.scenarios[0].errors = {};
+		},
+		"missing runner": (value) => delete value.runner,
+		"missing mode": (value) => delete value.mode,
+		"missing model": (value) => delete value.model,
+		"string fingerprint": (value) => {
+			value.scenarios[0].fingerprint = "d1";
+		},
+	};
+
+	it.each(Object.keys(breaks))("rejects a baseline with a %s, without throwing or judging", (name) => {
+		const damaged = valid();
+		breaks[name]?.(damaged);
+		const comparison = compareScenarioReports(damaged, report([result("a", [true])]));
+		expect(comparison).toMatchObject({ comparable: false, regressions: 0, scenarios: [] });
+		expect(comparison.problems[0]).toMatch(/^Baseline is not a valid scenario report: /);
+		expect(formatScenarioComparison(comparison)).not.toMatch(/improved|No regressions/);
+	});
+
+	it("rejects an unreadable baseline file instead of comparing it", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "pi-scenario-baseline-"));
+		try {
+			const truncated = join(directory, "scenarios.json");
+			writeFileSync(truncated, JSON.stringify(valid()).slice(0, 40));
+			await expect(readScenarioReport(truncated)).rejects.toThrow(SyntaxError);
+			await expect(readScenarioReport(join(directory, "missing.json"))).rejects.toThrow(/ENOENT/);
+			// A directory is read through its scenarios.json, which here is the truncated file.
+			await expect(readScenarioReport(directory)).rejects.toThrow(SyntaxError);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("comparison of runs that could not run or load", () => {
+	let tempDir: string;
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "pi-scenario-errored-"));
+	});
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true });
+	});
+
+	async function realRun() {
+		mkdirSync(join(tempDir, "s", "workspace"), { recursive: true });
+		writeFileSync(join(tempDir, "s", "workspace", "a.txt"), "x");
+		writeFileSync(
+			join(tempDir, "s", "scenario.json"),
+			JSON.stringify({
+				formatVersion: 1,
+				id: "test/errored",
+				prompt: "Say done.",
+				tools: [],
+				faux: [{ text: "Done." }],
+				expect: [{ file: "a.txt", exists: true }],
+			}),
+		);
+		const scenario = await loadScenario(join(tempDir, "s"));
+		return { scenario, run: await runScenario(scenario) };
+	}
+
+	it("reports a scenario that loads but cannot run as a regression, not a model change", async () => {
+		const { scenario, run } = await realRun();
+		expect(run).toMatchObject({ passed: true, model: FAUX_MODEL });
+		const thrown = erroredResult(scenario.id, new Error("boom"), undefined, await fingerprintScenario(scenario));
+		const comparison = compareScenarioReports(report([run]), report([thrown]));
+		expect(comparison).toMatchObject({ comparable: true, regressions: 1 });
+		expect(comparison.scenarios).toEqual([
+			expect.objectContaining({
+				id: "test/errored",
+				status: "regressed",
+				newErrors: ["Scenario could not run: boom"],
+			}),
+		]);
+	});
+
+	it("reports a scenario that fails to load as its id missing plus its path added", async () => {
+		const { run } = await realRun();
+		// What the CLI records when loading fails: the directory path as the id and no fingerprint.
+		const unloaded = erroredResult("scenarios/errored", new Error("Invalid scenario"));
+		const comparison = compareScenarioReports(report([run]), report([unloaded]));
+		expect(comparison).toMatchObject({ comparable: true, regressions: 1 });
+		expect(comparison.scenarios.map((entry) => [entry.id, entry.status])).toEqual([
+			["scenarios/errored", "added"],
+			["test/errored", "missing"],
+		]);
 	});
 });
 

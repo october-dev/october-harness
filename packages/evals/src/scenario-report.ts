@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { VERSION as OCTOBER_VERSION } from "@october-dev/october";
 import { SCENARIO_FORMAT_VERSION } from "./scenario.ts";
-import type { ScenarioResult } from "./scenario-runner.ts";
+import { FAUX_MODEL, type ScenarioResult } from "./scenario-runner.ts";
 
 /** Version 2 adds `runner` and per-scenario `fingerprint`, which baseline comparison requires. */
 export const SCENARIO_REPORT_VERSION = 2;
@@ -35,7 +35,7 @@ export function buildScenarioReport(results: ScenarioResult[], createdAt = new D
 		createdAt: createdAt.toISOString(),
 		runner: { october: OCTOBER_VERSION, evals: EVALS_VERSION, scenarioFormat: SCENARIO_FORMAT_VERSION },
 		mode: results[0]?.mode ?? "faux",
-		model: results[0]?.model ?? "faux/faux",
+		model: results[0]?.model ?? FAUX_MODEL,
 		passed: results.filter((result) => result.passed).length,
 		total: results.length,
 		scenarios: results,

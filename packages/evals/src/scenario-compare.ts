@@ -1,9 +1,9 @@
 import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ScenarioFingerprint } from "./scenario.ts";
-import { SCENARIO_REPORT_VERSION, type ScenarioReport, type ScenarioRunner } from "./scenario-report.ts";
-import type { ScenarioResult } from "./scenario-runner.ts";
+import { type Static, Type } from "typebox";
+import { Compile } from "typebox/compile";
+import { SCENARIO_REPORT_VERSION } from "./scenario-report.ts";
 
 /**
  * Baseline comparison for scenario reports (#51).
@@ -14,6 +14,51 @@ import type { ScenarioResult } from "./scenario-runner.ts";
  */
 
 export const SCENARIO_COMPARISON_VERSION = 1;
+
+const OptionalMetric = Type.Optional(Type.Number());
+
+/**
+ * The fields comparison reads, validated before any are used: a baseline file is untrusted input. Other report
+ * fields are allowed and ignored. Metrics stay optional, so a missing one is reported as unavailable.
+ */
+const ComparableReportSchema = Type.Object({
+	reportVersion: Type.Literal(SCENARIO_REPORT_VERSION),
+	createdAt: Type.String(),
+	runner: Type.Object({ october: Type.String(), evals: Type.String(), scenarioFormat: Type.Integer() }),
+	mode: Type.Union([Type.Literal("faux"), Type.Literal("model")]),
+	model: Type.String({ minLength: 1 }),
+	scenarios: Type.Array(
+		Type.Object({
+			id: Type.String({ minLength: 1 }),
+			fingerprint: Type.Union([
+				Type.Object({
+					definition: Type.String(),
+					checks: Type.String(),
+					script: Type.String(),
+					workspace: Type.Union([Type.String(), Type.Null()]),
+				}),
+				Type.Null(),
+			]),
+			passed: Type.Boolean(),
+			checks: Type.Array(Type.Object({ check: Type.String(), passed: Type.Boolean() })),
+			errors: Type.Array(Type.String()),
+			metrics: Type.Optional(
+				Type.Object({
+					turns: OptionalMetric,
+					toolCalls: OptionalMetric,
+					toolErrors: OptionalMetric,
+					totalTokens: OptionalMetric,
+					costUsd: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+					durationMs: OptionalMetric,
+				}),
+			),
+		}),
+	),
+});
+const checkComparableReport = Compile(ComparableReportSchema);
+
+type ComparableReport = Static<typeof ComparableReportSchema>;
+type ComparableResult = ComparableReport["scenarios"][number];
 
 type MetricName = "turns" | "toolCalls" | "toolErrors" | "totalTokens" | "costUsd" | "durationMs";
 const METRICS: MetricName[] = ["turns", "toolCalls", "toolErrors", "totalTokens", "costUsd", "durationMs"];
@@ -33,54 +78,62 @@ export type ScenarioChange = {
 	metrics: Record<MetricName, MetricChange> | null;
 };
 
-type ReportSide = Pick<ScenarioReport, "createdAt" | "mode" | "model"> & { runner: ScenarioRunner | null };
+type ReportSide = Pick<ComparableReport, "createdAt" | "runner" | "mode" | "model">;
 
-export type ScenarioComparison = {
-	comparisonVersion: typeof SCENARIO_COMPARISON_VERSION;
-	comparable: boolean;
-	/** Why the reports cannot be compared. Empty when `comparable`. */
-	problems: string[];
-	baseline: ReportSide | null;
-	current: ReportSide | null;
-	regressions: number;
-	scenarios: ScenarioChange[];
-};
+export type ScenarioComparison =
+	| {
+			comparisonVersion: typeof SCENARIO_COMPARISON_VERSION;
+			comparable: true;
+			problems: [];
+			baseline: ReportSide;
+			current: ReportSide;
+			regressions: number;
+			scenarios: ScenarioChange[];
+	  }
+	| {
+			comparisonVersion: typeof SCENARIO_COMPARISON_VERSION;
+			comparable: false;
+			/** Why the reports cannot be compared. */
+			problems: string[];
+			baseline: ReportSide | null;
+			current: ReportSide | null;
+			regressions: 0;
+			scenarios: [];
+	  };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Checks the fields comparison relies on, since a baseline file is untrusted input. */
-function reportProblems(label: string, value: unknown): string[] {
-	if (!isRecord(value) || !Array.isArray(value.scenarios)) return [`${label} is not a scenario report.`];
-	if (value.reportVersion !== SCENARIO_REPORT_VERSION) {
-		return [
-			`${label} has report version ${String(value.reportVersion)}; comparison needs version ${SCENARIO_REPORT_VERSION}. Re-run it with this runner.`,
-		];
+/** Validates one report; the version is checked first so an old report gets an actionable message. */
+function parseReport(label: string, value: unknown): { report: ComparableReport } | { problems: string[] } {
+	const version =
+		typeof value === "object" && value !== null ? (value as { reportVersion?: unknown }).reportVersion : undefined;
+	if (version === undefined) return { problems: [`${label} is not a scenario report.`] };
+	if (version !== SCENARIO_REPORT_VERSION) {
+		return {
+			problems: [
+				`${label} has report version ${String(version)}; comparison needs version ${SCENARIO_REPORT_VERSION}. Re-run it with this runner.`,
+			],
+		};
 	}
-	const problems: string[] = [];
+	if (!checkComparableReport.Check(value)) {
+		const details = checkComparableReport
+			.Errors(value)
+			.slice(0, 5)
+			.map((error) => `${error.instancePath || "/"} ${error.message}`);
+		return { problems: [`${label} is not a valid scenario report: ${details.join("; ")}.`] };
+	}
 	const ids = new Set<string>();
-	for (const [index, scenario] of value.scenarios.entries()) {
-		if (!isRecord(scenario) || typeof scenario.id !== "string" || !Array.isArray(scenario.checks)) {
-			problems.push(`${label} scenario ${index} is malformed.`);
-			continue;
-		}
-		if (ids.has(scenario.id)) problems.push(`${label} lists scenario ${scenario.id} more than once.`);
-		ids.add(scenario.id);
+	const problems: string[] = [];
+	for (const { id } of value.scenarios) {
+		if (ids.has(id)) problems.push(`${label} lists scenario ${id} more than once.`);
+		ids.add(id);
 	}
-	return problems;
+	return problems.length > 0 ? { problems } : { report: value };
 }
 
-function metric(result: ScenarioResult, name: MetricName): number | null {
-	const value: unknown = isRecord(result.metrics) ? result.metrics[name] : undefined;
-	return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function metricChanges(baseline: ScenarioResult, current: ScenarioResult): Record<MetricName, MetricChange> {
+function metricChanges(baseline: ComparableResult, current: ComparableResult): Record<MetricName, MetricChange> {
 	const changes = {} as Record<MetricName, MetricChange>;
 	for (const name of METRICS) {
-		const before = metric(baseline, name);
-		const after = metric(current, name);
+		const before = baseline.metrics?.[name] ?? null;
+		const after = current.metrics?.[name] ?? null;
 		changes[name] = {
 			baseline: before,
 			current: after,
@@ -94,8 +147,8 @@ function metricChanges(baseline: ScenarioResult, current: ScenarioResult): Recor
 function fingerprintProblems(
 	id: string,
 	mode: string,
-	before: ScenarioFingerprint | null,
-	after: ScenarioFingerprint | null,
+	before: ComparableResult["fingerprint"],
+	after: ComparableResult["fingerprint"],
 ): string[] {
 	if (!before || !after)
 		return [`${id} could not be loaded in the ${before ? "current" : "baseline"} run, so its identity is unknown.`];
@@ -107,7 +160,7 @@ function fingerprintProblems(
 	return changed.length > 0 ? [`${id} changed its ${changed.join(", ")} since the baseline.`] : [];
 }
 
-function compareScenario(baseline: ScenarioResult, current: ScenarioResult): ScenarioChange {
+function compareScenario(baseline: ComparableResult, current: ComparableResult): ScenarioChange {
 	const newlyFailingChecks: string[] = [];
 	const resolvedChecks: string[] = [];
 	// Identical check fingerprints guarantee the same checks in the same order, so index pairs them.
@@ -133,34 +186,44 @@ function compareScenario(baseline: ScenarioResult, current: ScenarioResult): Sce
 	};
 }
 
-function side(report: ScenarioReport): ReportSide {
-	return { createdAt: report.createdAt, runner: report.runner ?? null, mode: report.mode, model: report.model };
+function side({ createdAt, runner, mode, model }: ComparableReport): ReportSide {
+	return { createdAt, runner, mode, model };
 }
 
-/** Compares `current` with `baseline`. Both are untrusted values, such as parsed `scenarios.json` files. */
-export function compareScenarioReports(baselineValue: unknown, currentValue: unknown): ScenarioComparison {
-	const problems = [...reportProblems("Baseline", baselineValue), ...reportProblems("Current report", currentValue)];
-	const incompatible = (
-		reasons: string[],
-		baseline: ReportSide | null = null,
-		current: ReportSide | null = null,
-	): ScenarioComparison => ({
+function incompatible(
+	problems: string[],
+	baseline: ReportSide | null = null,
+	current: ReportSide | null = null,
+): ScenarioComparison {
+	return {
 		comparisonVersion: SCENARIO_COMPARISON_VERSION,
 		comparable: false,
-		problems: reasons,
+		problems,
 		baseline,
 		current,
 		regressions: 0,
 		scenarios: [],
-	});
-	if (problems.length > 0) return incompatible(problems);
-	const baseline = baselineValue as ScenarioReport;
-	const current = currentValue as ScenarioReport;
+	};
+}
+
+/** Compares `current` with `baseline`. Both are untrusted values, such as parsed `scenarios.json` files. */
+export function compareScenarioReports(baselineValue: unknown, currentValue: unknown): ScenarioComparison {
+	const parsedBaseline = parseReport("Baseline", baselineValue);
+	const parsedCurrent = parseReport("Current report", currentValue);
+	if ("problems" in parsedBaseline || "problems" in parsedCurrent) {
+		return incompatible([
+			...("problems" in parsedBaseline ? parsedBaseline.problems : []),
+			...("problems" in parsedCurrent ? parsedCurrent.problems : []),
+		]);
+	}
+	const baseline = parsedBaseline.report;
+	const current = parsedCurrent.report;
+	const problems: string[] = [];
 	if (baseline.mode !== current.mode)
 		problems.push(`The baseline ran in ${baseline.mode} mode and the current report in ${current.mode} mode.`);
 	if (baseline.model !== current.model)
 		problems.push(`The baseline used ${baseline.model} and the current report ${current.model}.`);
-	if (baseline.runner?.scenarioFormat !== current.runner?.scenarioFormat)
+	if (baseline.runner.scenarioFormat !== current.runner.scenarioFormat)
 		problems.push("The reports use different scenario formats.");
 
 	const before = new Map(baseline.scenarios.map((result) => [result.id, result]));
@@ -201,7 +264,7 @@ export function compareScenarioReports(baselineValue: unknown, currentValue: unk
 	};
 }
 
-/** Reads a baseline from `scenarios.json` or a report directory that contains one. */
+/** Reads a baseline from `scenarios.json` or a report directory that contains one. Throws if unreadable. */
 export async function readScenarioReport(path: string): Promise<unknown> {
 	const file = existsSync(path) && statSync(path).isDirectory() ? join(path, "scenarios.json") : path;
 	return JSON.parse(await readFile(file, "utf8"));
@@ -218,8 +281,8 @@ function formatChange(change: MetricChange, money = false): string {
 	return `${show(change.baseline)} → ${show(change.current)} (${change.change > 0 ? "+" : ""}${delta})`;
 }
 
-function versions(report: ReportSide | null): string {
-	return report?.runner ? `October ${report.runner.october}, evals ${report.runner.evals}` : "unknown runner";
+function versions(report: ReportSide): string {
+	return `October ${report.runner.october}, evals ${report.runner.evals}`;
 }
 
 export function formatScenarioComparison(comparison: ScenarioComparison): string {
@@ -230,8 +293,8 @@ export function formatScenarioComparison(comparison: ScenarioComparison): string
 		return `${lines.join("\n")}\n`;
 	}
 	lines.push(
-		`Baseline: ${comparison.baseline?.createdAt} (${versions(comparison.baseline)})`,
-		`Current: ${comparison.current?.createdAt} (${versions(comparison.current)})`,
+		`Baseline: ${comparison.baseline.createdAt} (${versions(comparison.baseline)})`,
+		`Current: ${comparison.current.createdAt} (${versions(comparison.current)})`,
 		"",
 		comparison.regressions === 0 ? "No regressions." : `**${comparison.regressions} regression(s).**`,
 		"",

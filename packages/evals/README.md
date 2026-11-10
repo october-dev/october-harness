@@ -40,12 +40,15 @@ Pass `--baseline <report>` (a report directory or its `scenarios.json`) to compa
 ```bash
 npm run eval:scenarios -w packages/evals -- --out .eval/baseline
 # ... change the harness ...
+npm run build # the runner imports the built packages
 npm run eval:scenarios -w packages/evals -- --baseline .eval/baseline --gate
 ```
 
 The comparison is printed and written as `comparison.md` and `comparison.json` next to the new report. It lists newly failing checks, new run errors, missing and added scenarios, resolved checks, and the change in turns, tool calls, tokens and cost. A metric that either report lacks, such as the cost of a faux run, stays `n/a` instead of being counted as zero.
 
-Reports are compared only when they ran the same scenarios the same way: the same mode and model, and, for every scenario in both, the same definition, checks and workspace fixture (and the same `faux` script for faux runs). Each report records these as SHA-256 fingerprints, plus the October and evals versions, which may differ. A scenario that could not be loaded, a report from an older runner, or any changed scenario makes the comparison incompatible: it lists the reasons and reports no regression or improvement.
+Reports are compared only when they ran the same scenarios the same way: the same mode and model, and, for every scenario in both, the same definition, checks and workspace fixture (and the same `faux` script for faux runs). Each report records these as SHA-256 fingerprints, plus the October and evals versions, which may differ. A report from an older runner, a report missing or mangling a field the comparison reads, or any changed scenario makes the comparison incompatible: it lists the reasons and reports no regression or improvement. A baseline file that is missing or not valid JSON also exits 2.
+
+A scenario that fails to load is recorded under its directory path rather than its id, so it usually shows as its old id `missing` (a regression) plus the path `added`. A scenario that loads but cannot run keeps its id and fingerprint and is reported as `regressed` with the new error.
 
 Exit status with `--baseline`:
 

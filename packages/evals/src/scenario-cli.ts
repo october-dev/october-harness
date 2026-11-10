@@ -28,7 +28,18 @@ const { values } = parseArgs({
 
 if (values.gate && !values.baseline) throw new Error("--gate compares against a baseline; pass --baseline <report>.");
 // Read the baseline first, so a bad path fails before any scenario runs.
-const baseline = values.baseline ? await readScenarioReport(values.baseline) : undefined;
+let baseline: unknown;
+if (values.baseline) {
+	try {
+		baseline = await readScenarioReport(values.baseline);
+	} catch (error) {
+		// Exit 2 means "cannot be compared"; 1 would read as a regression under --gate.
+		process.stderr.write(
+			`Cannot compare: the baseline ${values.baseline} could not be read as JSON (${error instanceof Error ? error.message : String(error)}).\n`,
+		);
+		process.exit(2);
+	}
+}
 if (Boolean(values.provider) !== Boolean(values.model))
 	throw new Error("Pass both --provider and --model, or neither.");
 const model: ScenarioModelSelection | undefined =
