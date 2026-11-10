@@ -178,11 +178,16 @@ describe("scenario baseline comparison", () => {
 });
 
 describe("comparison input validation", () => {
-	const valid = () => JSON.parse(JSON.stringify(report([result("a", [true])])));
-	const breaks: Record<string, (value: Record<string, any>) => void> = {
+	type ValidationFixture = Record<string, unknown> & { scenarios: Record<string, unknown>[] };
+
+	const valid = (): ValidationFixture => {
+		const scenario = result("a", [true]);
+		return { ...report([scenario]), scenarios: [{ ...scenario }] };
+	};
+	const breaks: Record<string, (value: ValidationFixture) => void> = {
 		"missing verdict": (value) => delete value.scenarios[0].passed,
 		"malformed check entry": (value) => {
-			value.scenarios[0].checks[0] = { check: 5, passed: "yes" };
+			value.scenarios[0].checks = [{ check: 5, passed: "yes" }];
 		},
 		"non-array errors": (value) => {
 			value.scenarios[0].errors = {};
@@ -202,6 +207,20 @@ describe("comparison input validation", () => {
 		expect(comparison).toMatchObject({ comparable: false, regressions: 0, scenarios: [] });
 		expect(comparison.problems[0]).toMatch(/^Baseline is not a valid scenario report: /);
 		expect(formatScenarioComparison(comparison)).not.toMatch(/improved|No regressions/);
+	});
+
+	// #51: malformed version metadata must be rejected before string conversion.
+	it("rejects an object-valued report version without throwing", () => {
+		const good = report([result("a", [true])]);
+		const damaged = { ...good, reportVersion: { toString: null } };
+		for (const [baseline, current] of [
+			[damaged, good],
+			[good, damaged],
+		]) {
+			const comparison = compareScenarioReports(baseline, current);
+			expect(comparison).toMatchObject({ comparable: false, regressions: 0, scenarios: [] });
+			expect(comparison.problems[0]).toMatch(/is not a scenario report\./);
+		}
 	});
 
 	it("rejects an unreadable baseline file instead of comparing it", async () => {

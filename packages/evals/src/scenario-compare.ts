@@ -105,7 +105,7 @@ export type ScenarioComparison =
 function parseReport(label: string, value: unknown): { report: ComparableReport } | { problems: string[] } {
 	const version =
 		typeof value === "object" && value !== null ? (value as { reportVersion?: unknown }).reportVersion : undefined;
-	if (version === undefined) return { problems: [`${label} is not a scenario report.`] };
+	if (typeof version !== "number") return { problems: [`${label} is not a scenario report.`] };
 	if (version !== SCENARIO_REPORT_VERSION) {
 		return {
 			problems: [
