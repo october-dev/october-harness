@@ -516,6 +516,19 @@ discard October's commits.
 | 2026-09-05 | `da840b6216578c2a571d0374ac6a2091a83f9d91` | 0.85.1 |
 | 2026-09-22 | `95fbc04997eaee961eb673fa7923e9220609ebd5` | 0.87.0 |
 | 2026-09-22 (follow-up) | `d201760ffee16564aa8d9a759e0c85b70db33674` | 0.87.0 |
+| 2026-11-02 | `642e30b68930a644050794011555a04ed9027eb4` | 1.5.0 |
+| 2026-11-09 | `4ea8837927564c592b1d184c956ab7d28c88119b` | 1.5.1 |
+
+2026-11-09: merged 343 upstream commits through `4ea883792` (Pi 1.5.1): shell
+`auth login`/`auth logout`, idle prompt cache warming (new default), Anthropic message threads,
+bash timeout reporting when background processes hold the pipes, graceful RPC/print shutdown on
+a single signal, prerelease-safe changelog version compare, Fork option for a missing session
+cwd, and the upstream `apps/p2`/`apps/p3` workspaces. October keeps its top-level
+`login`/`logout`, SIGINT graceful shutdown (exit 130), the October default model, function-valued
+runtime credentials with store fallback, suppressed startup changelog, and "no catalog without a
+configured base URL". Workspace dependencies move to Pi 1.5.1; the October package version stays
+`1.5.0-october.1` (source sync, not a release). Root and installer lockfiles were regenerated
+without lifecycle scripts; undici is unchanged at 8.12.3.
 
 2026-09-22 follow-up: merged the two additional upstream commits through `d201760ff`
 (`8158b0321` and the upstream merge commit). These add versioned document storage in

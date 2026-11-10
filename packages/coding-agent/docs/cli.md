@@ -12,6 +12,8 @@ october uninstall <source> [options]
 october update [target] [options]
 october list
 october config [options]
+october auth login <provider> [--api-key] [--no-browser]
+october auth logout <provider>
 october auth <check|print-api-key|print-bearer-token> [options]
 october mcp <add|remove|list|login|logout> [options]
 ```
@@ -303,11 +305,22 @@ export PI_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
 
 ## Credential commands
 
+`pi auth login <provider>` logs in to a provider in the terminal and exits, without starting a session. It signs in with an account and opens the browser, like `/login <provider>`. Providers without account sign-in ask for an API key. Logging in to Radius also adds the Radius MCP server to `~/.pi/agent/mcp.json` when no global server uses that login yet. It requires an interactive terminal.
+
+| Option | Description |
+|---|---|
+| `--api-key` | Save an API key instead of signing in with an account; the key is read without echoing it |
+| `--no-browser` | Do not open a browser; use the provider's other sign-in method, such as a device code, for example over SSH. Asks when there are several. Not allowed with `--api-key` |
+
+`pi auth logout <provider>` removes the credentials that `pi auth login` or `/login` stored, like `/logout`. Environment variables and `models.json` config are unchanged. It exits with status `0` when nothing is stored, so it is safe to repeat.
+
 ```sh
+october auth login radius
+october auth logout radius
 october auth check --provider openai --json
 ```
 
-Authentication commands require `--provider <provider>` or `--model <model>`. See [Providers](providers.md) for supported methods.
+The other authentication commands require `--provider <provider>` or `--model <model>`. See [Providers](providers.md) for supported methods.
 
 | Command | Description |
 |---|---|

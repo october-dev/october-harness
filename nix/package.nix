@@ -64,6 +64,7 @@ let
       mkdir -p "$out"
       pack_package packages/schema schema
       pack_package packages/telemetry telemetry
+      pack_package packages/schema schema
       pack_package packages/ai ai
       pack_package packages/tui tui
       pack_package packages/agent agent
@@ -86,6 +87,7 @@ let
       "node_modules/@earendil-works/pi-codemode" = workspacePackages + "/codemode.tgz";
       "node_modules/@october-dev/october" = workspacePackages + "/coding-agent.tgz";
       "node_modules/@earendil-works/pi-mcp" = workspacePackages + "/mcp.tgz";
+      "node_modules/@earendil-works/pi-schema" = workspacePackages + "/schema.tgz";
       "node_modules/@earendil-works/pi-telemetry" = workspacePackages + "/telemetry.tgz";
       "node_modules/@earendil-works/pi-tui" = workspacePackages + "/tui.tgz";
     };

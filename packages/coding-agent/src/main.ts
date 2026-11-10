@@ -28,6 +28,9 @@ import {
 	printAuthCommandHelp,
 	validateAuthCommandArgs,
 } from "./cli/auth-command.ts";
+import { runAuthLogin } from "./cli/auth-login.ts";
+import { runAuthLogout } from "./cli/auth-logout.ts";
+import { createProcessLoginTerminal } from "./cli/auth-terminal.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
@@ -56,8 +59,8 @@ import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
 	formatMissingSessionCwdPrompt,
 	getMissingSessionCwdIssue,
+	getMissingSessionCwdOptions,
 	MissingSessionCwdError,
-	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
 import { assertValidSessionId, getDefaultSessionDirPath, SessionManager } from "./core/session-manager.ts";
 import {
@@ -165,9 +168,53 @@ function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
 	return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
 }
 
+async function runAuthLoginCommand(args: string[]): Promise<number> {
+	const cwd = process.cwd();
+	const agentDir = getAgentDir();
+	const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
+	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
+	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false, signal: AbortSignal.timeout(15_000) });
+
+	const controller = new AbortController();
+	const interrupt = () => controller.abort();
+	process.on("SIGINT", interrupt);
+	try {
+		return await runAuthLogin(args, {
+			modelRuntime,
+			terminal: createProcessLoginTerminal(interrupt),
+			agentDir,
+			cwd,
+			getDeviceId: () => settingsManager.getOrCreateDeviceId(),
+			signal: controller.signal,
+		});
+	} finally {
+		process.off("SIGINT", interrupt);
+	}
+}
+
+async function runAuthLogoutCommand(args: string[]): Promise<number> {
+	const signal = AbortSignal.timeout(15_000);
+	const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false, signal });
+	return runAuthLogout(args, {
+		modelRuntime,
+		terminal: { write: (line) => console.log(line), error: (line) => console.error(line) },
+		signal,
+	});
+}
+
 async function runAuthCommand(args: string[]): Promise<boolean> {
 	if (isAuthCommandHelp(args)) {
 		printAuthCommandHelp();
+		return true;
+	}
+	if (args[0] === "auth" && args[1] === "login") {
+		// main() already applied --offline.
+		process.exitCode = await runAuthLoginCommand(args.slice(2).filter((arg) => arg !== "--offline"));
+		return true;
+	}
+	if (args[0] === "auth" && args[1] === "logout") {
+		process.exitCode = await runAuthLogoutCommand(args.slice(2).filter((arg) => arg !== "--offline"));
 		return true;
 	}
 
@@ -743,16 +790,6 @@ function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | u
 	return paths?.map((value) => (isLocalPath(value) ? resolvePath(value, cwd) : value));
 }
 
-async function promptForMissingSessionCwd(
-	issue: SessionCwdIssue,
-	settingsManager: SettingsManager,
-): Promise<string | undefined> {
-	return showStartupSelector(settingsManager, formatMissingSessionCwdPrompt(issue), [
-		{ label: "Continue", value: issue.fallbackCwd },
-		{ label: "Cancel", value: undefined },
-	]);
-}
-
 export interface MainOptions {
 	extensionFactories?: InlineExtension[];
 }
@@ -939,11 +976,23 @@ export async function main(args: string[], options?: MainOptions) {
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		if (appMode === "interactive") {
-			const selectedCwd = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
-			if (!selectedCwd) {
-				process.exit(0);
+			const sessionFile = missingSessionCwdIssue.sessionFile!;
+			const choice = await showStartupSelector(
+				startupSettingsManager,
+				formatMissingSessionCwdPrompt(missingSessionCwdIssue),
+				getMissingSessionCwdOptions(missingSessionCwdIssue),
+			);
+			switch (choice) {
+				case "continue":
+					sessionManager = SessionManager.open(sessionFile, sessionDir, cwd);
+					break;
+				// Fork like `--session <id>` from another project, so the choice sticks without rewriting history (#11060).
+				case "fork":
+					sessionManager = forkSessionOrExit(sessionFile, cwd, sessionDir);
+					break;
+				case undefined:
+					process.exit(0);
 			}
-			sessionManager = SessionManager.open(missingSessionCwdIssue.sessionFile!, sessionDir, selectedCwd);
 		} else {
 			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
 			process.exit(1);
@@ -1236,6 +1285,7 @@ export async function main(args: string[], options?: MainOptions) {
 			// (Kitty keyboard protocol, device attributes, cell size) before restoring the terminal.
 			await new Promise((resolve) => setTimeout(resolve, 150));
 			interactiveMode.stop();
+			await runtime.dispose();
 			stopThemeWatcher();
 			printTimings();
 			if (process.stdout.writableLength > 0) {
