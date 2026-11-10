@@ -3310,6 +3310,7 @@ Use `ctx.mode === "tui"` before TUI-specific features (`custom()`, component fac
 
 The [Public Extension Testing Kit](extension-testing.md) provides a deterministic faux model and October's standard extension runtime for testing extension factories, tools, events, blocking, cancellation, and cleanup from a separate extension project.
 
+<a id="use-examples-as-the-implementation-reference"></a>
 ## Examples Reference
 
 All examples in [examples/extensions/](../examples/extensions/).

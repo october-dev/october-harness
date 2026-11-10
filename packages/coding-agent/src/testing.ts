@@ -147,20 +147,20 @@ export async function createExtensionTestHarness(
 			async dispose() {
 				if (disposal) return disposal;
 				disposal = (async () => {
-					const errors: unknown[] = [];
+					const failures: unknown[] = [];
 					try {
 						await session?.abort();
 					} catch (error) {
-						errors.push(error);
+						failures.push(error);
 					}
 					for (const cleanup of cleanups.reverse()) {
 						try {
 							await cleanup();
 						} catch (error) {
-							errors.push(error);
+							failures.push(error);
 						}
 					}
-					if (errors.length) throw new AggregateError(errors, "Extension test harness cleanup failed");
+					if (failures.length) throw new AggregateError(failures, "Extension test harness cleanup failed");
 				})();
 				return disposal;
 			},

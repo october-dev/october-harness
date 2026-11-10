@@ -1,13 +1,17 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentToolResult } from "../src/core/extensions/types.ts";
 import type { BashOperations } from "../src/core/tools/bash.ts";
-import { createExtensionTestHarness, type ExtensionTestHarness } from "../src/testing.ts";
+import {
+	createExtensionTestHarness,
+	type ExtensionTestHarness,
+	fauxAssistantMessage,
+	fauxToolCall,
+} from "../src/testing.ts";
 
 const harnesses: ExtensionTestHarness[] = [];
 

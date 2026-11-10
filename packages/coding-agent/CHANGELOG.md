@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a public extension testing kit with a deterministic faux model, runtime events and errors, cancellation, reload support, and cleanup. See [Testing Extensions](docs/extension-testing.md) ([#55](https://github.com/october-dev/october-harness/pull/55) by [@flam3z3122](https://github.com/flam3z3122)).
+
 ## [1.5.1-october.1] - 2026-11-09
 
 ### New Features
@@ -13,7 +17,6 @@
 
 ### Added
 
-- Added a public extension testing kit with a deterministic faux model, runtime events and errors, cancellation, reload support, and cleanup. See [Testing Extensions](docs/extension-testing.md) ([#55](https://github.com/october-dev/october-harness/pull/55) by [@flam3z3122](https://github.com/flam3z3122)).
 - Added `october local-models`, an opt-in command that finds models served by local Ollama, LM Studio, vLLM, or other OpenAI-compatible servers on loopback addresses, previews the `models.json` entries, and writes them only after confirmation. See [Find local models automatically](docs/models.md#find-local-models-automatically) ([#40](https://github.com/october-dev/october-harness/pull/40) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 - Added `october doctor` to check the installation, settings, model credentials, managed October session, and October Bus setup without changing anything. `--json` prints a versioned report with secrets redacted, and `--probe` adds provider, proxy, and October Bus connectivity checks. See [Setup diagnostics](docs/cli.md#setup-diagnostics) ([#53](https://github.com/october-dev/october-harness/pull/53) by [@RClaudiuM](https://github.com/RClaudiuM)).
 
