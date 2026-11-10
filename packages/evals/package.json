@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/pi-evals",
-	"version": "1.5.0",
+	"version": "1.5.1",
 	"private": true,
 	"type": "module",
 	"scripts": {
@@ -12,11 +12,11 @@
 		"test": "vitest run --config vitest.test.config.ts"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-ai": "1.5.0",
+		"@earendil-works/pi-ai": "1.5.1",
 		"@types/node": "22.19.19",
 		"@vitest-evals/core": "0.15.0",
 		"vitest": "4.1.12",
 		"vitest-evals": "0.15.0",
-		"@october-dev/october": "1.5.0-october.1"
+		"@october-dev/october": "1.5.1-october.1"
 	}
 }

@@ -310,10 +310,11 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} config [-l]               Open TUI to enable/disable package resources (Tab switches scope)
   ${APP_NAME} login [provider]          Connect an October account, another provider, or an API key
   ${APP_NAME} logout [october]          Remove a stored October token
-  ${APP_NAME} auth <command>            Print credentials or check provider readiness
+  ${APP_NAME} doctor [--json] [--probe] Check installation, configuration, models, and Bus setup
+  ${APP_NAME} auth <command>            Log in or out, print credentials, or check provider readiness
   ${APP_NAME} mcp <command>             Manage MCP servers
   ${APP_NAME} local-models              Find models on local servers (Ollama, LM Studio, vLLM) and add them
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/login/mcp/local-models
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/login/doctor/mcp/local-models
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider to search for --model (requires --model)

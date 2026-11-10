@@ -69,7 +69,11 @@ jobs:
 
       # pi.dev serves the catalog to released pi >= MINIMUM_PI_VERSION. Fail before
       # publishing if the latest release's code cannot handle it.
+      # Upstream-only: the check compiles that release from its v<version> git tag.
+      # October publishes no catalog (OCTOBER_CATALOG_BASE_URL is opt-in) and its
+      # repository carries no pi release tags.
       - name: Check the model catalog against the latest release
+        if: ${{ github.repository == 'earendil-works/pi' }}
         run: npm run check:model-catalog-compat
 
       - name: Upload model catalog JSON
@@ -81,7 +85,8 @@ jobs:
           retention-days: 14
 
   publish:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    # Uploads to pi.dev's R2 bucket with pi's credentials, so it only runs upstream.
+    if: ${{ github.repository == 'earendil-works/pi' && (github.event_name == 'schedule' || github.event_name == 'workflow_run' || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}
     needs: generate
     runs-on: ubuntu-latest
     environment: pi-model-upload
