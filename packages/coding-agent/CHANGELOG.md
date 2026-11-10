@@ -5,6 +5,7 @@
 ### Changed
 
 - Synced upstream Pi 1.5.1: shell `october auth login`/`auth logout`, idle prompt cache warming by default, Anthropic message threads, clearer bash timeouts when background processes hold the output pipes, a Fork option when a session's directory no longer exists, and newer provider default models. October's top-level `october login`/`logout`, SIGINT graceful shutdown, and October default model are unchanged.
+- Updated the default packages to `pi-mcp-adapter@7.0.1`, `pi-web-access@0.47.0`, `@juicesharp/rpiv-ask-user-question@2.15.0`, `@juicesharp/rpiv-todo@2.15.0`, `@narumitw/pi-plan-mode@0.60.0`, and `pi-lens@4.4.10`. Installations still on the previous October pins move to these on the next online start; versions you chose yourself are not changed.
 
 ### Fixed
 

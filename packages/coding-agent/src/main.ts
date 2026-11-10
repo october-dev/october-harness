@@ -942,9 +942,14 @@ export async function main(args: string[], options?: MainOptions) {
 	// listing, and package/config commands never trigger the first-run package install.
 	if (!parsed.help && parsed.listModels === undefined && !parsed.noExtensions) {
 		const seededPackages = seedOctoberDefaultPackages(startupSettingsManager);
-		if (seededPackages.length > 0) {
+		if (seededPackages.added.length > 0) {
 			console.error(
-				`${APP_NAME}: added default packages ${seededPackages.join(", ")}. They install automatically; remove any with \`${APP_NAME} remove <source>\`.`,
+				`${APP_NAME}: added default packages ${seededPackages.added.join(", ")}. They install automatically; remove any with \`${APP_NAME} remove <source>\`.`,
+			);
+		}
+		if (seededPackages.upgraded.length > 0) {
+			console.error(
+				`${APP_NAME}: updated default packages ${seededPackages.upgraded.map(({ from, to }) => `${from} -> ${to}`).join(", ")}. They install automatically.`,
 			);
 		}
 	}
