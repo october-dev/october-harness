@@ -177,18 +177,20 @@ export function compareVersions(v1: ChangelogEntry, v2: ChangelogEntry): number 
 }
 
 /**
- * Get entries newer than lastVersion.
- *
- * Uses the leading x.y.z tuple so fork suffixes stay out of the compare:
- * `0.84.3-october.1` is 0.84.3, not 0.84.0 (`Number("3-october")` is NaN).
- * Interactive startup still never renders these entries for October.
+ * Get entries newer than lastVersion, or undefined when lastVersion has no major.minor.patch to compare against
  */
-export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] {
-	const versionMatch = lastVersion.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
+export function getNewEntries(entries: ChangelogEntry[], lastVersion: string): ChangelogEntry[] | undefined {
+	// Read only the leading major.minor.patch, like the changelog headings, so a prerelease such as
+	// 0.1.5-20261020.7 counts as 0.1.5 and its notes are not shown again on every launch (#11703).
+	// Alternatives considered: plain string comparison orders 0.10.0 before 0.9.0; numeric localeCompare
+	// works by accident and is locale-dependent; strict semver orders 0.1.5-x before 0.1.5, which repeats
+	// the [0.1.5] notes forever.
+	const parts = lastVersion.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/);
+	if (!parts) return undefined;
 	const last: ChangelogEntry = {
-		major: versionMatch ? Number.parseInt(versionMatch[1], 10) : 0,
-		minor: versionMatch ? Number.parseInt(versionMatch[2], 10) : 0,
-		patch: versionMatch ? Number.parseInt(versionMatch[3], 10) : 0,
+		major: Number(parts[1]),
+		minor: Number(parts[2]),
+		patch: Number(parts[3]),
 		content: "",
 	};
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { MissingSessionCwdChoice } from "../src/core/session-cwd.ts";
 import { PortableSessionError, SessionImportFileNotFoundError } from "../src/core/session-portable.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
@@ -18,7 +19,7 @@ type ImportCommandContext = {
 	handleRuntimeSessionChange: () => Promise<void>;
 	renderCurrentSessionState: () => void;
 	handleFatalRuntimeError: (prefix: string, error: unknown) => Promise<never>;
-	promptForMissingSessionCwd: (error: unknown) => Promise<string | undefined>;
+	promptForMissingSessionCwd: (error: unknown) => Promise<MissingSessionCwdChoice | undefined>;
 	getPathCommandArgument: (text: string, command: PathCommand) => string | undefined;
 };
 

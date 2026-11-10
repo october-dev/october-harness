@@ -56,8 +56,8 @@ describe("October interactive startup changelog", () => {
 			{ major: 0, minor: 84, patch: 2, content: "## [0.84.2]\npi notes" },
 			{ major: 0, minor: 84, patch: 3, content: "## [0.84.3]\nmore pi notes" },
 		];
-		expect(getNewEntries(entries, "0.84.3-october.1").map((entry) => `${entry.minor}.${entry.patch}`)).toEqual([]);
-		expect(getNewEntries(entries, "0.84.2-october.3").map((entry) => `${entry.minor}.${entry.patch}`)).toEqual([
+		expect(getNewEntries(entries, "0.84.3-october.1")?.map((entry) => `${entry.minor}.${entry.patch}`)).toEqual([]);
+		expect(getNewEntries(entries, "0.84.2-october.3")?.map((entry) => `${entry.minor}.${entry.patch}`)).toEqual([
 			"84.3",
 		]);
 	});
