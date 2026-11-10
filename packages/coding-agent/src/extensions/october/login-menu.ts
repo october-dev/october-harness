@@ -1,4 +1,5 @@
 import type { ModelRuntime } from "../../core/model-runtime.ts";
+import { compareProviders } from "../../core/preferred-providers.ts";
 import type { AuthSelectorProvider } from "../../modes/interactive/components/oauth-selector.ts";
 
 export const LOGIN_MENU_TITLE = "Connect a provider";
@@ -40,5 +41,6 @@ export function getLoginProviderOptions(
 			});
 		}
 	}
-	return options.sort((a, b) => a.name.localeCompare(b.name));
+	// The sort is stable, so a provider's account option stays above its API key option.
+	return options.sort(compareProviders);
 }
