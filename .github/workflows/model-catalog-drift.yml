@@ -2,7 +2,8 @@ name: Model catalog drift
 
 # `npm run build` regenerates the model catalog from live provider data, so a provider removing a
 # model can break CI for every pull request without any code change. This checks main against the
-# live catalog daily and keeps one tracking issue open while it is broken.
+# live catalog daily, keeps one tracking issue open while it is broken, and closes it once main
+# passes again.
 
 on:
   schedule:
@@ -21,6 +22,8 @@ jobs:
   drift:
     if: github.repository == 'october-dev/october-harness'
     runs-on: ubuntu-latest
+    env:
+      DRIFT_ISSUE_TITLE: Model catalog drift breaks CI
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,12 +50,14 @@ jobs:
         continue-on-error: true
         run: npx --no-install tsc --noEmit 2>&1 | tee typecheck.log; exit "${PIPESTATUS[0]}"
 
+      # The -t filter must equal the test title in packages/coding-agent/test/model-resolver.test.ts:
+      # vitest exits 0 when it matches no test, which would pass this check without running it.
       - name: Check that every provider default still exists
         id: defaults
         continue-on-error: true
         working-directory: packages/coding-agent
         run: |
-          npx vitest --run test/model-resolver.test.ts -t "built-in defaults exist" 2>&1 | tee ../../defaults.log
+          npx vitest --run test/model-resolver.test.ts -t "built-in chat providers have defaults in their generated catalogs" 2>&1 | tee ../../defaults.log
           exit "${PIPESTATUS[0]}"
 
       - name: Report drift
@@ -61,7 +66,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Model catalog drift breaks CI"
           {
             echo "The daily drift check found code that no longer matches the live model catalog: $RUN_URL"
             echo
@@ -71,10 +75,22 @@ jobs:
             grep -h -E "error TS|AssertionError|should exist in its generated catalog" typecheck.log defaults.log | sed -E 's/(error TS[0-9]+: .{0,160}).*/\1/' | head -40
             echo '```'
           } > body.md
-          number=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          number=$(gh issue list --state open --search "\"$DRIFT_ISSUE_TITLE\" in:title" --json number --jq '.[0].number // empty')
           if [ -n "$number" ]; then
             gh issue comment "$number" --body-file body.md
           else
-            gh issue create --title "$title" --body-file body.md
+            gh issue create --title "$DRIFT_ISSUE_TITLE" --body-file body.md
           fi
           exit 1
+
+      # Only main counts: a manual run on a branch must not close the issue while main is broken.
+      - name: Close the tracking issue
+        if: github.ref == 'refs/heads/main' && steps.typecheck.outcome == 'success' && steps.defaults.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          numbers=$(gh issue list --state open --author "app/github-actions" --search "\"$DRIFT_ISSUE_TITLE\" in:title" --json number,title --jq '.[] | select(.title == env.DRIFT_ISSUE_TITLE) | .number')
+          for number in $numbers; do
+            gh issue close "$number" --comment "The daily drift check passed again: $RUN_URL"
+          done
