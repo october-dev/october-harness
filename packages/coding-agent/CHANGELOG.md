@@ -8,6 +8,13 @@
 
 - **Pi 1.5.1**: shell `october auth login <provider>` and `october auth logout <provider>`, idle prompt cache warming, Anthropic message threads, and the other upstream changes listed under [1.5.1] below.
 - **Updated default packages**: the bundled MCP, web access, question, todo, plan mode, and lens packages move to newer reviewed versions, and installations on the previous October pins are updated automatically. See [Included packages](https://github.com/october-dev/october-harness/blob/october-v1.5.1-october.1/README.md#included-packages).
+- **Setup diagnostics**: `october doctor` checks the installation, settings, credentials, and October Bus setup without changing anything. See [Setup diagnostics](docs/cli.md#setup-diagnostics).
+- **Local model discovery**: `october local-models` finds models served by local Ollama, LM Studio, vLLM, or other OpenAI-compatible servers and adds them after confirmation. See [Find local models automatically](docs/models.md#find-local-models-automatically).
+
+### Added
+
+- Added `october local-models`, an opt-in command that finds models served by local Ollama, LM Studio, vLLM, or other OpenAI-compatible servers on loopback addresses, previews the `models.json` entries, and writes them only after confirmation. See [Find local models automatically](docs/models.md#find-local-models-automatically) ([#40](https://github.com/october-dev/october-harness/pull/40) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
+- Added `october doctor` to check the installation, settings, model credentials, managed October session, and October Bus setup without changing anything. `--json` prints a versioned report with secrets redacted, and `--probe` adds provider, proxy, and October Bus connectivity checks. See [Setup diagnostics](docs/cli.md#setup-diagnostics) ([#53](https://github.com/october-dev/october-harness/pull/53) by [@RClaudiuM](https://github.com/RClaudiuM)).
 
 ### Changed
 

@@ -32,9 +32,11 @@ import { runAuthLogin } from "./cli/auth-login.ts";
 import { runAuthLogout } from "./cli/auth-logout.ts";
 import { createProcessLoginTerminal } from "./cli/auth-terminal.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
+import { runDoctorCommand } from "./cli/doctor.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
+import { loadLocalModelsCommand } from "./cli/local-models.lazy.ts";
 import { handleOctoberLoginCommand } from "./cli/october-login.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
@@ -812,6 +814,12 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	// Before install cleanup and settings bootstrap: doctor must not change anything it inspects.
+	if (args[0] === "doctor") {
+		process.exitCode = await runDoctorCommand(args.slice(1), { agentDir: getAgentDir() });
+		return;
+	}
+
 	if (process.platform === "win32") {
 		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
 	}
@@ -852,6 +860,12 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (await handleConfigCommand(args, { extensionFactories: bootstrapExtensionFactories })) {
+		return;
+	}
+
+	if (args[0] === "local-models") {
+		const { runLocalModelsCommand } = await loadLocalModelsCommand();
+		process.exitCode = await runLocalModelsCommand(args.slice(1), { agentDir });
 		return;
 	}
 

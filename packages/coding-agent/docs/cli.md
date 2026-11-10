@@ -11,11 +11,13 @@ october remove <source> [options]
 october uninstall <source> [options]
 october update [target] [options]
 october list
+october doctor [--json] [--probe] [--timeout <ms>]
 october config [options]
 october auth login <provider> [--api-key] [--no-browser]
 october auth logout <provider>
 october auth <check|print-api-key|print-bearer-token> [options]
 october mcp <add|remove|list|login|logout> [options]
+october local-models [--url <url>] [--provider <id>] [--timeout <ms>] [--yes]
 ```
 
 <a id="modes"></a>
@@ -339,6 +341,39 @@ The other authentication commands require `--provider <provider>` or `--model <m
 
 Credential-printing commands write secrets to stdout.
 
+## Setup diagnostics
+
+```sh
+october doctor
+october doctor --json --probe
+```
+
+`october doctor` checks the local setup and prints one line per check with a suggested fix for each problem. It exits with `1` when a check fails and `0` otherwise, warnings included.
+
+By default it only reads files and environment variables. It does not load extensions, start services, install packages, or write anything, including settings lock files and the debug log. An October session injected by October Desktop or another launching app is inspected as it is: doctor never refreshes it, contacts the Desktop token route, or runs `OCTOBER_TOKEN_COMMAND`, so an expired session is reported as unverified rather than refreshed. `--probe` adds checks that leave the machine: an HTTP request without credentials to the default model's provider, and `october-bus doctor --json`, whose result is summarized rather than repeated. Each probe stops after `--timeout <ms>` (default 3000, at most 60000).
+
+The model checks use the global `~/.october/agent/settings.json` only: `defaultProvider`, `defaultModel`, and `enabledModels` overrides in a project's `.october/settings.json` are not applied, because doctor does not consult project trust. Project settings are still parsed for errors.
+
+| Check | Reports |
+|---|---|
+| `executable` | Version, entry point, and install method. When `october` on `PATH` is a different file, it is listed; it is a warning only when that file belongs to another installed copy of October, not for wrappers or version-manager shims |
+| `runtime` | Node.js or Bun version and platform. On a Node.js older than the minimum, `october` stops before any command runs and prints the required version |
+| `assets` | Themes, HTML export templates, and other files shipped with the package |
+| `config.settings` | Parse errors in the global and project `settings.json`, and an `httpProxy` value that is not a URL string |
+| `config.models` | Parse and schema errors in `~/.october/agent/models.json` |
+| `config.auth` | Parse errors in `~/.october/agent/auth.json`, and which providers have stored credentials |
+| `october.session` | The October session injected by October Desktop or another launching app: missing, valid, due for refresh, or expired, and whether it can be refreshed. Skipped outside such an app |
+| `models.default` | Whether the default model exists and its provider has credentials. A default October model that is not in the offline catalog is a warning, because that catalog lists only the built-in model and doctor does not ask the gateway |
+| `models.enabled` | `enabledModels` patterns that match no model with credentials |
+| `bus.env` | Incomplete or invalid `OCTOBER_BUS_*` variables, including an `OCTOBER_BUS_ADDRESS` that is not an http or https URL |
+| `bus.binary` | Which October Bus executable `october --team` would use |
+| `bus.scopes` | Whether `team-scopes.json` is valid and readable only by its owner |
+| `probe.proxy` | With `--probe`: whether the `httpProxy` setting or the `HTTPS_PROXY` and `HTTP_PROXY` variables (either case) can be used. When they cannot, the provider probe is skipped. Doctor sets up the proxy only here, so a malformed proxy variable does not stop the other checks |
+| `probe.provider` | With `--probe`: whether the default provider answers |
+| `bus.doctor` | With `--probe`: health and protocol version reported by October Bus |
+
+`--json` prints a report with `schemaVersion`, `version`, `ok`, `probe`, and `checks`. Each check has a stable `id`, a `status` of `pass`, `warn`, `fail`, or `skip`, a `summary`, and a `remediation` for problems. Credentials, tokens, and secret configuration values are replaced with `<redacted>`, and paths under the home directory start with `~`, so the output can be attached to an issue.
+
 ## MCP commands
 
 These commands work outside a session, so agents can run them through `bash`. See [MCP Servers](mcp.md).
@@ -355,3 +390,16 @@ These commands work outside a session, so agents can run them through `bash`. Se
 `add` and `remove` change `~/.october/agent/mcp.json`, or `.october/mcp.json` in the current directory with `--local` (`-l`). `add` also takes `--exposure <mode>` (see [Exposure](mcp.md#control-tool-exposure)) and `--description <text>` and does not connect; run `october mcp list` to check the server.
 
 Project `.october/mcp.json` files are only read for projects that are already trusted.
+
+## Local model discovery
+
+`october local-models` asks inference servers on this machine which models they serve and offers to add them to `~/.october/agent/models.json`. It runs only when you start it. See [Find local models automatically](models.md#find-local-models-automatically).
+
+| Command | Description |
+|---|---|
+| `october local-models` | Probe Ollama (`127.0.0.1:11434`), LM Studio (`127.0.0.1:1234`), and vLLM (`127.0.0.1:8000`), preview the entries, and ask before writing |
+| `october local-models --url <url> [--provider <id>]` | Probe one OpenAI-compatible server on `localhost`, `127.0.0.0/8`, or `[::1]` instead. `--provider` names it (default `local-<port>`); names of providers October already ships, such as `openai` or `llama.cpp`, are refused |
+| `--timeout <ms>` | Time limit per endpoint, from 1 to 60000 (default 1500) |
+| `--yes`, `-y` | Write without asking. Required when stdin is not a terminal |
+
+The command exits with `1` when no server answers, when `models.json` is invalid or has comments, when a discovered provider name conflicts with an existing provider at another address, or when nothing was written because confirmation was unavailable.
