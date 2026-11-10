@@ -14,8 +14,12 @@ This repository is October's fork of [pi](https://github.com/earendil-works/pi) 
 October can ship a first-party agent: one that carries October's own inference endpoint and joins
 the october-bus with **no configuration injected from outside**.
 
-**The design test: if october-desktop has to write a single file to make this work, the design is
-wrong.**
+**The design test: October's own endpoint, sign-in and bus must work with zero configuration. If
+october-desktop has to write a file to make *those* work, the design is wrong.** User-chosen custom
+endpoints are a separate matter and are allowed: a user may add providers in
+`~/.october/agent/models.json` (the upstream pi mechanism, see `packages/coding-agent/docs/models.md`),
+and Desktop may later offer a UI that writes that file on the user's behalf. Secrets in it should
+use `$ENV` interpolation, not literal keys.
 
 `README.md` is upstream's and stays that way. This file is the only October-owned doc at the root.
 
