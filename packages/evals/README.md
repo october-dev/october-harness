@@ -16,7 +16,7 @@ Runner code lives in `src/`:
 - `plan.ts` expands cases into `(case, variant, repetition)` tasks
 - `report.ts` reads Vitest JSON, pairs arms, and computes lift
 - `harness.ts` is the vitest-evals adapter
-- `scenario.ts`, `scenario-runner.ts`, `scenario-checks.ts`, `scenario-report.ts`, and `scenario-cli.ts` run deterministic scenarios (see [Scenario evals](#scenario-evals))
+- `scenario.ts`, `scenario-runner.ts`, `scenario-checks.ts`, `scenario-report.ts`, and `scenario-cli.ts` run deterministic scenarios, and `scenario-compare.ts` compares a run with a baseline (see [Scenario evals](#scenario-evals))
 
 Eval suites and their fixtures live under `evals/`. Deterministic scenarios live under `scenarios/`. Image build files live in `docker/`.
 
@@ -32,6 +32,30 @@ npm run eval:scenarios -w packages/evals
 The command prints a Markdown summary and writes `scenarios.json` and `summary.md` under `.eval/`. It exits nonzero if any scenario fails, and a scenario that cannot load or run is reported as a failure instead of stopping the others.
 
 During a run, tools see only a minimal environment (`PATH`, the temporary home, locale and temp directories), so a scenario cannot read provider keys or other host secrets. Scenarios run one at a time because each run changes the process environment. Pass `--scenarios <dir>` (repeatable) to run other packs instead of the bundled one, `--filter <text>` to select by path, and `--out <dir>` to choose the report directory.
+
+### Compare with a baseline
+
+Pass `--baseline <report>` (a report directory or its `scenarios.json`) to compare the new run with an earlier one, for example before and after an upstream merge or a release:
+
+```bash
+npm run eval:scenarios -w packages/evals -- --out .eval/baseline
+# ... change the harness ...
+npm run eval:scenarios -w packages/evals -- --baseline .eval/baseline --gate
+```
+
+The comparison is printed and written as `comparison.md` and `comparison.json` next to the new report. It lists newly failing checks, new run errors, missing and added scenarios, resolved checks, and the change in turns, tool calls, tokens and cost. A metric that either report lacks, such as the cost of a faux run, stays `n/a` instead of being counted as zero.
+
+Reports are compared only when they ran the same scenarios the same way: the same mode and model, and, for every scenario in both, the same definition, checks and workspace fixture (and the same `faux` script for faux runs). Each report records these as SHA-256 fingerprints, plus the October and evals versions, which may differ. A scenario that could not be loaded, a report from an older runner, or any changed scenario makes the comparison incompatible: it lists the reasons and reports no regression or improvement.
+
+Exit status with `--baseline`:
+
+| Status | Meaning |
+| --- | --- |
+| 2 | The reports cannot be compared. |
+| 1 | With `--gate`: a regression, meaning a newly failing check, a new run error, a scenario that passed and now fails, or a missing scenario. Without `--gate`: a scenario failed, as without a baseline. |
+| 0 | No regression (with `--gate`), or every scenario passed. |
+
+With `--gate`, a scenario that already failed in the baseline does not fail the gate. Run time is recorded but never gated, and nothing gates on turns, tokens or cost, because they vary between machines and real-model runs.
 
 ### Run against a real model
 

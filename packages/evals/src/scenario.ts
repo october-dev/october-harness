@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 
@@ -197,6 +198,76 @@ export async function writeRecordedScenario(
 	await writeFile(join(directory, "scenario.json"), `${JSON.stringify(recorded, null, "\t")}\n`);
 	if (workspaceDirectory) await cp(workspaceDirectory, join(directory, "workspace"), { recursive: true });
 	return directory;
+}
+
+/**
+ * SHA-256 identities of what a scenario run depends on, so two reports can tell whether they ran the
+ * same scenario. `script` is the faux model; it matters only when comparing faux runs.
+ */
+export type ScenarioFingerprint = {
+	/** Prompt, tools, model limits, compaction, permission mode and Bus tools. */
+	definition: string;
+	/** The `expect` checks, in order. */
+	checks: string;
+	/** The `faux` steps. */
+	script: string;
+	/** Every file under `workspace/` (path and content), or null when the scenario has no fixture. */
+	workspace: string | null;
+};
+
+function sha256(value: string | Buffer): string {
+	return createHash("sha256").update(value).digest("hex");
+}
+
+/** JSON with object keys sorted at every level, so formatting and key order never change a hash. */
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value !== null && typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>)
+			.filter(([, entry]) => entry !== undefined)
+			.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+		return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+async function hashTree(root: string): Promise<string> {
+	const files: string[] = [];
+	const visit = async (directory: string): Promise<void> => {
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			const path = join(directory, entry.name);
+			if (entry.isDirectory()) await visit(path);
+			else files.push(path);
+		}
+	};
+	await visit(root);
+	const hash = createHash("sha256");
+	// Forward slashes, sorted, so the same fixture hashes identically on every platform.
+	const entries = files.map((file) => ({ file, key: relative(root, file).split(sep).join("/") }));
+	entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+	for (const { file, key } of entries) {
+		hash.update(`${key}\0`);
+		hash.update(sha256(await readFile(file)));
+		hash.update("\0");
+	}
+	return hash.digest("hex");
+}
+
+export async function fingerprintScenario(scenario: LoadedScenario): Promise<ScenarioFingerprint> {
+	const {
+		directory: _directory,
+		workspaceDirectory,
+		description: _description,
+		faux,
+		expect,
+		...definition
+	} = scenario;
+	return {
+		definition: sha256(canonicalJson(definition)),
+		checks: sha256(canonicalJson(expect)),
+		script: sha256(canonicalJson(faux)),
+		workspace: workspaceDirectory ? await hashTree(workspaceDirectory) : null,
+	};
 }
 
 /** Find every scenario directory (one containing `scenario.json`) under `root`, sorted by path. */

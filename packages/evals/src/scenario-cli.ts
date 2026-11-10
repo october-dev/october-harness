@@ -1,6 +1,14 @@
+import { writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { discoverScenarios, type LoadedScenario, loadScenario, writeRecordedScenario } from "./scenario.ts";
+import {
+	discoverScenarios,
+	fingerprintScenario,
+	type LoadedScenario,
+	loadScenario,
+	writeRecordedScenario,
+} from "./scenario.ts";
+import { compareScenarioReports, formatScenarioComparison, readScenarioReport } from "./scenario-compare.ts";
 import { buildScenarioReport, formatScenarioMarkdown, writeScenarioReport } from "./scenario-report.ts";
 import { erroredResult, runScenario, type ScenarioModelSelection, type ScenarioResult } from "./scenario-runner.ts";
 
@@ -13,9 +21,14 @@ const { values } = parseArgs({
 		provider: { type: "string" },
 		model: { type: "string" },
 		record: { type: "string" },
+		baseline: { type: "string" },
+		gate: { type: "boolean" },
 	},
 });
 
+if (values.gate && !values.baseline) throw new Error("--gate compares against a baseline; pass --baseline <report>.");
+// Read the baseline first, so a bad path fails before any scenario runs.
+const baseline = values.baseline ? await readScenarioReport(values.baseline) : undefined;
 if (Boolean(values.provider) !== Boolean(values.model))
 	throw new Error("Pass both --provider and --model, or neither.");
 const model: ScenarioModelSelection | undefined =
@@ -42,7 +55,8 @@ for (const directory of directories) {
 	try {
 		result = await runScenario(scenario, { model });
 	} catch (error) {
-		results.push(erroredResult(scenario.id, error, model));
+		const fingerprint = await fingerprintScenario(scenario).catch(() => null);
+		results.push(erroredResult(scenario.id, error, model, fingerprint));
 		continue;
 	}
 	results.push(result);
@@ -56,3 +70,15 @@ const out = values.out ?? join(packageRoot, ".eval", `scenarios-${report.created
 await writeScenarioReport(out, report);
 process.stdout.write(`${formatScenarioMarkdown(report)}\nReport: ${out}\n`);
 process.exitCode = report.passed === report.total ? 0 : 1;
+
+if (baseline !== undefined) {
+	const comparison = compareScenarioReports(baseline, report);
+	const markdown = formatScenarioComparison(comparison);
+	await writeFile(join(out, "comparison.json"), `${JSON.stringify(comparison, null, "\t")}\n`);
+	await writeFile(join(out, "comparison.md"), markdown);
+	process.stdout.write(`\n${markdown}`);
+	// 2: the reports cannot be compared. With --gate, 1 means a regression against the baseline, so a
+	// scenario that already failed in the baseline does not fail the gate.
+	if (!comparison.comparable) process.exitCode = 2;
+	else if (values.gate) process.exitCode = comparison.regressions > 0 ? 1 : 0;
+}
