@@ -59,7 +59,7 @@ october local-models --url http://localhost:8080/v1 --provider sglang
 - Existing providers keep their settings. Only models missing from a provider with the same `baseUrl` are added; a same-named provider that points elsewhere is left unchanged.
 - A `models.json` with comments or trailing commas is not rewritten, because rewriting would drop them. The command prints the entries to add by hand instead.
 
-When a server reports a model's context length, as vLLM does with `max_model_len`, the entry gets that `contextWindow` and a `maxTokens` no larger than it. Ollama and LM Studio do not report one, so their models use the default limits; edit those entries to match the model, as described below. Servers that require an API key still need the manual setup.
+When a server reports a model's context length, as vLLM does with `max_model_len`, the entry gets that `contextWindow` and a `maxTokens` no larger than it. The command reads no context limit from Ollama or LM Studio (Ollama's listed model maximum is not the context it actually serves), so their models use the default limits; edit those entries to match the model, as described below. Models Ollama reports without the `completion` capability, such as the embedding model `nomic-embed-text`, are skipped because Ollama's chat endpoint rejects them. Servers that require an API key still need the manual setup.
 
 ## Configure a compatible endpoint
 

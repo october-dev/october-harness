@@ -194,6 +194,11 @@ export function parseModelList(format: ModelListFormat, body: unknown): Discover
 			continue;
 		}
 		if (models.some((model) => model.id === id)) continue;
+		// Ollama's /api/tags lists each model's capabilities; its chat endpoint rejects any model without
+		// "completion" (embedding, decision, image and speech models), so those would only fail when picked.
+		// Older Ollama versions omit the field; those models are kept.
+		const capabilities = format === "ollama" ? (entry as { capabilities?: unknown }).capabilities : undefined;
+		if (Array.isArray(capabilities) && !capabilities.includes("completion")) continue;
 		const contextWindow = format === "openai" ? (entry as { max_model_len?: unknown }).max_model_len : undefined;
 		const valid = typeof contextWindow === "number" && Number.isSafeInteger(contextWindow) && contextWindow > 0;
 		models.push(valid ? { id, contextWindow } : { id });
