@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added `/permissions`, which explains the session's tool permission policy: the selected mode and its source, any trusted project restriction, the active delegation ceiling, and whether read, edit and command tools are allowed, ask, or are blocked. Denials and approval prompts now name the layer that applied ([#48](https://github.com/october-dev/october-harness/issues/48)).
+- Added `/permissions`, which explains the session's tool permission policy: the selected mode and its source, any trusted project restriction, the active delegation ceiling, and whether read, edit and command tools are allowed, ask, or are blocked. Denials and approval prompts now name the layer that applied ([#62](https://github.com/october-dev/october-harness/pull/62) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 
 ## [1.5.1-october.1] - 2026-11-09
 
