@@ -50,12 +50,14 @@ jobs:
         continue-on-error: true
         run: npx --no-install tsc --noEmit 2>&1 | tee typecheck.log; exit "${PIPESTATUS[0]}"
 
+      # The -t filter must equal the test title in packages/coding-agent/test/model-resolver.test.ts:
+      # vitest exits 0 when it matches no test, which would pass this check without running it.
       - name: Check that every provider default still exists
         id: defaults
         continue-on-error: true
         working-directory: packages/coding-agent
         run: |
-          npx vitest --run test/model-resolver.test.ts -t "built-in defaults exist" 2>&1 | tee ../../defaults.log
+          npx vitest --run test/model-resolver.test.ts -t "built-in chat providers have defaults in their generated catalogs" 2>&1 | tee ../../defaults.log
           exit "${PIPESTATUS[0]}"
 
       - name: Report drift
