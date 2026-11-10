@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- `october local-models` no longer offers Ollama models that cannot chat, such as embedding models: it skips any model whose reported capabilities lack `completion` ([#54](https://github.com/october-dev/october-harness/pull/54)).
+- `october local-models` no longer offers Ollama models that cannot chat, such as embedding models: it skips any model whose reported capabilities lack `completion` ([#54](https://github.com/october-dev/october-harness/pull/54) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 
 ## [1.5.1-october.1] - 2026-11-09
 
