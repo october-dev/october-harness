@@ -1,6 +1,6 @@
 {
 	"name": "@october-dev/october",
-	"version": "1.5.0-october.1",
+	"version": "1.5.1-october.1",
 	"description": "October's coding agent — inference, TUI, and october-bus (a fork of pi)",
 	"type": "module",
 	"piConfig": {

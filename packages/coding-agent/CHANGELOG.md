@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.5.1-october.1] - 2026-11-09
+
+### New Features
+
+- **Pi 1.5.1**: shell `october auth login <provider>` and `october auth logout <provider>`, idle prompt cache warming, Anthropic message threads, and the other upstream changes listed under [1.5.1] below.
+- **Updated default packages**: the bundled MCP, web access, question, todo, plan mode, and lens packages move to newer reviewed versions, and installations on the previous October pins are updated automatically. See [Included packages](https://github.com/october-dev/october-harness/blob/october-v1.5.1-october.1/README.md#included-packages).
+
 ### Changed
 
 - Synced upstream Pi 1.5.1: shell `october auth login`/`auth logout`, idle prompt cache warming by default, Anthropic message threads, clearer bash timeouts when background processes hold the output pipes, a Fork option when a session's directory no longer exists, and newer provider default models. October's top-level `october login`/`logout`, SIGINT graceful shutdown, and October default model are unchanged.

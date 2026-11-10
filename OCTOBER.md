@@ -530,9 +530,10 @@ a single signal, prerelease-safe changelog version compare, Fork option for a mi
 cwd, and the upstream `apps/p2`/`apps/p3` workspaces. October keeps its top-level
 `login`/`logout`, SIGINT graceful shutdown (exit 130), the October default model, function-valued
 runtime credentials with store fallback, suppressed startup changelog, and "no catalog without a
-configured base URL". Workspace dependencies move to Pi 1.5.1; the October package version stays
-`1.5.0-october.1` (source sync, not a release). Root and installer lockfiles were regenerated
-without lifecycle scripts; undici is unchanged at 8.12.3.
+configured base URL". Workspace dependencies move to Pi 1.5.1, and the October package version
+moves to `1.5.1-october.1` for the release candidate. Root and installer lockfiles were regenerated
+without lifecycle scripts; undici is unchanged at 8.12.3. October's default packages were upgraded
+in the same change, with a one-time migration of previous October pins.
 
 2026-09-22 follow-up: merged the two additional upstream commits through `d201760ff`
 (`8158b0321` and the upstream merge commit). These add versioned document storage in

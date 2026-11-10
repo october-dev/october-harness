@@ -17,6 +17,6 @@
 		"@vitest-evals/core": "0.15.0",
 		"vitest": "4.1.12",
 		"vitest-evals": "0.15.0",
-		"@october-dev/october": "1.5.0-october.1"
+		"@october-dev/october": "1.5.1-october.1"
 	}
 }
