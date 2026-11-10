@@ -354,7 +354,7 @@ October adds these community Pi packages to your `packages` setting on first run
 | [`@narumitw/pi-plan-mode`](https://www.npmjs.com/package/@narumitw/pi-plan-mode) | A read-only planning mode (`/plan`) |
 | [`pi-lens`](https://www.npmjs.com/package/pi-lens) | LSP, linter, formatter, and type-check feedback while editing |
 
-They are ordinary packages: `october list` shows them, `october remove <source>` removes one for good, and a version you install yourself takes precedence. October Desktop-managed sessions and offline runs skip this step. These packages are maintained by their authors, not by October.
+They are ordinary packages: `october list` shows them, `october remove <source>` removes one for good, and a version you install yourself takes precedence. When October moves a default to a newer reviewed version, an installation still on the previous October pin is updated to it on the next online start; a version you chose is left alone. October Desktop-managed sessions and offline runs skip this step. These packages are maintained by their authors, not by October.
 
 Also worth a look, installed with `october install npm:<name>`: `pi-subagents` for scripted multi-agent workflows, `pi-background-tasks` for durable background shell tasks, `pi-goal-x` for tracked `/goal` planning, and observability integrations such as `@langfuse/pi-observability-plugin` and `@braintrust/pi-extension`.
 

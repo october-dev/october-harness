@@ -57,11 +57,11 @@ describe("October default packages", () => {
 	it("adds the defaults once, after the user's own packages", () => {
 		const settings = SettingsManager.inMemory({ packages: ["npm:some-user-package"] });
 
-		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual(DEFAULT_SOURCES);
+		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual({ added: DEFAULT_SOURCES, upgraded: [] });
 		expect(settings.getGlobalSettings().packages).toEqual(["npm:some-user-package", ...DEFAULT_SOURCES]);
 		expect(settings.getOctoberDefaultPackagesVersion()).toBe(OCTOBER_DEFAULT_PACKAGES_VERSION);
 
-		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual([]);
+		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual({ added: [], upgraded: [] });
 		expect(settings.getGlobalSettings().packages).toHaveLength(DEFAULT_SOURCES.length + 1);
 	});
 
@@ -69,11 +69,12 @@ describe("October default packages", () => {
 		const userMcp = { source: "npm:pi-mcp-adapter@2.30.0", skills: [] };
 		const settings = SettingsManager.inMemory({ packages: [userMcp] });
 
-		const added = seedOctoberDefaultPackages(settings, ONLINE);
+		const { added, upgraded } = seedOctoberDefaultPackages(settings, ONLINE);
 
 		expect(added.some((source) => source.startsWith("npm:pi-mcp-adapter@"))).toBe(false);
 		expect(settings.getGlobalSettings().packages?.[0]).toEqual(userMcp);
 		expect(added).toHaveLength(DEFAULT_SOURCES.length - 1);
+		expect(upgraded).toEqual([]);
 	});
 
 	it("does not re-add a default the user removed", () => {
@@ -81,17 +82,61 @@ describe("October default packages", () => {
 		seedOctoberDefaultPackages(settings, ONLINE);
 		settings.setPackages(DEFAULT_SOURCES.filter((source) => !source.startsWith("npm:pi-lens@")));
 
-		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual([]);
+		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual({ added: [], upgraded: [] });
 		expect(settings.getGlobalSettings().packages?.some((pkg) => String(pkg).startsWith("npm:pi-lens@"))).toBe(false);
 	});
 
 	it("skips Desktop-managed and offline runs without recording the defaults as seeded", () => {
 		for (const env of [{ OCTOBER_BUS_PORT: "4100" }, { PI_OFFLINE: "1" }, { PI_OFFLINE: "true" }]) {
 			const settings = SettingsManager.inMemory();
-			expect(seedOctoberDefaultPackages(settings, env)).toEqual([]);
+			expect(seedOctoberDefaultPackages(settings, env)).toEqual({ added: [], upgraded: [] });
 			expect(settings.getGlobalSettings().packages).toBeUndefined();
 			expect(settings.getOctoberDefaultPackagesVersion()).toBeUndefined();
 		}
+	});
+
+	it("moves users on a previous October pin to the current pin, once", () => {
+		const previousSources = OCTOBER_DEFAULT_PACKAGES.map((entry) => entry.previous[entry.previous.length - 1]!);
+		const [firstPrevious, ...otherPrevious] = previousSources;
+		const settings = SettingsManager.inMemory({
+			packages: ["npm:some-user-package", { source: firstPrevious!, skills: [] }, ...otherPrevious],
+			octoberDefaultPackagesVersion: 1,
+		});
+
+		const result = seedOctoberDefaultPackages(settings, ONLINE);
+
+		expect(result.added).toEqual([]);
+		expect(result.upgraded).toEqual(
+			OCTOBER_DEFAULT_PACKAGES.map((entry, index) => ({ from: previousSources[index], to: entry.source })),
+		);
+		const [firstCurrent, ...otherCurrent] = DEFAULT_SOURCES;
+		expect(settings.getGlobalSettings().packages).toEqual([
+			"npm:some-user-package",
+			{ source: firstCurrent, skills: [] },
+			...otherCurrent,
+		]);
+		expect(settings.getOctoberDefaultPackagesVersion()).toBe(OCTOBER_DEFAULT_PACKAGES_VERSION);
+		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual({ added: [], upgraded: [] });
+	});
+
+	it("leaves a user-chosen version and a removed default alone when upgrading pins", () => {
+		const settings = SettingsManager.inMemory({
+			packages: ["npm:pi-mcp-adapter@2.30.0"],
+			octoberDefaultPackagesVersion: 1,
+		});
+
+		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual({ added: [], upgraded: [] });
+		expect(settings.getGlobalSettings().packages).toEqual(["npm:pi-mcp-adapter@2.30.0"]);
+		expect(settings.getOctoberDefaultPackagesVersion()).toBe(OCTOBER_DEFAULT_PACKAGES_VERSION);
+	});
+
+	it("does not upgrade a pin before an offline run comes back online", () => {
+		const previous = OCTOBER_DEFAULT_PACKAGES[0]!.previous[0]!;
+		const settings = SettingsManager.inMemory({ packages: [previous], octoberDefaultPackagesVersion: 1 });
+
+		expect(seedOctoberDefaultPackages(settings, { PI_OFFLINE: "1" })).toEqual({ added: [], upgraded: [] });
+		expect(settings.getGlobalSettings().packages).toEqual([previous]);
+		expect(settings.getOctoberDefaultPackagesVersion()).toBe(1);
 	});
 
 	it("does not warn about loader-aliased typebox in a pinned default package", async () => {
@@ -103,5 +148,11 @@ describe("October default packages", () => {
 		const pinned = DEFAULT_SOURCES.find((source) => source.startsWith("npm:pi-web-access@"))!;
 		expect(await loadWarnings(pinned, { typebox: "^1.1.38", "@earendil-works/pi-ai": "*" })).toHaveLength(1);
 		expect(await loadWarnings("npm:pi-web-access@0.30.0", { typebox: "^1.1.38" })).toHaveLength(1);
+	});
+
+	it("treats a previous October pin like the current one at load time", async () => {
+		const previous = OCTOBER_DEFAULT_PACKAGES.find((entry) => entry.source.startsWith("npm:pi-web-access@"))!
+			.previous[0]!;
+		expect(await loadWarnings(previous, { typebox: "^1.1.38" })).toEqual([]);
 	});
 });
