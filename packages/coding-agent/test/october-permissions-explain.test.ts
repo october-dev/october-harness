@@ -17,7 +17,7 @@ import {
 	registerOctoberPermissions,
 	resolveOctoberPermissionModeWithSource,
 } from "../src/extensions/october/permissions.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { createHarness, createTestUiContext, type Harness } from "./suite/harness.ts";
 
 const harnesses: Harness[] = [];
 const directories: string[] = [];
@@ -136,6 +136,32 @@ describe("permission mode source", () => {
 });
 
 describe("/permissions explanation", () => {
+	// issue #48: inspection must not freeze policy before startup or the first tool call.
+	it.each([true, false])("keeps pre-start inspection read-only (bind=%s)", async (bind) => {
+		process.env.OCTOBER_PERMISSION_MODE = "bypass";
+		const harness = await createHarness({
+			tools: [tool("bash")],
+			extensionFactories: [registerOctoberPermissions],
+		});
+		harnesses.push(harness);
+		harness.settingsManager.setProjectTrusted(true);
+		mkdirSync(join(harness.tempDir, ".october"), { recursive: true });
+		const settingsPath = join(harness.tempDir, ".october", "settings.json");
+		writeFileSync(settingsPath, JSON.stringify({ permissionMode: "bypass" }));
+
+		const notify = vi.fn();
+		harness.session.extensionRunner.setUIContext(createTestUiContext({ notify }), "tui");
+		await harness.session.prompt("/permissions");
+		expect(notify).toHaveBeenLastCalledWith(expect.stringContaining("not locked yet"), "info");
+
+		writeFileSync(settingsPath, JSON.stringify({ permissionMode: "ask" }));
+		harness.session.extensionRunner.setUIContext();
+		if (bind) await harness.session.bindExtensions({});
+		expect(await call(harness, "bash")).toContain(
+			"blocked by permission mode ask in non-interactive mode (from trusted project settings)",
+		);
+	});
+
 	it("shows a trusted project tightening the session and names it in denials", async () => {
 		process.env.OCTOBER_PERMISSION_MODE = "bypass";
 		const { harness, explain } = await session({ project: "ask", trusted: true });

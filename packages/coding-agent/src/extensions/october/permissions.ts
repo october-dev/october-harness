@@ -278,7 +278,14 @@ export function registerOctoberPermissions(
 	pi.registerCommand("permissions", {
 		description: "Explain the tool permission policy for this session and which layer set it",
 		handler: async (_args, ctx) => {
-			lockMode(ctx);
+			// Inspection is read-only: only session_start and the first tool call lock the policy.
+			if (!locked) {
+				ctx.ui.notify(
+					"The tool permission policy is not locked yet. It locks when the session finishes starting or on the first tool call; run /permissions again after that.",
+					"info",
+				);
+				return;
+			}
 			ctx.ui.notify(formatOctoberPermissionExplanation(explainOctoberPermissions(policy(), ctx.hasUI)), "info");
 		},
 	});
