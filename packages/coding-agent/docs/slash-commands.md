@@ -24,6 +24,7 @@ Extensions, prompt templates, and skills can add commands. The command menu in O
 | `/resume` | Resume another session |
 | `/name [name]` | Set the session display name, or show the current name when omitted |
 | `/session` | Show current session information and statistics |
+| `/permissions` | Explain this session's tool permission policy: the selected mode and its source, any trusted project restriction, the delegation ceiling (`inherit` adds no restriction), and whether read, edit and command tools are allowed, ask, or are blocked |
 | `/tree` | Navigate the session tree |
 | `/fork` | Create a new session from an earlier user message |
 | `/clone` | Duplicate the current session at its current position |

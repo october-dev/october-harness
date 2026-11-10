@@ -82,10 +82,6 @@ export function resolveOctoberPermissionModeWithSource(pi: ExtensionAPI): {
 	return { mode: "bypass", source: "default" };
 }
 
-export function resolveOctoberPermissionMode(pi: ExtensionAPI): OctoberPermissionMode {
-	return resolveOctoberPermissionModeWithSource(pi).mode;
-}
-
 export function permissionRequiresPrompt(mode: OctoberPermissionMode, toolClass: ToolPermissionClass): boolean {
 	if (mode === "bypass" || toolClass === "read") return false;
 	if (mode === "accept-edits") return toolClass === "command";
@@ -113,10 +109,11 @@ export interface OctoberPermissionExplanation extends OctoberPermissionPolicy {
 
 /** Which layer set the effective mode, in words, for decisions and explanations. */
 function modeOrigin(policy: OctoberPermissionPolicy): string {
+	// A trusted project that tightened the session wins: the ceiling only lowers an unrestricted (bypass) session.
+	if (policy.project.tightened) return "trusted project settings";
 	if (policy.delegationCeiling === "accept-edits" && policy.selected.mode === "bypass") {
 		return "the accept-edits ceiling on the active October Bus delegation";
 	}
-	if (policy.project.tightened) return "trusted project settings";
 	return SOURCE_LABEL[policy.selected.source];
 }
 
@@ -180,7 +177,7 @@ export function formatOctoberPermissionExplanation(explanation: OctoberPermissio
 		`Permission mode: ${explanation.effectiveMode}`,
 		`- Selected: ${selected.mode} from ${SOURCE_LABEL[selected.source]}${explanation.locked ? ", locked for this session" : ""}`,
 		`- Project: ${projectLine}`,
-		`- Delegation ceiling: ${explanation.delegationCeiling ?? "none"}`,
+		`- Delegation ceiling: ${explanation.delegationCeiling === "inherit" ? "inherit (adds no restriction)" : (explanation.delegationCeiling ?? "none")}`,
 		`- Session: ${explanation.interactive ? "interactive, so asked tools prompt you" : "non-interactive, so tools that would ask are blocked"}`,
 		"",
 		"Tools:",

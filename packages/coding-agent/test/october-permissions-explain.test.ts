@@ -175,8 +175,40 @@ describe("/permissions explanation", () => {
 		expect(text).toContain("Permission mode: accept-edits");
 		expect(text).toContain("(from the accept-edits ceiling on the active October Bus delegation)");
 
+		controller.setTemporaryCeiling("inherit");
+		text = await explain();
+		expect(text).toContain("Delegation ceiling: inherit (adds no restriction)");
+		expect(text).toContain("Permission mode: bypass");
+
 		controller.setTemporaryCeiling(undefined);
 		expect(await explain()).toContain("Permission mode: bypass");
+	});
+
+	// issue #48: a stricter trusted project is the source even while an accept-edits ceiling is active.
+	it("names trusted project settings, not the delegation, when the project is stricter than the ceiling", async () => {
+		process.env.OCTOBER_PERMISSION_MODE = "bypass";
+		const headless = await session({ project: "ask", trusted: true });
+		headless.controller.setTemporaryCeiling("accept-edits");
+		const text = await headless.explain();
+		expect(text).toContain("Permission mode: ask");
+		expect(text).toContain(
+			"bash and other tools: block, blocked by permission mode ask in non-interactive mode (from trusted project settings)",
+		);
+		expect(text).not.toContain("from the accept-edits ceiling");
+		expect(await call(headless.harness, "bash")).toContain(
+			"blocked by permission mode ask in non-interactive mode (from trusted project settings)",
+		);
+
+		const interactive = await session({
+			project: "ask",
+			trusted: true,
+			interactive: true,
+			confirm: async () => false,
+		});
+		interactive.controller.setTemporaryCeiling("accept-edits");
+		expect(await call(interactive.harness, "bash")).toContain("denied by user");
+		const [, message] = interactive.confirm.mock.calls[0] ?? [];
+		expect(message).toContain("permission mode ask (from trusted project settings) asks before command tools");
 	});
 
 	it("keeps explaining the locked policy after settings are edited", async () => {
