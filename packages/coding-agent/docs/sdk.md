@@ -95,6 +95,19 @@ Session events report message updates, tool execution, queues, compaction, retri
 
 Use `agent_settled` when the host needs to know that October will not continue automatically.
 
+## Inspecting request context
+
+`session.getContextSnapshot()` describes the context the latest model request was built from: instructions, tools, conversation, compaction summaries, and extension or Bus contributions, each with an estimated size, its position in the request, and the reason when content was omitted or truncated. It returns `undefined` before the first request.
+
+```typescript
+const snapshot = session.getContextSnapshot();
+for (const group of snapshot?.groups ?? []) {
+  console.log(group.kind, group.itemCount, group.estTokens);
+}
+```
+
+The session keeps the last five snapshots. Pass `{ requestId }` to read an earlier one. The snapshot comes from the context the request already assembled, so reading it does not reload sources or send a model request. It holds metadata only; pass `{ includeContent: true }` to add a `content` string to every item, or call `session.getContextItemContent(index, requestId?)` to read just one item. Items the harness cannot attribute carry `attributed: false`. See the [`get_context_snapshot` RPC command](rpc-commands.md#get_context_snapshot) for the fields, and `formatContextSnapshot()` for the terminal rendering.
+
 ## Configuring a session
 
 Without overrides, the factory creates a `ModelRuntime`, file-backed `SettingsManager`, persistent `SessionManager`, `DefaultResourceLoader`, and the configured default tools.

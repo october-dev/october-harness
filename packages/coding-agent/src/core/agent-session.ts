@@ -81,6 +81,16 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
+import {
+	type BuildContextSnapshotInput,
+	type BuiltContextSnapshot,
+	buildContextSnapshot,
+	type ContextOmission,
+	type ContextSnapshot,
+	type ContextSnapshotOptions,
+	type ContextTransformRecord,
+	MAX_CONTEXT_SNAPSHOTS,
+} from "./context-snapshot.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -132,6 +142,7 @@ import {
 	type SessionEntry,
 	SessionManager,
 	type SessionProjection,
+	sessionEntryToContextMessages,
 } from "./session-manager.ts";
 import { getSessionPermissionInfo } from "./session-permission-info.ts";
 import { exportPortableSession, type PortableSessionExportResult } from "./session-portable.ts";
@@ -529,6 +540,13 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	/** Prompt options after before_agent_start mutations for the active run. */
 	private _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
+	/** The session projection the latest request was built from, for the context inspector. */
+	private _lastRequestProjection?: SessionProjection;
+	private _contextRequestCount = 0;
+	/** What extension handlers changed since the last recorded request. */
+	private _pendingContextTransforms: ContextTransformRecord[] = [];
+	/** The last few requests' inputs. The snapshot is built when first inspected, not on the request path. */
+	private _recordedContextRequests: Array<{ input: BuildContextSnapshotInput; built?: BuiltContextSnapshot }> = [];
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -566,6 +584,8 @@ export class AgentSession {
 		this._installAgentBoundaryHooks();
 		this._installHiddenDeclarationsProjection();
 		this._installAgentForcedPromptProjection();
+		// Last, so it sees the transcript after every other transform and projection.
+		this._installContextSnapshotCapture();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -868,6 +888,7 @@ export class AgentSession {
 			this._failedResponse = undefined;
 			const prepare = async () => {
 				const projection = this.sessionManager.buildSessionProjection();
+				this._lastRequestProjection = projection;
 				const canonicalContext = {
 					...request.context,
 					messages: projection.messages,
@@ -1589,6 +1610,37 @@ export class AgentSession {
 		return getSessionPermissionInfo(this.sessionManager, this._extensionRunner.hasUI());
 	}
 
+	/**
+	 * Describe the context the latest model request (or the one named by `requestId`) was built
+	 * from, grouped by source. The session keeps the last few snapshots; older ones return
+	 * undefined. Reading never loads a source again or calls the model. Item content is left out
+	 * unless `includeContent` is set.
+	 */
+	getContextSnapshot(options: ContextSnapshotOptions = {}): ContextSnapshot | undefined {
+		const built = this._getBuiltContextRequest(options.requestId);
+		if (!built) return undefined;
+		const snapshot = structuredClone(built.snapshot);
+		if (options.includeContent) {
+			snapshot.items = snapshot.items.map((item) => ({ ...item, content: built.readContent(item.index) ?? "" }));
+		}
+		return snapshot;
+	}
+
+	/** The content of one item of the latest (or named) request's context, or undefined when there is no such item. */
+	getContextItemContent(index: number, requestId?: string): string | undefined {
+		return this._getBuiltContextRequest(requestId)?.readContent(index);
+	}
+
+	private _getBuiltContextRequest(requestId: string | undefined): BuiltContextSnapshot | undefined {
+		const recorded =
+			requestId === undefined
+				? this._recordedContextRequests.at(-1)
+				: this._recordedContextRequests.find((candidate) => candidate.input.requestId === requestId);
+		if (!recorded) return undefined;
+		recorded.built ??= buildContextSnapshot(recorded.input);
+		return recorded.built;
+	}
+
 	/** Get the names of the tools that tools can call through `ctx.executeTool()`. */
 	getCallableToolNames(): string[] {
 		return this._getCallableTools().map((t) => t.name);
@@ -1910,6 +1962,90 @@ export class AgentSession {
 			};
 			return [head, ...transformed.filter((message) => message.role !== "system")];
 		};
+	}
+
+	/**
+	 * Record what each request's context was made of. Runs after every other transform, so the
+	 * snapshot describes the messages the agent loop converts and sends. It only reads what the
+	 * request already assembled: no source is loaded again and no model is called.
+	 */
+	private _installContextSnapshotCapture(): void {
+		const previousTransformContext = this.agent.transformContext;
+		this.agent.transformContext = async (messages, signal) => {
+			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
+			this._recordContextSnapshot(messages, transformed);
+			return transformed;
+		};
+	}
+
+	private _recordContextSnapshot(baseMessages: AgentMessage[], finalMessages: AgentMessage[]): void {
+		const projection = this._lastRequestProjection;
+		const entryIds = new Map<AgentMessage, string>();
+		for (const entry of projection?.entries ?? []) {
+			for (const message of entry.messages) entryIds.set(message, entry.sourceEntry.id);
+		}
+		this._contextRequestCount += 1;
+		this._recordedContextRequests.push({
+			input: {
+				requestId: String(this._contextRequestCount),
+				createdAt: Date.now(),
+				modelId: this.model?.id,
+				baseMessages,
+				entryIdOf: (message) => entryIds.get(message),
+				finalMessages,
+				transforms: this._pendingContextTransforms.splice(0),
+				omitted: this._collectContextOmissions(projection),
+			},
+		});
+		if (this._recordedContextRequests.length > MAX_CONTEXT_SNAPSHOTS) this._recordedContextRequests.shift();
+	}
+
+	/** Context the session left out of the request on purpose, with the reason. */
+	private _collectContextOmissions(projection: SessionProjection | undefined): ContextOmission[] {
+		const omitted: ContextOmission[] = [];
+		const conversationTokens = (entry: SessionEntry): { count: number; estTokens: number } => {
+			const messages = sessionEntryToContextMessages(entry).filter((message) => message.role !== "system");
+			return {
+				count: messages.length,
+				estTokens: messages.reduce((sum, message) => sum + estimateTokens(message), 0),
+			};
+		};
+		if (projection) {
+			const included = new Set(projection.entries.map((entry) => entry.sourceEntry.id));
+			const branch = this.sessionManager.getBranch();
+			const latestCompaction = getLatestCompactionEntry(branch);
+			if (latestCompaction) {
+				let count = 0;
+				let estTokens = 0;
+				for (const entry of branch) {
+					if (entry.id === latestCompaction.id) break;
+					// An earlier compaction's summary was replaced by the latest one, not summarized as conversation.
+					if (included.has(entry.id) || entry.type === "compaction") continue;
+					const size = conversationTokens(entry);
+					count += size.count;
+					estTokens += size.estTokens;
+				}
+				if (count > 0) omitted.push({ kind: "conversation", reason: "compacted", count, estTokens });
+			}
+			for (const entry of projection.entries) {
+				if (entry.messages.length > 0 || entry.sourceEntry.type === "compaction") continue;
+				const size = conversationTokens(entry.sourceEntry);
+				if (size.count === 0) continue;
+				omitted.push({
+					kind: "conversation",
+					reason: "context_edit",
+					sourceId: entry.sourceEntry.id,
+					estTokens: size.estTokens,
+				});
+			}
+		}
+		const promptOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+		for (const skill of promptOptions.skills) {
+			if (skill.disableModelInvocation) {
+				omitted.push({ kind: "instructions", reason: "skill_hidden_from_model", sourceId: skill.name });
+			}
+		}
+		return omitted;
 	}
 
 	/**
@@ -3828,6 +3964,7 @@ export class AgentSession {
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
 		);
+		this._extensionRunner.onContextTransform((record) => this._pendingContextTransforms.push(record));
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
 		}

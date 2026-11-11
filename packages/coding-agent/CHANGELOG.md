@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `/context`, SDK `session.getContextSnapshot()`, and RPC `get_context_snapshot`, which report what the latest model request included: instructions, tools, conversation, compaction summaries, and extension or Bus contributions, each with an estimated size, its place in the request, and the reason when content was omitted or truncated. The report reads the context the request already assembled, so opening it neither reloads sources nor sends a model request. It shows metadata by default and reveals content only through `/context reveal <index>` or `includeContent` ([#47](https://github.com/october-dev/october-harness/issues/47)).
 - Added `/permissions`, which explains the session's tool permission policy: the selected mode and its source, any trusted project restriction, the active delegation ceiling, and whether read, edit and command tools are allowed, ask, or are blocked. Denials and approval prompts now name the layer that applied ([#62](https://github.com/october-dev/october-harness/pull/62) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 - Added read-only SDK and RPC access to the locked October permission explanation through `AgentSession.getPermissionInfo()` and `get_permissions` ([#63](https://github.com/october-dev/october-harness/pull/63) by [@flam3z3122](https://github.com/flam3z3122)).
 

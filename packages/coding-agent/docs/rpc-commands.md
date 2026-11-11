@@ -218,6 +218,55 @@ Response:
 
 The `tools` record reports the `read`, `edit`, and `command` classes: read tools are `read`, `grep`, `find`, and `ls`; edit tools are `edit` and `write`; all other tools are `command`. Each class reports `allow`, `ask`, or `block` with the same reason used by the permission gate. The explanation reflects the locked policy, while `delegationCeiling` is current and may change during delegated work. `inherit` adds no restriction. The CLI loads the October permission gate; the default `createAgentSession()` does not. SDK inspection returns `undefined` and RPC returns `null` until the gate is loaded and the policy locks. The terminal `/permissions` command can report an unlocked policy before then. The shell runner separately selects the execution environment for built-in shell commands and may reject unsupported configurations.
 
+### get_context_snapshot
+
+Get what the latest model request included, grouped by source. `data` is `null` before the first request, or when `requestId` names a snapshot the session no longer keeps (the last five requests are kept). The response matches the `ContextSnapshot` returned by the SDK's `session.getContextSnapshot()`.
+
+```json
+{"type": "get_context_snapshot"}
+{"type": "get_context_snapshot", "requestId": "3", "includeContent": true}
+```
+
+The snapshot is metadata only unless `includeContent` is `true`, which adds a `content` string to every item. It is read from the context the request already assembled: no source is loaded again and no model request is sent.
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "get_context_snapshot",
+  "success": true,
+  "data": {
+    "requestId": "3",
+    "createdAt": 1731350000000,
+    "modelId": "faux-1",
+    "estimator": "chars/4",
+    "totalEstTokens": 1500,
+    "items": [
+      { "index": 0, "kind": "instructions", "sourceId": "section:preamble", "label": "section:preamble", "role": "system", "attributed": true, "estTokens": 1000 },
+      { "index": 1, "kind": "instructions", "sourceId": "/proj/AGENTS.md", "label": "/proj/AGENTS.md", "role": "system", "attributed": true, "estTokens": 100 },
+      { "index": 2, "kind": "extension", "sourceId": "section:mcp_servers", "label": "section:mcp_servers", "role": "system", "attributed": false, "estTokens": 50 }
+    ],
+    "groups": [
+      { "kind": "instructions", "itemCount": 2, "estTokens": 1100 },
+      { "kind": "extension", "itemCount": 1, "estTokens": 50 }
+    ],
+    "omitted": [
+      { "kind": "conversation", "reason": "compacted", "count": 12, "estTokens": 3400 }
+    ],
+    "transforms": [
+      { "extensionPath": "/ext/notes.ts", "event": "context", "added": 1, "removed": 0 }
+    ]
+  }
+}
+```
+
+- `kind` is one of `instructions`, `tools`, `compaction`, `extension`, `bus`, or `conversation`. `items` are in the order the request carries them.
+- `sourceId` is the exact origin when known: a context file path, `section:<name>`, a tool name, a session entry id, a message `customType`, or the path of the extension that added the message. `attributed: false` means the harness cannot name the exact origin (for example, a prompt section written by an extension). It is never guessed.
+- `estTokens` is an estimate, not a provider token count. `truncated` appears on items whose output was cut, with a `reason`.
+- `omitted[].reason` is one of `compacted`, `context_edit`, `excluded_from_context`, or `skill_hidden_from_model`.
+- `transforms` lists the extension handlers (`context` and `context_with_system`) that added or removed messages in this request.
+
 ### get_messages
 
 Get all messages in the conversation.
