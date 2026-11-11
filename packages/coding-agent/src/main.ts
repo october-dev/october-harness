@@ -38,6 +38,7 @@ import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { loadLocalModelsCommand } from "./cli/local-models.lazy.ts";
 import { handleOctoberLoginCommand } from "./cli/october-login.ts";
+import { importPortableForCli, inspectPortableFileForCli } from "./cli/portable-import.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
@@ -67,8 +68,9 @@ import {
 import { assertValidSessionId, getDefaultSessionDirPath, SessionManager } from "./core/session-manager.ts";
 import {
 	exportPortableSession,
+	formatPortableCompatibilityReport,
 	formatPortableSessionDiagnostics,
-	importPortableSession,
+	SessionImportSelectionRequiredError,
 } from "./core/session-portable.ts";
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
@@ -403,6 +405,14 @@ function validateForkFlags(parsed: Args): void {
  * because a hard exit can drop pending writes when stdout/stderr are non-blocking pipes.
  */
 function validateImportFlags(parsed: Args): boolean {
+	if (parsed.importModel !== undefined && parsed.import === undefined) {
+		console.error(chalk.red("Error: --import-model requires --import"));
+		return false;
+	}
+	if (parsed.importReport !== undefined && parsed.import !== undefined) {
+		console.error(chalk.red("Error: --import-report cannot be combined with --import"));
+		return false;
+	}
 	if (parsed.import === undefined) return true;
 
 	const conflictingFlags = [
@@ -491,13 +501,20 @@ export async function createSessionManager(
 	}
 
 	if (parsed.import) {
-		// A path only: commitPortableImport() creates the directory after validation succeeds.
-		// Errors propagate to main(), which reports them and ends with process.exitCode.
-		const importedPath = importPortableSession(parsed.import, {
+		// Validation, the model check, and any model choice run before the file is written. Errors propagate
+		// to main(), which reports them and ends with process.exitCode.
+		const imported = await importPortableForCli(parsed.import, {
 			cwd,
 			sessionDir: sessionDir ?? getDefaultSessionDirPath(cwd),
+			model: parsed.importModel,
+			interactive: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY) === "interactive",
+			settingsManager,
 		});
-		return SessionManager.open(importedPath, sessionDir);
+		if (!imported) {
+			console.log(chalk.dim("Import cancelled."));
+			process.exit(0);
+		}
+		return imported;
 	}
 
 	if (parsed.fork) {
@@ -896,6 +913,20 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
+	if (parsed.importReport !== undefined) {
+		// Writes nothing. Exit 1 when the import would be blocked, so scripts can gate on it.
+		try {
+			const reportSessionDir = parsed.sessionDir ? normalizePath(parsed.sessionDir) : getDefaultSessionDirPath(cwd);
+			const report = await inspectPortableFileForCli(parsed.importReport, cwd, reportSessionDir);
+			for (const line of formatPortableCompatibilityReport(report)) console.log(line);
+			process.exitCode = report.blocking ? 1 : 0;
+		} catch (error: unknown) {
+			console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+			process.exitCode = 1;
+		}
+		return;
+	}
+
 	if (parsed.export) {
 		let result: string;
 		try {
@@ -989,6 +1020,9 @@ export async function main(args: string[], options?: MainOptions) {
 		// Only --import failures are reported here; other errors keep their existing handling.
 		if (!parsed.import) throw error;
 		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+		if (error instanceof SessionImportSelectionRequiredError) {
+			for (const line of formatPortableCompatibilityReport(error.report)) console.error(chalk.dim(line));
+		}
 		process.exitCode = 1;
 		return;
 	}

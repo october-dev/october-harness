@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerFauxProvider } from "@earendil-works/pi-ai/compat";
@@ -19,7 +19,7 @@ import {
 } from "../src/extensions/october/permissions.ts";
 import { runRpcMode } from "../src/modes/rpc/rpc-mode.ts";
 import type { RpcCommand, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
-import { buildPortableFixture } from "./fixtures/portable-session-fixture.ts";
+import { buildPortableFixture, type PortableFixtureModel } from "./fixtures/portable-session-fixture.ts";
 
 const rpcIo = vi.hoisted(() => ({
 	outputLines: [] as string[],
@@ -135,12 +135,27 @@ async function startRpc(
 		return response!;
 	}
 
-	return { runtime, send, cwd, sessionStarts };
+	// The model a portable file must name to be compatible with this runtime.
+	const portableModel: PortableFixtureModel = {
+		api: faux.api,
+		provider: faux.getModel().provider,
+		model: faux.getModel().id,
+	};
+	return { runtime, send, cwd, sessionStarts, portableModel };
 }
 
-function writePortableFixture(): { path: string; source: SessionManager } {
+function listFiles(dir: string): string[] {
+	try {
+		return readdirSync(dir).sort();
+	} catch {
+		return [];
+	}
+}
+
+/** The canonical fixture as a portable file. Its model is the default faux model unless `model` is given. */
+function writePortableFixture(model?: PortableFixtureModel): { path: string; source: SessionManager } {
 	const source = SessionManager.inMemory(createTempDir("pi-portable-rpc-source-"));
-	buildPortableFixture(source, join(createTempDir("pi-portable-rpc-bash-"), "bash.log"));
+	buildPortableFixture(source, join(createTempDir("pi-portable-rpc-bash-"), "bash.log"), model);
 	const path = join(createTempDir("pi-portable-rpc-file-"), "portable.jsonl");
 	writeFileSync(path, serializePortableSession(source).jsonl);
 	return { path, source };
@@ -247,8 +262,8 @@ describe("RPC portable sessions", () => {
 
 	// Regression test for #2.
 	it("imports through the runtime, binds the new session once, and serves it", async () => {
-		const portable = writePortableFixture();
-		const { runtime, send, cwd, sessionStarts } = await startRpc();
+		const { runtime, send, cwd, sessionStarts, portableModel } = await startRpc();
+		const portable = writePortableFixture(portableModel);
 		const previousSessionFile = runtime.session.sessionFile;
 
 		const response = await send({ id: "i1", type: "import_jsonl", inputPath: portable.path });
@@ -292,6 +307,85 @@ describe("RPC portable sessions", () => {
 			"branchSummary",
 		]);
 		expect(sessionStarts).toHaveLength(2);
+	});
+
+	it("inspects files without switching or writing", async () => {
+		const { runtime, send, cwd, sessionStarts, portableModel } = await startRpc();
+		const compatible = writePortableFixture(portableModel);
+		// The default fixture model is not registered in this runtime.
+		const blocked = writePortableFixture();
+		const originalSession = runtime.session;
+		const filesBefore = listFiles(join(cwd, "sessions"));
+
+		const compatibleResponse = await send({ id: "r1", type: "inspect_import_jsonl", inputPath: compatible.path });
+		expect(compatibleResponse).toMatchObject({
+			id: "r1",
+			command: "inspect_import_jsonl",
+			success: true,
+			data: {
+				blocking: false,
+				requirement: { provider: portableModel.provider, modelId: portableModel.model, status: "available" },
+			},
+		});
+
+		const blockedResponse = await send({ id: "r2", type: "inspect_import_jsonl", inputPath: blocked.path });
+		expect(blockedResponse).toMatchObject({
+			id: "r2",
+			command: "inspect_import_jsonl",
+			success: true,
+			data: {
+				blocking: true,
+				requirement: { provider: "faux-provider", modelId: "faux-model", status: "missing" },
+				// Tools in history and the custom message type are reported, and never block.
+				historicalTools: expect.arrayContaining([expect.objectContaining({ name: "read", status: "available" })]),
+				customMessages: [expect.objectContaining({ name: "review-note", status: "missing" })],
+			},
+		});
+		expect(runtime.session).toBe(originalSession);
+		expect(sessionStarts).toHaveLength(1);
+		expect(listFiles(join(cwd, "sessions"))).toEqual(filesBefore);
+	});
+
+	it("fails a blocked import without a model, deterministically, and writes nothing", async () => {
+		const { runtime, send, cwd, sessionStarts } = await startRpc();
+		const blocked = writePortableFixture();
+		const originalSession = runtime.session;
+		const filesBefore = listFiles(join(cwd, "sessions"));
+
+		const response = await send({ id: "b1", type: "import_jsonl", inputPath: blocked.path });
+
+		expect(response).toEqual({
+			id: "b1",
+			type: "response",
+			command: "import_jsonl",
+			success: false,
+			error: `Import of session ${blocked.source.getSessionId()} needs a replacement model. Nothing was written.`,
+		});
+		expect(runtime.session).toBe(originalSession);
+		expect(sessionStarts).toHaveLength(1);
+		expect(listFiles(join(cwd, "sessions"))).toEqual(filesBefore);
+	});
+
+	it("imports a blocked file with a replacement model and records it", async () => {
+		const { runtime, send, portableModel } = await startRpc();
+		const blocked = writePortableFixture();
+
+		const response = await send({
+			id: "b2",
+			type: "import_jsonl",
+			inputPath: blocked.path,
+			model: { provider: portableModel.provider, modelId: portableModel.model },
+		});
+
+		expect(response).toEqual({
+			id: "b2",
+			type: "response",
+			command: "import_jsonl",
+			success: true,
+			data: { cancelled: false },
+		});
+		expect(runtime.session.model?.id).toBe(portableModel.model);
+		expect(runtime.session.sessionManager.getSessionId()).toBe(blocked.source.getSessionId());
 	});
 
 	// Regression test for #2.

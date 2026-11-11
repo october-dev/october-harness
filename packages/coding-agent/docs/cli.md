@@ -51,7 +51,9 @@ October resolves `@path` from the current working directory. The working directo
 | `--mode json` | Run the supplied prompts, write JSONL events to stdout, then exit |
 | `--mode rpc` | Read JSONL commands from stdin and write responses and events to stdout until shutdown |
 | `--export <input> [output]` | Export a session file to HTML and exit; derive the destination when `output` is omitted. An `output` ending in `.jsonl` writes a [portable session](session-format.md#portable-sessions) instead and prints what it left out to stderr |
-| `--import <portable.jsonl>` | Import a portable session as a new session in the current directory and continue it. Cannot be combined with `--session`, `--session-id`, `--continue`, `--resume`, `--fork`, `--no-session`, or `--export` |
+| `--import <portable.jsonl>` | Import a portable session as a new session in the current directory and continue it. Cannot be combined with `--session`, `--session-id`, `--continue`, `--resume`, `--fork`, `--no-session`, or `--export`. If the session's next-turn model is not available, a terminal shows a model picker. Without a terminal the import fails with a [compatibility report](session-format.md#compatibility-report) and writes nothing |
+| `--import-model <provider/id>` | Replacement model for `--import` when the session's model is not available. Requires `--import`. The CLI accepts only models it can verify; choose extension models through RPC or the SDK |
+| `--import-report <portable.jsonl>` | Print how a portable session compares with this harness and exit. Writes nothing. Exits 1 when the import would be blocked. Cannot be combined with `--import` |
 
 RPC mode rejects `@file` arguments. JSON and RPC modes reserve stdout for protocol records. See [JSON Event Stream](json.md) and [RPC Protocol](rpc.md).
 

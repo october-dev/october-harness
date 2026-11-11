@@ -170,6 +170,34 @@ describe("parseArgs", () => {
 			}
 		});
 
+		test("parses --import-model and --import-report", () => {
+			const result = parseArgs(["--import", "portable.jsonl", "--import-model", "anthropic/claude-sonnet-5-5"]);
+			expect(result.import).toBe("portable.jsonl");
+			expect(result.importModel).toBe("anthropic/claude-sonnet-5-5");
+			expect(result.diagnostics).toEqual([]);
+
+			const report = parseArgs(["--import-report", "portable.jsonl"]);
+			expect(report.importReport).toBe("portable.jsonl");
+			expect(report.diagnostics).toEqual([]);
+		});
+
+		test("reports --import-model and --import-report without a value", () => {
+			for (const args of [["--import-model"], ["--import-model", "--continue"]]) {
+				const result = parseArgs(args);
+				expect(result.importModel).toBeUndefined();
+				expect(result.diagnostics).toEqual([
+					{ type: "error", message: "--import-model requires a provider/id model" },
+				]);
+			}
+			for (const args of [["--import-report"], ["--import-report", "--continue"]]) {
+				const result = parseArgs(args);
+				expect(result.importReport).toBeUndefined();
+				expect(result.diagnostics).toEqual([
+					{ type: "error", message: "--import-report requires a portable session file path" },
+				]);
+			}
+		});
+
 		test("parses --thinking", () => {
 			const result = parseArgs(["--thinking", "high"]);
 			expect(result.thinking).toBe("high");
