@@ -33,7 +33,7 @@ import {
 	registerOctoberPermissions,
 } from "../../coding-agent/src/extensions/october/permissions.ts";
 import { applyIsolatedEnvironment, hasPricing, resolveEvalModel } from "./harness.ts";
-import type { FauxStep, LoadedScenario } from "./scenario.ts";
+import { type FauxStep, fingerprintScenario, type LoadedScenario, type ScenarioFingerprint } from "./scenario.ts";
 import { type ScenarioBus, startScenarioBus } from "./scenario-bus.ts";
 import {
 	type CheckResult,
@@ -52,8 +52,16 @@ export type RunScenarioOptions = {
 	modelRuntime?: ModelRuntime;
 };
 
+/**
+ * The `provider/id` a faux run reports (the faux provider's default model, `faux-1`). Results that never
+ * reached the model use it too, so one scenario failing does not make a whole report look like another model.
+ */
+export const FAUX_MODEL = "faux/faux-1";
+
 export type ScenarioResult = {
 	id: string;
+	/** What the run depended on, for baseline comparison. Null when the scenario could not be loaded. */
+	fingerprint: ScenarioFingerprint | null;
 	mode: "faux" | "model";
 	/** `provider/id` of the model that ran. */
 	model: string;
@@ -172,11 +180,17 @@ function restrictEnvironment(): () => void {
 }
 
 /** A failed result for a scenario that could not load or run, so one failure does not hide the others. */
-export function erroredResult(id: string, error: unknown, model?: ScenarioModelSelection): ScenarioResult {
+export function erroredResult(
+	id: string,
+	error: unknown,
+	model?: ScenarioModelSelection,
+	fingerprint: ScenarioFingerprint | null = null,
+): ScenarioResult {
 	return {
 		id,
+		fingerprint,
 		mode: model ? "model" : "faux",
-		model: model ? `${model.provider}/${model.id}` : "faux/faux",
+		model: model ? `${model.provider}/${model.id}` : FAUX_MODEL,
 		score: 0,
 		passed: false,
 		checks: [],
@@ -225,6 +239,7 @@ function scenarioExtensions(scenario: LoadedScenario, bus: ScenarioBus | undefin
  * Runs change the global `process.env` while they execute, so run scenarios one at a time, never in parallel.
  */
 export async function runScenario(scenario: LoadedScenario, options: RunScenarioOptions = {}): Promise<ScenarioResult> {
+	const fingerprint = await fingerprintScenario(scenario);
 	// Read before isolating the environment, which points the agent dir at the temp home.
 	const hostAgentDir = getAgentDir();
 	const root = await mkdtemp(join(tmpdir(), "pi-scenario-"));
@@ -315,6 +330,7 @@ export async function runScenario(scenario: LoadedScenario, options: RunScenario
 		const stats = session.getSessionStats();
 		return {
 			id: scenario.id,
+			fingerprint,
 			mode: options.model ? "model" : "faux",
 			model: `${model.provider}/${model.id}`,
 			score: scoreChecks(checks),
