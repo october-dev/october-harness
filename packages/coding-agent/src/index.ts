@@ -314,10 +314,19 @@ export {
 export {
 	commitPortableImport,
 	exportPortableSession,
+	formatPortableCompatibilityReport,
 	formatPortableSessionDiagnostics,
 	importPortableSession,
+	inspectPortableImport,
 	PORTABLE_SESSION_MARKER,
+	type PortableCapabilities,
+	type PortableCompatibilityReport,
+	type PortableImportChoice,
 	type PortableImportOptions,
+	type PortableModelChoice,
+	type PortableModelReference,
+	type PortableNamedReference,
+	type PortableReferenceStatus,
 	type PortableSessionDiagnostic,
 	PortableSessionError,
 	type PortableSessionErrorCode,
@@ -329,6 +338,7 @@ export {
 	SessionImportError,
 	SessionImportFileNotFoundError,
 	SessionImportIdConflictError,
+	SessionImportSelectionRequiredError,
 	serializePortableSession,
 } from "./core/session-portable.ts";
 export {

@@ -55,7 +55,7 @@ See the checked [sessions example](../examples/sdk/11-sessions.ts) for creating,
 
 `session.dispose()` aborts active work, invalidates extension contexts, disconnects from the agent, and removes event listeners. Call it when the session is no longer needed.
 
-`AgentSessionRuntime` adds `newSession()`, `switchSession()`, `fork()`, `importPortable()`, and `importFromJsonl()`. Each operation replaces the active `AgentSession` and recreates services for the target working directory.
+`AgentSessionRuntime` adds `newSession()`, `switchSession()`, `fork()`, `inspectPortableImport()`, `importPortable()`, and `importFromJsonl()`. Each operation replaces the active `AgentSession` and recreates services for the target working directory. `inspectPortableImport(path)` returns a [compatibility report](session-format.md#compatibility-report) and writes nothing. `importPortable(path, { model, chooseModel })` throws `SessionImportSelectionRequiredError` before writing when the file's next-turn model is unavailable and neither `model` nor `chooseModel` supplies a replacement; `chooseModel` returning `undefined` cancels.
 
 To move a session between machines or entry points, use [portable sessions](session-format.md#portable-sessions). `session.exportToJsonl(path)` writes the active branch and returns `{ path, diagnostics }`. `runtime.importPortable(path)` accepts only portable files and imports into the runtime's cwd. `runtime.importFromJsonl(path)` accepts both: portable files go through `importPortable()`, and other session files are copied into the session directory unchanged and opened with their header cwd. Without a runtime, `importPortableSession(path, { cwd, sessionDir })` writes the native session and returns its path for `SessionManager.open()`.
 

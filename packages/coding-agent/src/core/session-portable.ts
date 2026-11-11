@@ -19,6 +19,7 @@ import {
 	type SessionHeader,
 	SessionManager,
 } from "./session-manager.ts";
+import { isVirtualModel } from "./virtual-models.ts";
 
 export const PORTABLE_SESSION_MARKER = 1;
 
@@ -795,6 +796,8 @@ export interface PreparedPortableImport {
 	/** Native session file that commit will create. */
 	destination: string;
 	jsonl: string;
+	/** Validated entries in file order, read by compatibility inspection. */
+	entries: Record<string, unknown>[];
 }
 
 /**
@@ -836,6 +839,7 @@ export function preparePortableImport(inputPath: string, options: PortableImport
 		sessionDir,
 		destination: join(sessionDir, `${fileTimestamp}_${header.id}.jsonl`),
 		jsonl: `${[nativeHeader, ...entries].map((record) => JSON.stringify(record)).join("\n")}\n`,
+		entries,
 	};
 }
 
@@ -852,6 +856,239 @@ export function commitPortableImport(prepared: PreparedPortableImport): string {
  */
 export function importPortableSession(inputPath: string, options: PortableImportOptions): string {
 	return commitPortableImport(preparePortableImport(inputPath, options));
+}
+
+// ============================================================================
+// Compatibility
+// ============================================================================
+
+/**
+ * Status of a referenced model, tool, or renderer in the destination. `no_auth` applies only to a
+ * model that exists but has no credentials here. `unknown` means the destination cannot decide yet.
+ */
+export type PortableReferenceStatus = "available" | "missing" | "no_auth" | "unknown";
+
+/** Destination lookups used by inspection. Each one is pure: it does not load or run extensions. */
+export interface PortableCapabilities {
+	model(provider: string, modelId: string): PortableReferenceStatus;
+	isVirtualModel(provider: string, modelId: string): boolean;
+	tool(name: string): PortableReferenceStatus;
+	renderer(customType: string): PortableReferenceStatus;
+}
+
+export interface PortableModelReference {
+	provider: string;
+	modelId: string;
+	status: PortableReferenceStatus;
+	/** References in the file: selections and assistant responses. */
+	count: number;
+}
+
+export interface PortableNamedReference {
+	name: string;
+	status: PortableReferenceStatus;
+	count: number;
+}
+
+/**
+ * How a prepared import compares with the destination. Only `requirement` can block: the next turn
+ * runs on that model. Every other field describes history or display and never blocks.
+ */
+export interface PortableCompatibilityReport {
+	sessionId: string;
+	/** Model the next turn uses. Absent when the file records no model selection or response. */
+	requirement?: PortableModelReference;
+	/** Model references other than the requirement. */
+	historicalModels: PortableModelReference[];
+	/** Tool names from past tool calls and results. The destination's own tools run the next turn. */
+	historicalTools: PortableNamedReference[];
+	/** Custom message types. Without a renderer, a message uses the default display. */
+	customMessages: PortableNamedReference[];
+	/** True when the requirement is not available here, so the import needs a replacement model. */
+	blocking: boolean;
+}
+
+/** A model reference chosen by the caller, e.g. `{ provider: "anthropic", modelId: "claude-sonnet-5-5" }`. */
+export interface PortableModelChoice {
+	provider: string;
+	modelId: string;
+}
+
+/**
+ * The caller's answer to a blocked import. `model` names the replacement directly. Without it, `chooseModel`
+ * is asked; returning undefined cancels the import. With neither, a blocked import throws.
+ */
+export interface PortableImportChoice {
+	model?: PortableModelChoice;
+	chooseModel?: (report: PortableCompatibilityReport) => Promise<PortableModelChoice | undefined>;
+}
+
+/** A blocked import has no replacement model. Nothing was written. */
+export class SessionImportSelectionRequiredError extends SessionImportError {
+	readonly report: PortableCompatibilityReport;
+
+	constructor(report: PortableCompatibilityReport) {
+		super(`Import of session ${report.sessionId} needs a replacement model. Nothing was written.`);
+		this.name = "SessionImportSelectionRequiredError";
+		this.report = report;
+	}
+}
+
+type ModelKey = PortableModelChoice;
+
+function modelKey(record: JsonRecord): ModelKey {
+	return { provider: record.provider as string, modelId: record.modelId as string };
+}
+
+function findLastModelChange(entries: readonly JsonRecord[], before: number): ModelKey | undefined {
+	for (let index = before - 1; index >= 0; index--) {
+		if (entries[index].type === "model_change") return modelKey(entries[index]);
+	}
+	return undefined;
+}
+
+/**
+ * The model the next turn uses. Mirrors getBranchSelection() in virtual-models.ts: the last model
+ * selection wins, unless a physical response comes later and no virtual selection holds.
+ */
+function nextTurnModel(entries: readonly JsonRecord[], isVirtual: (key: ModelKey) => boolean): ModelKey | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type === "model_change") return modelKey(entry);
+		const message = entry.message;
+		if (entry.type !== "message" || !isRecord(message) || message.role !== "assistant") continue;
+		if (isVirtualModel({ api: message.api as string })) continue;
+		const response = { provider: message.provider as string, modelId: message.model as string };
+		const change = findLastModelChange(entries, index);
+		return change && isVirtual(change) ? change : response;
+	}
+	return undefined;
+}
+
+interface CountedModel extends ModelKey {
+	count: number;
+}
+
+/**
+ * Compare a prepared import with the destination. Reads the validated entries and calls only the lookups
+ * in `capabilities`. It writes nothing, runs no extension code, and reads no credentials from the file.
+ */
+export function inspectPortableImport(
+	prepared: PreparedPortableImport,
+	capabilities: PortableCapabilities,
+): PortableCompatibilityReport {
+	const entries = prepared.entries;
+	const models = new Map<string, CountedModel>();
+	const tools = new Map<string, number>();
+	const customTypes = new Map<string, number>();
+
+	const countModel = (key: ModelKey): void => {
+		const id = `${key.provider}\0${key.modelId}`;
+		const existing = models.get(id);
+		if (existing) existing.count++;
+		else models.set(id, { ...key, count: 1 });
+	};
+	const countName = (counts: Map<string, number>, name: string): void => {
+		counts.set(name, (counts.get(name) ?? 0) + 1);
+	};
+
+	for (const entry of entries) {
+		if (entry.type === "model_change") {
+			countModel(modelKey(entry));
+		} else if (entry.type === "custom_message") {
+			countName(customTypes, entry.customType as string);
+		} else if (entry.type === "message" && isRecord(entry.message)) {
+			const message = entry.message;
+			if (message.role === "assistant") {
+				countModel({ provider: message.provider as string, modelId: message.model as string });
+				if (Array.isArray(message.content)) {
+					for (const block of message.content) {
+						if (isRecord(block) && block.type === "toolCall") countName(tools, block.name as string);
+					}
+				}
+			} else if (message.role === "toolResult") {
+				countName(tools, message.toolName as string);
+			}
+		}
+	}
+
+	const next = nextTurnModel(entries, (key) => capabilities.isVirtualModel(key.provider, key.modelId));
+	const requirementId = next ? `${next.provider}\0${next.modelId}` : undefined;
+	const toModelReference = (entry: CountedModel): PortableModelReference => ({
+		provider: entry.provider,
+		modelId: entry.modelId,
+		status: capabilities.model(entry.provider, entry.modelId),
+		count: entry.count,
+	});
+	const requirement = requirementId !== undefined ? models.get(requirementId) : undefined;
+	const named = (counts: Map<string, number>, lookup: (name: string) => PortableReferenceStatus) =>
+		Array.from(counts, ([name, count]) => ({ name, status: lookup(name), count }));
+
+	const requirementReference = requirement ? toModelReference(requirement) : undefined;
+	return {
+		sessionId: prepared.sessionId,
+		...(requirementReference ? { requirement: requirementReference } : {}),
+		historicalModels: Array.from(models)
+			.filter(([id]) => id !== requirementId)
+			.map(([, entry]) => toModelReference(entry)),
+		historicalTools: named(tools, (name) => capabilities.tool(name)),
+		customMessages: named(customTypes, (name) => capabilities.renderer(name)),
+		blocking: requirementReference !== undefined && requirementReference.status !== "available",
+	};
+}
+
+function describeMissing(kind: "model" | "tool" | "renderer", name: string, status: PortableReferenceStatus): string {
+	if (kind === "model") {
+		if (status === "no_auth")
+			return `${name} has no credentials here. Log in to its provider, or choose a replacement.`;
+		if (status === "unknown") {
+			return `${name} is not in the built-in catalog, so an extension may provide it. Choose a replacement, or load the extension and import again.`;
+		}
+		return `${name} is not in this harness's catalog. Choose a replacement, or enable the extension that provides it.`;
+	}
+	if (kind === "tool") {
+		if (status === "unknown")
+			return `${name} may come from an extension that has not loaded yet. The import is not blocked.`;
+		return `${name} is not registered here. Enable the extension that provides it to use it again. The import is not blocked.`;
+	}
+	if (status === "unknown") return `${name} may get a renderer from an extension that has not loaded yet.`;
+	return `${name} has no renderer here and uses the default display.`;
+}
+
+/**
+ * Human-readable lines for a report. Available references are summarized by count; every other
+ * reference gets a line with its remediation.
+ */
+export function formatPortableCompatibilityReport(report: PortableCompatibilityReport): string[] {
+	const lines: string[] = [];
+	const requirement = report.requirement;
+	if (requirement) {
+		const name = `${requirement.provider}/${requirement.modelId}`;
+		lines.push(`Next turn model: ${name} (${requirement.status})`);
+		if (requirement.status !== "available") lines.push(`  ${describeMissing("model", name, requirement.status)}`);
+	} else {
+		lines.push("Next turn model: none recorded in the file");
+	}
+	const findings: string[] = [];
+	for (const model of report.historicalModels) {
+		if (model.status === "available") continue;
+		const name = `${model.provider}/${model.modelId}`;
+		findings.push(`  history model ${name} (${model.count}): ${describeMissing("model", name, model.status)}`);
+	}
+	for (const tool of report.historicalTools) {
+		if (tool.status === "available") continue;
+		findings.push(`  history tool ${tool.name} (${tool.count}): ${describeMissing("tool", tool.name, tool.status)}`);
+	}
+	for (const custom of report.customMessages) {
+		if (custom.status === "available") continue;
+		findings.push(
+			`  custom message ${custom.name} (${custom.count}): ${describeMissing("renderer", custom.name, custom.status)}`,
+		);
+	}
+	if (findings.length === 0) lines.push("All other references are available.");
+	else lines.push("Other references:", ...findings);
+	lines.push(report.blocking ? "Blocked: choose a replacement model." : "Not blocked.");
+	return lines;
 }
 
 /** True when the first non-blank line of a file is a header carrying the portable marker. */

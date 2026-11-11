@@ -646,12 +646,45 @@ Response. `diagnostics` lists every excluded or changed value:
 }
 ```
 
+### inspect_import_jsonl
+
+Compare a portable session file with the agent's models, tools, and extension renderers. Writes nothing, switches nothing, and runs no extension code. The file must pass the same validation as `import_jsonl`.
+
+```json
+{"type": "inspect_import_jsonl", "inputPath": "/tmp/portable.jsonl"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "inspect_import_jsonl",
+  "success": true,
+  "data": {
+    "sessionId": "01a1cad4-69aa-7227-95fd-657fa6101364",
+    "requirement": {"provider": "anthropic", "modelId": "claude-sonnet-5-5", "status": "missing", "count": 4},
+    "historicalModels": [],
+    "historicalTools": [{"name": "ext_lookup", "status": "missing", "count": 2}],
+    "customMessages": [{"name": "review-note", "status": "missing", "count": 1}],
+    "blocking": true
+  }
+}
+```
+
+`requirement` is the model the next turn uses. Statuses are `available`, `missing`, `no_auth` (the model exists but has no credentials), and `unknown`. Only `requirement` can set `blocking`. Historical models, tool names, and custom message types never block. See [Compatibility report](session-format.md#compatibility-report).
+
 ### import_jsonl
 
 Import a portable session file as a new session in the current cwd and switch to it. Only files with the portable header marker are accepted; use `switch_session` for native session files. Can be canceled by a `session_before_switch` extension event handler.
 
 ```json
 {"type": "import_jsonl", "inputPath": "/tmp/portable.jsonl"}
+```
+
+When the file's next-turn model is not available, pass `model` to use another one. The model must be registered with credentials in the agent. It is recorded as a model change in the new session.
+
+```json
+{"type": "import_jsonl", "inputPath": "/tmp/portable.jsonl", "model": {"provider": "anthropic", "modelId": "claude-sonnet-5-5"}}
 ```
 
 Response:
@@ -662,6 +695,11 @@ Response:
 Invalid files, native files, and session id conflicts fail without writing anything. The error names the line and JSON path:
 ```json
 {"type": "response", "command": "import_jsonl", "success": false, "error": "Invalid portable session /tmp/portable.jsonl (line 4, $.message.errorMessage): unexpected field"}
+```
+
+A blocked import without `model` also fails without writing anything. Use `inspect_import_jsonl` to see why:
+```json
+{"type": "response", "command": "import_jsonl", "success": false, "error": "Import of session 01a1cad4-69aa-7227-95fd-657fa6101364 needs a replacement model. Nothing was written."}
 ```
 
 ### switch_session

@@ -40,6 +40,10 @@ export interface Args {
 	print?: boolean;
 	export?: string;
 	import?: string;
+	/** Replacement model for a blocked --import, as provider/id. */
+	importModel?: string;
+	/** Portable session file to inspect for compatibility. Writes nothing. */
+	importReport?: string;
 	noSkills?: boolean;
 	skills?: string[];
 	promptTemplates?: string[];
@@ -196,6 +200,25 @@ export function parseArgs(args: string[]): Args {
 				result.diagnostics.push({ type: "error", message: "--import requires a portable session file path" });
 			} else {
 				result.import = inputPath;
+				i++;
+			}
+		} else if (arg === "--import-model") {
+			const modelChoice = args[i + 1];
+			if (modelChoice === undefined || modelChoice.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--import-model requires a provider/id model" });
+			} else {
+				result.importModel = modelChoice;
+				i++;
+			}
+		} else if (arg === "--import-report") {
+			const inputPath = args[i + 1];
+			if (inputPath === undefined || inputPath.startsWith("-")) {
+				result.diagnostics.push({
+					type: "error",
+					message: "--import-report requires a portable session file path",
+				});
+			} else {
+				result.importReport = inputPath;
 				i++;
 			}
 		} else if ((arg === "--extension" || arg === "-e") && i + 1 < args.length) {
@@ -355,6 +378,8 @@ ${chalk.bold("Options:")}
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file> [out]          Export session file to HTML, or to a portable session when out ends in .jsonl, and exit
   --import <file>                Import a portable session file as a new session in this project
+  --import-model <provider/id>   Replacement model when the imported session's model is unavailable here
+  --import-report <file>         Show a portable session's compatibility with this harness and exit (writes nothing)
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --tui-mode <mode>              TUI mode: fullscreen (default) or regular
@@ -447,6 +472,8 @@ ${chalk.bold("Examples:")}
   # Move a session to another machine or harness mode as a portable session
   ${APP_NAME} --export session.jsonl portable.jsonl
   ${APP_NAME} --import portable.jsonl
+  ${APP_NAME} --import-report portable.jsonl
+  ${APP_NAME} --import portable.jsonl --import-model anthropic/claude-sonnet-5-5
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token

@@ -2,8 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "../../../core/extensions/types.ts";
 import { parseCommandArgs } from "../../../core/prompt-templates.ts";
+import type { SessionEntry } from "../../../core/session-manager.ts";
 import { createOctoberPermissionController, type OctoberTemporaryPermissionCeiling } from "../permissions.ts";
 import type { OctoberPublicBusEnv } from "./env.ts";
+import {
+	buildHandoffSummary,
+	HANDOFF_SUMMARY_CONTEXT_TITLE,
+	type HandoffHistoryRecord,
+	parseHandoffSummary,
+	serializeHandoffSummary,
+} from "./handoff-summary.ts";
 import { logOctoberDebug } from "./log.ts";
 import { MCP_TOOL_PREFIX, type McpToolCallResult, OctoberMcpClient } from "./mcp-client.ts";
 
@@ -14,7 +22,8 @@ export const POLICY_CONTEXT_TITLE = "October delegation policy";
 const INBOX_WAIT_MS = 25_000;
 const HEARTBEAT_MS = 10_000;
 const RETRY_MS = 2_000;
-const MAX_HANDOFF_CHARS = 6_000;
+/** Bash tool error text carries the exit status, e.g. "Command exited with code 1". */
+const BASH_EXIT_STATUS = /Command exited with code (\d+)/;
 
 type Lifecycle = "idle" | "working" | "needs_input" | "offline";
 type DeliveryState = "received" | "processing" | "handled" | "failed" | "acknowledged";
@@ -273,18 +282,41 @@ function messageText(message: AgentMessage): string {
 		.join("\n");
 }
 
-function boundedHandoffContext(ctx: ExtensionContext): string {
-	const excerpts: string[] = [];
-	const branch = ctx.sessionManager.getBranch();
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = branch[index];
-		if (entry.type !== "message" || (entry.message.role !== "user" && entry.message.role !== "assistant")) continue;
-		const text = messageText(entry.message).trim();
-		if (!text) continue;
-		excerpts.push(`${entry.message.role}: ${text}`);
-		if (excerpts.length >= 6) break;
+/** Converts the session branch into the records the handoff builder reads. Keeps every message, not a recent excerpt. */
+function handoffHistory(branch: SessionEntry[]): HandoffHistoryRecord[] {
+	const records: HandoffHistoryRecord[] = [];
+	for (const entry of branch) {
+		if (entry.type === "compaction") {
+			records.push({ kind: "compaction" });
+			continue;
+		}
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role === "user") {
+			records.push({ kind: "user", messageId: entry.id, text: messageText(message) });
+		} else if (message.role === "assistant") {
+			records.push({ kind: "assistant", messageId: entry.id, text: messageText(message) });
+			for (const part of message.content) {
+				if (part.type !== "toolCall") continue;
+				records.push({
+					kind: "toolCall",
+					toolCallId: part.id,
+					name: part.name,
+					path: typeof part.arguments.path === "string" ? part.arguments.path : undefined,
+					command: typeof part.arguments.command === "string" ? part.arguments.command : undefined,
+				});
+			}
+		} else if (message.role === "toolResult") {
+			const exit = BASH_EXIT_STATUS.exec(messageText(message));
+			records.push({
+				kind: "toolResult",
+				toolCallId: message.toolCallId,
+				isError: message.isError,
+				exitCode: exit ? Number(exit[1]) : undefined,
+			});
+		}
 	}
-	return excerpts.reverse().join("\n\n").slice(-MAX_HANDOFF_CHARS);
+	return records;
 }
 
 function successfulAgentEnd(messages: AgentMessage[]): boolean {
@@ -611,11 +643,40 @@ export function registerOctoberPublicBus(
 					.filter(Boolean);
 			}
 
+			// The sender reviews the summary before any Bus write, so cancelling leaves no orphan task.
+			let handoffPayload: string | undefined;
+			if (handoff) {
+				if (!ctx.hasUI) {
+					ctx.ui.notify(
+						"Handoff needs interactive review before sending. Use /delegate for a plain task.",
+						"error",
+					);
+					return;
+				}
+				const draft = buildHandoffSummary({
+					objective: title,
+					constraints: [],
+					remainingWork: [...details.split("\n"), acceptance].map((line) => line.trim()).filter(Boolean),
+					history: handoffHistory(ctx.sessionManager.getBranch()),
+				});
+				const edited = await ctx.ui.editor("Review handoff summary (JSON)", serializeHandoffSummary(draft));
+				if (edited === undefined) {
+					ctx.ui.notify("Handoff cancelled. Nothing was sent.", "info");
+					return;
+				}
+				const reviewed = parseHandoffSummary(edited);
+				if (!reviewed.ok) {
+					ctx.ui.notify(`Handoff not sent: ${reviewed.error}`, "error");
+					return;
+				}
+				handoffPayload = serializeHandoffSummary(reviewed.summary);
+			}
+
 			const description = [
 				details,
 				`Acceptance criteria:\n${acceptance}`,
 				`Permission ceiling: ${permissionCeiling}`,
-				handoff ? "This task includes a bounded handoff excerpt from the sender's active session." : "",
+				handoff ? "This task includes a reviewed structured handoff summary from the sender's session." : "",
 			]
 				.filter(Boolean)
 				.join("\n\n");
@@ -629,9 +690,13 @@ export function registerOctoberPublicBus(
 			const messageContext: BusContextItem[] = [
 				{ kind: "text", title: POLICY_CONTEXT_TITLE, text: JSON.stringify(policy), mediaType: "application/json" },
 			];
-			if (handoff) {
-				const excerpt = boundedHandoffContext(ctx);
-				if (excerpt) messageContext.push({ kind: "text", title: "Bounded session handoff", text: excerpt });
+			if (handoffPayload !== undefined) {
+				messageContext.push({
+					kind: "text",
+					title: HANDOFF_SUMMARY_CONTEXT_TITLE,
+					text: handoffPayload,
+					mediaType: "application/json",
+				});
 			}
 			const body = `Delegated task ${created.id}: ${title}\n\n${description}`;
 			const receipt = await callObject(client, "message_peer", {
@@ -742,7 +807,7 @@ export function registerOctoberPublicBus(
 	});
 
 	pi.registerCommand("handoff", {
-		description: "Delegate with a bounded excerpt of the current session",
+		description: "Delegate with a reviewed structured summary of the current session",
 		getArgumentCompletions: (prefix) =>
 			peers
 				.filter((peer) => peer.id.startsWith(prefix))
