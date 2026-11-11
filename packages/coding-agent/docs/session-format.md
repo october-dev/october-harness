@@ -258,6 +258,37 @@ A portable session moves a conversation between machines and entry points (CLI, 
 | RPC | [`export_jsonl`](rpc-commands.md#export_jsonl) | [`import_jsonl`](rpc-commands.md#import_jsonl) |
 | SDK | `session.exportToJsonl()`, `exportPortableSession()`, `serializePortableSession()` | `runtime.importPortable()`, `importPortableSession()` |
 
+### Compatibility report
+
+A structurally valid file can still name a model or tool the destination does not have. Before an import is written, the destination compares the file with what it has and builds a report. Nothing is written while it does.
+
+| Entry point | Report |
+|-------------|--------|
+| CLI | `--import-report <portable.jsonl>` prints it and exits 1 when the import would be blocked |
+| RPC | [`inspect_import_jsonl`](rpc-commands.md#inspect_import_jsonl) |
+| SDK | `runtime.inspectPortableImport()`, `inspectPortableImport()`, `formatPortableCompatibilityReport()` |
+
+Only the model the next turn uses can block the import. That is the file's last model selection, or its last response when no selection follows it. Everything else is history.
+
+| Reference | Statuses | Blocks the import? |
+|-----------|----------|--------------------|
+| Next-turn model | `available`, `missing`, `no_auth` (the model exists but has no credentials here), `unknown` | Yes, unless `available` |
+| Earlier models | same | No |
+| Tool names in past calls and results | `available`, `missing`, `unknown` | No. A portable file carries no tool loadout, so the destination's own tools run the next turn |
+| Custom message types | `available` (a renderer is registered), `missing` (the message uses the default display), `unknown` | No |
+
+`unknown` means the destination cannot decide yet. The CLI checks only the built-in catalog and `models.json` before a runtime exists. It reports a model from an extension as `unknown`, which blocks, and every tool and custom message type as `unknown`. RPC and SDK check against the loaded runtime and can see extension models.
+
+A blocked import needs a replacement model:
+
+| Entry point | How to choose |
+|-------------|---------------|
+| CLI | `--import-model <provider/id>`, or a picker when a terminal is attached. The CLI accepts only models it can verify |
+| RPC | `model` on `import_jsonl` |
+| SDK | `choice.model`, or `choice.chooseModel(report)` on `runtime.importPortable()` |
+
+Without a choice, the import fails with the same report and writes nothing. In a terminal, cancelling the picker also writes nothing, and so does a `chooseModel` that returns `undefined`. A chosen model is recorded as a model change in the new session. Inspection reads the file and the destination's registries only: it installs no extensions, runs no imported content, reads no credentials from the file, and writes nothing.
+
 ### Format
 
 A portable file is JSONL v3 with a `portable: 1` marker in the header:

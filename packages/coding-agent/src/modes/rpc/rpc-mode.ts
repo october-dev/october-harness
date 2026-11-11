@@ -631,9 +631,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "export_jsonl", session.exportToJsonl(command.outputPath));
 			}
 
+			case "inspect_import_jsonl": {
+				return success(id, "inspect_import_jsonl", runtimeHost.inspectPortableImport(command.inputPath));
+			}
+
 			case "import_jsonl": {
-				// The runtime rebinds through setRebindSession() when it replaces the session.
-				return success(id, "import_jsonl", await runtimeHost.importPortable(command.inputPath));
+				// The runtime rebinds through setRebindSession() when it replaces the session. A blocked import
+				// without `model` fails with SessionImportSelectionRequiredError and writes nothing.
+				const result = await runtimeHost.importPortable(command.inputPath, { model: command.model });
+				return success(id, "import_jsonl", result);
 			}
 
 			case "switch_session": {

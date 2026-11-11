@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
@@ -21,7 +22,8 @@ import { createSessionManager } from "../src/main.ts";
 import { buildPortableFixture } from "./fixtures/portable-session-fixture.ts";
 
 const cliPath = resolve(__dirname, "../src/cli.ts");
-const sourceResolverPath = resolve(__dirname, "../src/experimental/source-resolver.ts");
+// --import takes a module specifier, not a filesystem path.
+const sourceResolverUrl = pathToFileURL(resolve(__dirname, "../src/experimental/source-resolver.ts")).href;
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -44,7 +46,7 @@ async function runCli(
 	let stdout = "";
 	let stderr = "";
 	const code = await new Promise<number | null>((resolvePromise, reject) => {
-		const child = spawn(process.execPath, ["--import", sourceResolverPath, cliPath, ...args], {
+		const child = spawn(process.execPath, ["--import", sourceResolverUrl, cliPath, ...args], {
 			cwd,
 			env: { ...process.env, [ENV_AGENT_DIR]: agentDir, PI_OFFLINE: "1", NO_COLOR: "1" },
 			stdio: ["ignore", "pipe", "pipe"],
@@ -77,10 +79,26 @@ function writePortableFixture(): { path: string; sessionId: string } {
 	return { path, sessionId: native.sessionId };
 }
 
+/** A portable file that names no model, so the destination needs no particular model for it. */
+function writeModelFreePortableFile(): { path: string; sessionId: string } {
+	const source = SessionManager.inMemory(createTempDir("pi-portable-cli-model-free-"));
+	source.appendMessage({ role: "user", content: "hello", timestamp: Date.now() });
+	const path = join(createTempDir("pi-portable-cli-file-"), "portable.jsonl");
+	writeFileSync(path, serializePortableSession(source).jsonl);
+	return { path, sessionId: source.getSessionId() };
+}
+
+function createCliDirs(prefix: string): { cwd: string; agentDir: string } {
+	const cwd = createTempDir(prefix);
+	const agentDir = join(cwd, "agent");
+	mkdirSync(agentDir);
+	return { cwd, agentDir };
+}
+
 describe("CLI portable sessions", () => {
 	// Regression test for #2.
 	it("imports with --import into the CLI cwd and session dir", async () => {
-		const portable = writePortableFixture();
+		const portable = writeModelFreePortableFile();
 		const cwd = createTempDir("pi-portable-cli-cwd-");
 		const sessionDir = join(cwd, "sessions");
 
@@ -96,6 +114,80 @@ describe("CLI portable sessions", () => {
 		expect(readdirSync(sessionDir)).toHaveLength(1);
 		expect(sm.getSessionFile()).toBe(join(sessionDir, readdirSync(sessionDir)[0]));
 		expect(sm.getHeader()).not.toHaveProperty("portable");
+	});
+
+	it("fails a blocked --import headless with the report, and writes nothing", { timeout: 60_000 }, async () => {
+		const { cwd, agentDir } = createCliDirs("pi-portable-cli-blocked-");
+		// The fixture's model is not in the CLI's catalog, so the CLI cannot tell if an extension provides it.
+		const portable = writePortableFixture();
+
+		const result = await runCli(["--import", portable.path, "--no-extensions", "-p", "hi"], cwd, agentDir);
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("needs a replacement model");
+		expect(result.stderr).toContain("Next turn model: faux-provider/faux-model (unknown)");
+		expect(result.stderr).toContain("Blocked: choose a replacement model.");
+		expect(existsSync(getDefaultSessionDirPath(cwd, agentDir))).toBe(false);
+	});
+
+	it(
+		"shows the report with --import-report, exits 1 when blocked, and writes nothing",
+		{ timeout: 60_000 },
+		async () => {
+			const { cwd, agentDir } = createCliDirs("pi-portable-cli-report-");
+			const portable = writePortableFixture();
+			const agentDirBefore = readdirSync(agentDir).sort();
+
+			const result = await runCli(["--import-report", portable.path, "--no-extensions"], cwd, agentDir);
+
+			expect(result.code).toBe(1);
+			expect(result.stdout).toContain("Next turn model: faux-provider/faux-model (unknown)");
+			expect(result.stdout).toContain("Blocked: choose a replacement model.");
+			// Unknown tools and custom message types are reported with remediation, and never block.
+			expect(result.stdout).toContain("history tool read");
+			expect(result.stdout).toContain("custom message review-note (1)");
+			expect(existsSync(getDefaultSessionDirPath(cwd, agentDir))).toBe(false);
+			expect(readdirSync(agentDir).sort()).toEqual(agentDirBefore);
+		},
+	);
+
+	it("reports a compatible file as not blocked with --import-report", { timeout: 60_000 }, async () => {
+		const { cwd, agentDir } = createCliDirs("pi-portable-cli-compatible-");
+		const portable = writeModelFreePortableFile();
+
+		const result = await runCli(["--import-report", portable.path, "--no-extensions"], cwd, agentDir);
+
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("Not blocked.");
+		expect(existsSync(getDefaultSessionDirPath(cwd, agentDir))).toBe(false);
+	});
+
+	it("rejects a replacement model the CLI cannot verify, before writing", { timeout: 60_000 }, async () => {
+		const { cwd, agentDir } = createCliDirs("pi-portable-cli-replacement-");
+		const portable = writePortableFixture();
+
+		const result = await runCli(
+			["--import", portable.path, "--import-model", "nope/none", "--no-extensions", "-p", "hi"],
+			cwd,
+			agentDir,
+		);
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("Replacement model nope/none is not available here (unknown)");
+		expect(existsSync(getDefaultSessionDirPath(cwd, agentDir))).toBe(false);
+	});
+
+	it("rejects --import-model without --import and --import-report with --import", { timeout: 60_000 }, async () => {
+		const { cwd, agentDir } = createCliDirs("pi-portable-cli-flags-");
+		const portable = writeModelFreePortableFile();
+
+		const withoutImport = await runCli(["--import-model", "a/b", "--no-extensions", "-p", "hi"], cwd, agentDir);
+		expect(withoutImport.code).toBe(1);
+		expect(withoutImport.stderr).toContain("Error: --import-model requires --import");
+
+		const withImport = await runCli(["--import-report", portable.path, "--import", portable.path], cwd, agentDir);
+		expect(withImport.code).toBe(1);
+		expect(withImport.stderr).toContain("Error: --import-report cannot be combined with --import");
 	});
 
 	// Regression test for #2.

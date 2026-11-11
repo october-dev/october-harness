@@ -15,11 +15,19 @@ import { assertSessionCwdExists } from "./session-cwd.ts";
 import { SessionManager } from "./session-manager.ts";
 import {
 	commitPortableImport,
+	inspectPortableImport,
 	isPortableSessionFile,
+	type PortableCapabilities,
+	type PortableCompatibilityReport,
+	type PortableImportChoice,
+	type PortableModelChoice,
+	type PortableReferenceStatus,
 	preparePortableImport,
 	SessionImportError,
 	SessionImportFileNotFoundError,
+	SessionImportSelectionRequiredError,
 } from "./session-portable.ts";
+import { isVirtualModel } from "./virtual-models.ts";
 
 /**
  * Result returned by runtime creation.
@@ -345,22 +353,58 @@ export class AgentSessionRuntime {
 	}
 
 	/**
+	 * Compare a portable session file with this runtime's models, tools, and renderers. Writes nothing and
+	 * runs no extension code.
+	 *
+	 * @throws {SessionImportError} When session persistence is disabled.
+	 * @throws {PortableSessionError} When the file does not match the portable session contract.
+	 * @throws {SessionImportIdConflictError} When the session id already exists in the session directory.
+	 */
+	inspectPortableImport(inputPath: string): PortableCompatibilityReport {
+		const currentSessionManager = this.session.sessionManager;
+		if (!currentSessionManager.isPersisted()) {
+			throw new SessionImportError("Cannot import a session while session persistence is disabled");
+		}
+		const prepared = preparePortableImport(inputPath, {
+			cwd: this.cwd,
+			sessionDir: currentSessionManager.getSessionDir(),
+		});
+		return inspectPortableImport(prepared, this.portableCapabilities());
+	}
+
+	/**
 	 * Import a portable session file as a new native session for this runtime's cwd and switch to it.
 	 * Only files with the portable header marker are accepted.
 	 *
-	 * @returns `{ cancelled: true }` when cancelled by `session_before_switch`, otherwise `{ cancelled: false }`.
-	 * @throws {SessionImportError} When session persistence is disabled.
+	 * The file's next-turn model must be available here. When it is not, `choice.model` replaces it. Without
+	 * that, `choice.chooseModel` picks one, and returning undefined cancels. With neither, the import throws
+	 * before anything is written. A chosen replacement is recorded as a model change in the new session.
+	 *
+	 * @returns `{ cancelled: true }` when cancelled by the model choice or `session_before_switch`, otherwise `{ cancelled: false }`.
+	 * @throws {SessionImportError} When session persistence is disabled, or the chosen model is not available.
+	 * @throws {SessionImportSelectionRequiredError} When the import is blocked and no model was chosen.
 	 * @throws {SessionImportFileNotFoundError} When the input path does not exist.
 	 * @throws {PortableSessionError} When the file does not match the portable session contract.
 	 * @throws {SessionImportIdConflictError} When the session id already exists in the session directory.
 	 */
-	async importPortable(inputPath: string): Promise<{ cancelled: boolean }> {
+	async importPortable(inputPath: string, choice: PortableImportChoice = {}): Promise<{ cancelled: boolean }> {
 		const currentSessionManager = this.session.sessionManager;
 		if (!currentSessionManager.isPersisted()) {
 			throw new SessionImportError("Cannot import a session while session persistence is disabled");
 		}
 		const sessionDir = currentSessionManager.getSessionDir();
 		const prepared = preparePortableImport(inputPath, { cwd: this.cwd, sessionDir });
+		const capabilities = this.portableCapabilities();
+		const report = inspectPortableImport(prepared, capabilities);
+
+		let replacement: PortableModelChoice | undefined = choice.model;
+		if (!replacement && report.blocking) {
+			if (!choice.chooseModel) throw new SessionImportSelectionRequiredError(report);
+			replacement = await choice.chooseModel(report);
+			if (!replacement) return { cancelled: true };
+		}
+		const replacementModel = replacement ? this.checkReplacement(replacement, capabilities) : undefined;
+
 		const beforeResult = await this.emitBeforeSwitch("resume", prepared.destination);
 		if (beforeResult.cancelled) {
 			return beforeResult;
@@ -378,8 +422,43 @@ export class AgentSessionRuntime {
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
 			}),
 		);
+		if (replacementModel) {
+			await this.session.setModel(replacementModel);
+		}
 		await this.finishSessionReplacement();
 		return { cancelled: false };
+	}
+
+	/** Throws unless the replacement is a registered model with credentials here. Returns the catalog entry. */
+	private checkReplacement(choice: PortableModelChoice, capabilities: PortableCapabilities) {
+		const status = capabilities.model(choice.provider, choice.modelId);
+		const model = this.services.modelRuntime.getModel(choice.provider, choice.modelId);
+		if (status !== "available" || !model) {
+			throw new SessionImportError(
+				`Replacement model ${choice.provider}/${choice.modelId} is not available here (${status})`,
+			);
+		}
+		return model;
+	}
+
+	/** Lookups for inspection, backed by this runtime's model catalog, tools, and extension renderers. */
+	private portableCapabilities(): PortableCapabilities {
+		const modelRuntime = this.services.modelRuntime;
+		const runner = this.session.extensionRunner;
+		const toolNames = new Set(this.session.getAllTools().map((tool) => tool.name));
+		const model = (provider: string, modelId: string): PortableReferenceStatus => {
+			if (!modelRuntime.getModel(provider, modelId)) return "missing";
+			return modelRuntime.hasConfiguredAuth(provider) ? "available" : "no_auth";
+		};
+		return {
+			model,
+			isVirtualModel: (provider, modelId) => {
+				const found = modelRuntime.getModel(provider, modelId);
+				return found !== undefined && isVirtualModel(found);
+			},
+			tool: (name) => (toolNames.has(name) ? "available" : "missing"),
+			renderer: (customType) => (runner.getMessageRenderer(customType) ? "available" : "missing"),
+		};
 	}
 
 	/**
