@@ -7,6 +7,7 @@ import type {
 	ToolCallEvent,
 	ToolCallEventResult,
 } from "../../core/extensions/types.ts";
+import { registerSessionPermissionInfoProvider } from "../../core/session-permission-info.ts";
 
 export type OctoberPermissionMode = "ask" | "accept-edits" | "bypass";
 export type OctoberTemporaryPermissionCeiling = "read-only" | "accept-edits" | "inherit";
@@ -248,12 +249,23 @@ export function registerOctoberPermissions(
 			effectiveMode: ceiling === "accept-edits" && mode === "bypass" ? "accept-edits" : mode,
 		};
 	};
+	let unregisterPermissionInfo = () => {};
+	let permissionInfoSession: object | undefined;
+	const registerPermissionInfo = (ctx: ExtensionContext): void => {
+		if (permissionInfoSession === ctx.sessionManager) return;
+		unregisterPermissionInfo();
+		permissionInfoSession = ctx.sessionManager;
+		unregisterPermissionInfo = registerSessionPermissionInfoProvider(ctx.sessionManager, (hasUI) =>
+			locked ? explainOctoberPermissions(policy(), hasUI) : undefined,
+		);
+	};
 	let subscribed = false;
 	const subscribe = (): void => {
 		if (subscribed) return;
 		subscribed = true;
 		pi.on("tool_call", async (event: ToolCallEvent, ctx): Promise<ToolCallEventResult | undefined> => {
 			lockMode(ctx);
+			registerPermissionInfo(ctx);
 			const decision = decideToolPermission(policy(), classifyTool(event.toolName), ctx.hasUI);
 			if (decision.outcome === "allow") return undefined;
 			if (decision.outcome === "block") return { block: true, reason: decision.reason };
@@ -273,7 +285,13 @@ export function registerOctoberPermissions(
 	subscribe();
 	pi.on("session_start", (_event, ctx) => {
 		lockMode(ctx);
+		registerPermissionInfo(ctx);
 		subscribe();
+	});
+	pi.on("session_shutdown", () => {
+		unregisterPermissionInfo();
+		unregisterPermissionInfo = () => {};
+		permissionInfoSession = undefined;
 	});
 	pi.registerCommand("permissions", {
 		description: "Explain the tool permission policy for this session and which layer set it",

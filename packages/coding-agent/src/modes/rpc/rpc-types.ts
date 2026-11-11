@@ -13,6 +13,7 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { PortableSessionDiagnostic } from "../../core/session-portable.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { OctoberPermissionExplanation } from "../../extensions/october/permissions.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -29,6 +30,7 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_permissions" }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -139,6 +141,13 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_permissions";
+			success: true;
+			data: OctoberPermissionExplanation | null;
+	  }
 
 	// Model
 	| {

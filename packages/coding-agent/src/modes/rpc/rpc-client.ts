@@ -12,6 +12,7 @@ import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { PortableSessionDiagnostic } from "../../core/session-portable.ts";
+import type { OctoberPermissionExplanation } from "../../extensions/october/permissions.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
@@ -251,6 +252,12 @@ export class RpcClient {
 	 */
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.send({ type: "get_state" });
+		return this.getData(response);
+	}
+
+	/** Get the locked October permission policy explanation, or null when the gate is unavailable. */
+	async getPermissions(): Promise<OctoberPermissionExplanation | null> {
+		const response = await this.send({ type: "get_permissions" });
 		return this.getData(response);
 	}
 

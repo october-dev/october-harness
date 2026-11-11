@@ -486,6 +486,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_state", state);
 			}
 
+			case "get_permissions": {
+				return success(id, "get_permissions", session.getPermissionInfo() ?? null);
+			}
+
 			// =================================================================
 			// Model
 			// =================================================================

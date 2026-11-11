@@ -185,6 +185,39 @@ Response:
 
 The `model` field is a full [Model](#model-object) object, or omitted when no model is selected. The `sessionName` field is the display name set via `set_session_name`, or omitted if not set.
 
+### get_permissions
+
+Get the locked October permission explanation for the current session. When the gate is unavailable or the policy has not locked, `data` is `null`. Otherwise, the response matches the `OctoberPermissionExplanation` returned by the SDK's `session.getPermissionInfo()` method.
+
+```json
+{"type": "get_permissions"}
+```
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "get_permissions",
+  "success": true,
+  "data": {
+    "locked": true,
+    "selected": { "mode": "accept-edits", "source": "environment" },
+    "project": { "trusted": false, "setting": null, "tightened": false },
+    "delegationCeiling": null,
+    "effectiveMode": "accept-edits",
+    "interactive": true,
+    "tools": {
+      "read": { "outcome": "allow", "reason": "allowed by permission mode accept-edits (from OCTOBER_PERMISSION_MODE)" },
+      "edit": { "outcome": "allow", "reason": "allowed by permission mode accept-edits (from OCTOBER_PERMISSION_MODE)" },
+      "command": { "outcome": "ask", "reason": "permission mode accept-edits (from OCTOBER_PERMISSION_MODE) asks before command tools" }
+    }
+  }
+}
+```
+
+The `tools` record reports the `read`, `edit`, and `command` classes: read tools are `read`, `grep`, `find`, and `ls`; edit tools are `edit` and `write`; all other tools are `command`. Each class reports `allow`, `ask`, or `block` with the same reason used by the permission gate. The explanation reflects the locked policy, while `delegationCeiling` is current and may change during delegated work. `inherit` adds no restriction. The CLI loads the October permission gate; the default `createAgentSession()` does not. SDK inspection returns `undefined` and RPC returns `null` until the gate is loaded and the policy locks. The terminal `/permissions` command can report an unlocked policy before then. The shell runner separately selects the execution environment for built-in shell commands and may reject unsupported configurations.
+
 ### get_messages
 
 Get all messages in the conversation.

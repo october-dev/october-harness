@@ -5,6 +5,7 @@
 ### Added
 
 - Added `/permissions`, which explains the session's tool permission policy: the selected mode and its source, any trusted project restriction, the active delegation ceiling, and whether read, edit and command tools are allowed, ask, or are blocked. Denials and approval prompts now name the layer that applied ([#62](https://github.com/october-dev/october-harness/pull/62) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
+- Added read-only SDK and RPC access to the locked October permission explanation through `AgentSession.getPermissionInfo()` and `get_permissions` ([#63](https://github.com/october-dev/october-harness/pull/63) by [@flam3z3122](https://github.com/flam3z3122)).
 
 ### Fixed
 
