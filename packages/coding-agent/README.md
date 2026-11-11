@@ -251,6 +251,7 @@ Sessions are append-only JSONL trees stored under `~/.october/agent/sessions/`, 
 | `/new` | Start a fresh session |
 | `/name <name>` | Give the session a human-readable name |
 | `/session` | Show the current file, ID, messages, tokens, and cost |
+| `/context` | Show what the last model request included, grouped by source, with estimated sizes and omissions |
 | `/tree` | Move through the current session's branch tree |
 | `/fork` | Start a new session from an earlier user message |
 | `/clone` | Copy the active branch into a new session |

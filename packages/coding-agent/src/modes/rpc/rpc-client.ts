@@ -10,6 +10,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ContextSnapshot, ContextSnapshotOptions } from "../../core/context-snapshot.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { PortableSessionDiagnostic } from "../../core/session-portable.ts";
 import type { OctoberPermissionExplanation } from "../../extensions/october/permissions.ts";
@@ -258,6 +259,19 @@ export class RpcClient {
 	/** Get the locked October permission policy explanation, or null when the gate is unavailable. */
 	async getPermissions(): Promise<OctoberPermissionExplanation | null> {
 		const response = await this.send({ type: "get_permissions" });
+		return this.getData(response);
+	}
+
+	/**
+	 * Get what the latest model request (or `requestId`) included, grouped by source, or null when
+	 * there is none. Metadata only unless `includeContent` is true.
+	 */
+	async getContextSnapshot(options: ContextSnapshotOptions = {}): Promise<ContextSnapshot | null> {
+		const response = await this.send({
+			type: "get_context_snapshot",
+			requestId: options.requestId,
+			includeContent: options.includeContent,
+		});
 		return this.getData(response);
 	}
 

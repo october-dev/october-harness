@@ -490,6 +490,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_permissions", session.getPermissionInfo() ?? null);
 			}
 
+			case "get_context_snapshot": {
+				const snapshot = session.getContextSnapshot({
+					requestId: command.requestId,
+					includeContent: command.includeContent,
+				});
+				return success(id, "get_context_snapshot", snapshot ?? null);
+			}
+
 			// =================================================================
 			// Model
 			// =================================================================

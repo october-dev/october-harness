@@ -49,6 +49,18 @@ export {
 	serializeConversation,
 	shouldCompact,
 } from "./core/compaction/index.ts";
+export {
+	type ContextGroup,
+	type ContextItem,
+	type ContextOmission,
+	type ContextOmissionReason,
+	type ContextSnapshot,
+	type ContextSnapshotOptions,
+	type ContextSourceKind,
+	type ContextTransform,
+	type ContextTruncationReason,
+	formatContextSnapshot,
+} from "./core/context-snapshot.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 // Extension system
 export type {
