@@ -58,6 +58,7 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { OCTOBER_SESSION_REFRESHED_CODE } from "../extensions/october/auth.ts";
+import type { OctoberPermissionExplanation } from "../extensions/october/permissions.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
@@ -132,6 +133,7 @@ import {
 	SessionManager,
 	type SessionProjection,
 } from "./session-manager.ts";
+import { getSessionPermissionInfo } from "./session-permission-info.ts";
 import { exportPortableSession, type PortableSessionExportResult } from "./session-portable.ts";
 import {
 	applyToolModifiers,
@@ -1580,6 +1582,11 @@ export class AgentSession {
 	 */
 	getActiveToolNames(): string[] {
 		return this.agent.state.tools.map((t) => t.name);
+	}
+
+	/** Read the locked October permission policy explanation, if the October permission gate is loaded. */
+	getPermissionInfo(): OctoberPermissionExplanation | undefined {
+		return getSessionPermissionInfo(this.sessionManager, this._extensionRunner.hasUI());
 	}
 
 	/** Get the names of the tools that tools can call through `ctx.executeTool()`. */

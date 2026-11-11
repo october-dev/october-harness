@@ -273,6 +273,8 @@ Set the process policy with `--permission-mode`, then `OCTOBER_PERMISSION_MODE`,
 
 Run `/permissions` to see the policy this session is using: the selected mode and where it came from, whether trusted project settings tightened it, any active delegation ceiling, and whether read, edit and command tools are allowed, will ask, or are blocked. Denials and approval prompts name the same layer, for example `blocked by permission mode ask in non-interactive mode (from trusted project settings)`. The explanation comes from the locked session policy, so settings edited after startup do not change it.
 
+SDK sessions expose the locked permission explanation through `session.getPermissionInfo()`, and RPC clients through `RpcClient.getPermissions()` using the `get_permissions` command. These interfaces return information only when the October permission gate is loaded and locked. The CLI loads the gate; the default `createAgentSession()` does not. SDK inspection returns `undefined`, and RPC inspection returns `null`, when no locked gate is available.
+
 Bus-delivered delegations may add a temporary `read-only` or `accept-edits` ceiling for their processing turn. The strongest restriction wins, it is cleared when the turn settles, and remote context can never broaden the process-owned policy.
 
 Project trust is separate from tool permissions. It controls whether October loads project-local settings, extensions, skills, prompts, themes, and packages. It is an input-loading boundary, not a sandbox.

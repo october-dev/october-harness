@@ -283,6 +283,8 @@ October adds three explicit tool-permission modes:
 
 Set the process policy with `--permission-mode`, then `OCTOBER_PERMISSION_MODE`, then global `~/.october/agent/settings.json` (in that precedence order). The default is `bypass`. Trusted project `.october/settings.json` may only tighten that policy; untrusted project settings are ignored. Policy is fixed for the session, so tool edits cannot grant more authority. Restart with an explicit user-selected mode to change it. Non-interactive operations requiring approval are blocked.
 
+SDK sessions expose the locked permission explanation through `session.getPermissionInfo()`, and RPC clients through `RpcClient.getPermissions()` using the `get_permissions` command. These interfaces return information only when the October permission gate is loaded and locked. The CLI loads the gate; the default `createAgentSession()` does not. SDK inspection returns `undefined`, and RPC inspection returns `null`, when no locked gate is available.
+
 Project trust is separate from tool permissions. It controls whether October loads project-local settings, extensions, skills, prompts, themes, and packages. It is an input-loading boundary, not a sandbox.
 
 ## Architecture
