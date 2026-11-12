@@ -453,23 +453,6 @@ export type {
 	OctoberToolDecision,
 	ToolPermissionClass,
 } from "./extensions/october/permissions.ts";
-export {
-	attachVerificationReference,
-	type CodeIdentity,
-	parseGitStatusPaths,
-	reportedVerificationOutcome,
-	runVerification,
-	toVerificationReference,
-	VERIFICATION_CONTEXT_TITLE,
-	VERIFICATION_ENTRY,
-	VERIFICATION_SHARE_ENTRY,
-	type VerificationEvidence,
-	type VerificationOutcome,
-	type VerificationReference,
-	verificationContextItem,
-	verificationResultLine,
-	verificationStale,
-} from "./extensions/october/verification-evidence.ts";
 export { createToolSearchExtension } from "./extensions/tool-search/index.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";

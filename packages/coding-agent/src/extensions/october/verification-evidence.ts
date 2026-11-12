@@ -1,27 +1,39 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import type { BashResult } from "../../core/bash-executor.ts";
 import { execCommand } from "../../core/exec.ts";
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
 
 /** Session record of one explicitly run verification command. Output stays in this record. */
 export const VERIFICATION_ENTRY = "october-verification-evidence";
-/** Session record that the user explicitly shared an evidence id with peers. */
+/** Session record of the latest explicit share (or unshare) decision. */
 export const VERIFICATION_SHARE_ENTRY = "october-verification-share";
 export const VERIFICATION_CONTEXT_TITLE = "Verification evidence";
 /** Public Bus tools whose task results can carry a verification reference. */
 export const BUS_MESSAGE_PEER_TOOL = "mcp__october-bus__message_peer";
 export const BUS_COMPLETE_TASK_TOOL = "mcp__october-bus__complete_task";
+/**
+ * Outgoing Bus payload budgets (pinned Bus v0.1.0-rc.4: validation.go caps message context at
+ * 32 items, runtime.go caps task notes at 16384 bytes). Attachment stays within them; when the
+ * model's own content already fills the budget, the reference is skipped and the user is told.
+ */
+export const BUS_MAX_CONTEXT_ITEMS = 32;
+export const BUS_MAX_NOTE_BYTES = 16384;
 
-const DEFAULT_MAX_OUTPUT_BYTES = 8_192;
 const SHARE_PREVIEW_CHARS = 240;
+const STATUS_OUTPUT_CHARS = 2000;
 const MAX_DIRTY_FILES = 100;
+/** Total bytes hashed for one identity capture; past it the identity is marked incomplete. */
+const MAX_IDENTITY_BYTES = 4 * 1024 * 1024;
+/** Keyed attachments remembered so a same-key retry resends byte-identical content. */
+const MAX_KEYED_ATTACHMENTS = 100;
 
 export type VerificationOutcome = "success" | "failed" | "cancelled" | "unknown";
 
 export interface DirtyFileIdentity {
 	path: string;
-	/** Null when the path was missing while hashing, such as a deletion. */
+	/** Null when the path is a known deletion. Unreadable files fail the whole capture. */
 	sha256: string | null;
 }
 
@@ -45,8 +57,15 @@ export interface VerificationEvidence {
 	outcome: VerificationOutcome;
 	/** Null when the process was cancelled or never produced an exit status. */
 	exitStatus: number | null;
+	/** Identity captured after the run. `changedDuringRun` says whether the tree moved mid-run. */
 	code: CodeIdentity;
+	/** True when the tree differed before and after the run, or the comparison was incomplete. */
+	changedDuringRun: boolean;
+	/** Runner or launch failure detail, such as a rejecting shell runner. */
+	error?: string;
 	output: { text: string; truncated: boolean };
+	/** Complete output location when the session bounded the retained text. */
+	fullOutputPath?: string;
 }
 
 /** What may be attached to a task or peer message. Full output is omitted unless a preview is requested. */
@@ -61,17 +80,34 @@ export interface VerificationReference {
 	exitStatus: number | null;
 	revision: string | null;
 	dirty: boolean;
+	changedDuringRun: boolean;
 	/** Null when this workspace cannot be compared to the recorded identity. */
 	stale: boolean | null;
+	error?: string;
 	outputPreview?: string;
 }
+
+/** Bus context item carrying the reference, not the local output, unless a preview was requested. */
+export interface VerificationContextItem {
+	kind: "text";
+	title: string;
+	text: string;
+	mediaType: string;
+}
+
+/**
+ * Runs the user's command. Production passes the session runner (`pi.execBash`); tests pass
+ * local or faux runners. Cancellation and process-tree cleanup belong to the runner's lifecycle.
+ */
+export type VerificationBashRunner = (command: string) => Promise<BashResult>;
 
 export interface RunVerificationOptions {
 	command: string;
 	cwd: string;
+	/** Session-selected shell execution. Required: a missing runner must never fall back to the host. */
+	runner: VerificationBashRunner;
+	/** Checked before spawning only; once started, cancellation belongs to the runner. */
 	signal?: AbortSignal;
-	timeoutMs?: number;
-	maxOutputBytes?: number;
 	now?: () => Date;
 }
 
@@ -85,148 +121,241 @@ const EMPTY_IDENTITY: CodeIdentity = {
 
 function isInside(parent: string, child: string): boolean {
 	const relative = path.relative(parent, child);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+	return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-/** Porcelain v1 -z paths, using the destination path for renames and copies. */
-export function parseGitStatusPaths(raw: string): string[] {
+/** One porcelain v1 `-z` path. `deleted` marks paths git reports as deleted (known-absent). */
+export interface GitStatusEntry {
+	path: string;
+	deleted: boolean;
+}
+
+/**
+ * Porcelain v1 `-z` paths. Rename and copy entries carry the destination first
+ * (`R  new.ts\0old.ts\0`); the original name is skipped. See git-status porcelain format v1.
+ */
+export function parseGitStatusEntries(raw: string): GitStatusEntry[] {
 	const parts = raw.split("\0").filter((part) => part.length > 0);
-	const paths: string[] = [];
+	const entries: GitStatusEntry[] = [];
 	for (let index = 0; index < parts.length; index++) {
 		const entry = parts[index];
 		if (entry.length < 4) continue;
 		const status = entry.slice(0, 2);
 		const filePath = entry.slice(3);
 		if (status.includes("R") || status.includes("C")) {
-			const destination = parts[++index];
-			if (destination) paths.push(destination);
+			index++; // Skip the original name; the destination identifies the file.
+			if (filePath) entries.push({ path: filePath, deleted: status.includes("D") });
 		} else if (filePath) {
-			paths.push(filePath);
+			entries.push({ path: filePath, deleted: status.includes("D") });
 		}
 	}
-	return paths;
+	return entries;
+}
+
+async function runGit(cwd: string, args: string[]): Promise<{ stdout: string } | undefined> {
+	try {
+		const result = await execCommand("git", args, cwd, { timeout: 5_000 });
+		return result.code === 0 ? result : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Hash one dirty file. Returns "over-budget" when the file alone exceeds the remaining byte
+ * budget, undefined when it cannot be read, else the digest and bytes charged.
+ */
+function hashFileWithinBudget(
+	absolute: string,
+	budget: number,
+): { digest: string; bytes: number } | "over-budget" | undefined {
+	let size: number;
+	try {
+		const stat = statSync(absolute);
+		if (!stat.isFile()) return undefined;
+		size = stat.size;
+	} catch {
+		return undefined;
+	}
+	if (size > budget) return "over-budget";
+	try {
+		const content = readFileSync(absolute);
+		return { digest: createHash("sha256").update(content).digest("hex"), bytes: content.length };
+	} catch {
+		return undefined;
+	}
 }
 
 async function captureCodeIdentity(cwd: string): Promise<CodeIdentity> {
-	let head: Awaited<ReturnType<typeof execCommand>>;
-	try {
-		head = await execCommand("git", ["rev-parse", "HEAD"], cwd, { timeout: 5_000 });
-	} catch {
-		return EMPTY_IDENTITY;
-	}
-	if (head.code !== 0) return EMPTY_IDENTITY;
+	const toplevel = await runGit(cwd, ["rev-parse", "--show-toplevel"]);
+	const head = await runGit(cwd, ["rev-parse", "HEAD"]);
+	if (!toplevel || !head) return EMPTY_IDENTITY;
+	const root = toplevel.stdout.trim();
 	const revision = head.stdout.trim();
-	if (!revision) return EMPTY_IDENTITY;
-	let status: Awaited<ReturnType<typeof execCommand>>;
-	try {
-		status = await execCommand("git", ["status", "--porcelain=v1", "-z"], cwd, { timeout: 5_000 });
-	} catch {
-		return { ...EMPTY_IDENTITY, revision };
+	if (!root || !revision) return EMPTY_IDENTITY;
+	// --untracked-files=all expands untracked directories to files and overrides user config
+	// that would hide untracked files. Status paths are repository-root-relative.
+	const status = await runGit(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+	if (!status) return { ...EMPTY_IDENTITY, revision };
+	const seen = new Set<string>();
+	const dirtyEntries: GitStatusEntry[] = [];
+	for (const entry of parseGitStatusEntries(status.stdout)) {
+		if (seen.has(entry.path)) continue;
+		seen.add(entry.path);
+		dirtyEntries.push(entry);
 	}
-	if (status.code !== 0) return { ...EMPTY_IDENTITY, revision };
-	const dirtyPaths = [...new Set(parseGitStatusPaths(status.stdout))].sort();
-	const limited = dirtyPaths.slice(0, MAX_DIRTY_FILES);
+	dirtyEntries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+	let filesTruncated = dirtyEntries.length > MAX_DIRTY_FILES;
 	const files: DirtyFileIdentity[] = [];
-	for (const filePath of limited) {
-		const absolute = path.resolve(cwd, filePath);
-		if (!isInside(cwd, absolute)) continue;
-		let sha256: string | null = null;
-		try {
-			sha256 = createHash("sha256").update(readFileSync(absolute)).digest("hex");
-		} catch {
-			sha256 = null;
+	let remaining = MAX_IDENTITY_BYTES;
+	for (const entry of dirtyEntries.slice(0, MAX_DIRTY_FILES)) {
+		const absolute = path.resolve(root, entry.path);
+		if (!isInside(root, absolute)) {
+			filesTruncated = true;
+			continue;
 		}
-		files.push({ path: filePath.split(path.sep).join("/"), sha256 });
+		const hashed = hashFileWithinBudget(absolute, remaining);
+		if (hashed === "over-budget") {
+			filesTruncated = true;
+			break;
+		}
+		if (hashed === undefined && !entry.deleted) return { ...EMPTY_IDENTITY, revision };
+		if (hashed !== undefined) remaining -= hashed.bytes;
+		files.push({ path: entry.path.split(path.sep).join("/"), sha256: hashed?.digest ?? null });
 	}
 	return {
 		available: true,
 		revision,
-		dirty: dirtyPaths.length > 0,
+		dirty: dirtyEntries.length > 0,
 		files,
-		filesTruncated: dirtyPaths.length > MAX_DIRTY_FILES,
+		filesTruncated,
 	};
 }
 
-export function isCodeIdentityStale(recorded: CodeIdentity, current: CodeIdentity): boolean | null {
-	if (!recorded.available || !current.available) return null;
-	if (recorded.filesTruncated || current.filesTruncated) return true;
-	if (recorded.revision !== current.revision || recorded.dirty !== current.dirty) return true;
-	if (recorded.files.length !== current.files.length) return true;
-	for (let index = 0; index < recorded.files.length; index++) {
-		const previous = recorded.files[index];
-		const next = current.files[index];
-		if (previous.path !== next.path || previous.sha256 !== next.sha256) return true;
+type IdentityComparison = "same" | "changed" | "unknown";
+
+function compareCodeIdentities(first: CodeIdentity, second: CodeIdentity): IdentityComparison {
+	if (!first.available || !second.available) return "unknown";
+	if (first.revision !== second.revision || first.dirty !== second.dirty) return "changed";
+	if (first.filesTruncated || second.filesTruncated) return "unknown";
+	if (first.files.length !== second.files.length) return "changed";
+	for (let index = 0; index < first.files.length; index++) {
+		const previous = first.files[index];
+		const next = second.files[index];
+		if (previous.path !== next.path || previous.sha256 !== next.sha256) return "changed";
 	}
-	return false;
+	return "same";
+}
+
+export function isCodeIdentityStale(recorded: CodeIdentity, current: CodeIdentity): boolean | null {
+	const comparison = compareCodeIdentities(recorded, current);
+	return comparison === "unknown" ? null : comparison === "changed";
+}
+
+/** Conservative start/end comparison: anything unprovable counts as changed. */
+function codeIdentityChanged(before: CodeIdentity, after: CodeIdentity): boolean {
+	if (!before.available && !after.available) return false;
+	return compareCodeIdentities(before, after) !== "same";
 }
 
 /**
- * The process observation wins. A written claim such as "tests passed" cannot create a success.
- * With no evidence record, the outcome is unknown.
+ * Run one explicitly selected command and record the observed process result. The code identity
+ * is captured before execution and compared afterward: when the tree moved mid-run (an edit, or
+ * a command that writes files itself such as a formatter), the outcome is still the observed
+ * process result, but the record says the final tree was not verified.
  */
-export function reportedVerificationOutcome(
-	_summary: string,
-	evidence: VerificationEvidence | undefined,
-): VerificationOutcome {
-	return evidence?.outcome ?? "unknown";
-}
-
 export async function runVerification(options: RunVerificationOptions): Promise<VerificationEvidence> {
 	const now = options.now ?? (() => new Date());
 	const startedAt = now().toISOString();
-	const command = options.command;
-	const cwd = options.cwd;
+	const { command, cwd } = options;
 	const finish = (
 		outcome: VerificationOutcome,
 		exitStatus: number | null,
 		code: CodeIdentity,
 		output: { text: string; truncated: boolean },
+		extra: { changedDuringRun: boolean; endedAt: string; error?: string; fullOutputPath?: string },
 	): VerificationEvidence => ({
 		version: 1,
 		id: randomUUID(),
 		command,
 		cwd,
 		startedAt,
-		endedAt: now().toISOString(),
+		endedAt: extra.endedAt,
 		outcome,
 		exitStatus,
 		code,
+		changedDuringRun: extra.changedDuringRun,
+		...(extra.error === undefined ? {} : { error: extra.error }),
 		output,
+		...(extra.fullOutputPath === undefined ? {} : { fullOutputPath: extra.fullOutputPath }),
 	});
 
 	if (options.signal?.aborted) {
-		return finish("cancelled", null, EMPTY_IDENTITY, { text: "", truncated: false });
+		return finish(
+			"cancelled",
+			null,
+			EMPTY_IDENTITY,
+			{ text: "", truncated: false },
+			{
+				changedDuringRun: false,
+				endedAt: startedAt,
+			},
+		);
 	}
 	if (!command.trim()) {
-		return finish("unknown", null, EMPTY_IDENTITY, { text: "", truncated: false });
+		return finish(
+			"unknown",
+			null,
+			EMPTY_IDENTITY,
+			{ text: "", truncated: false },
+			{
+				changedDuringRun: false,
+				endedAt: startedAt,
+			},
+		);
 	}
 
-	const shell = process.platform === "win32" ? "cmd.exe" : "sh";
-	const shellArgs = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
-	let result: Awaited<ReturnType<typeof execCommand>>;
+	const before = await captureCodeIdentity(cwd);
+	let result: BashResult;
 	try {
-		result = await execCommand(shell, shellArgs, cwd, {
-			signal: options.signal,
-			timeout: options.timeoutMs,
-			maxBuffer: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
-		});
-	} catch {
-		return finish("unknown", null, await captureCodeIdentity(cwd), { text: "", truncated: false });
+		result = await options.runner(command);
+	} catch (error) {
+		// The command never produced an observation: a rejecting runner, a spawn failure.
+		const code = await captureCodeIdentity(cwd);
+		return finish(
+			"unknown",
+			null,
+			code,
+			{ text: "", truncated: false },
+			{
+				changedDuringRun: codeIdentityChanged(before, code),
+				endedAt: now().toISOString(),
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
 	}
-
-	const text = [result.stdout, result.stderr]
-		.filter((part) => part.length > 0)
-		.join(result.stdout && result.stderr ? "\n" : "");
-	const code = await captureCodeIdentity(cwd);
-	const cancelled = options.signal?.aborted === true || (result.killed && !result.truncated);
-	if (cancelled) {
-		const exitStatus = result.killed && result.code === 0 ? null : result.code;
-		return finish("cancelled", exitStatus, code, { text, truncated: result.truncated });
+	// Process completion time, captured before git inspection.
+	const endedAt = now().toISOString();
+	const after = await captureCodeIdentity(cwd);
+	const changedDuringRun = codeIdentityChanged(before, after);
+	const output = { text: result.output, truncated: result.truncated };
+	const rest = {
+		changedDuringRun,
+		endedAt,
+		...(result.fullOutputPath === undefined ? {} : { fullOutputPath: result.fullOutputPath }),
+	};
+	if (result.cancelled) {
+		return finish("cancelled", null, after, output, rest);
 	}
-	if (result.truncated || result.code !== 0) {
-		return finish("failed", result.code, code, { text, truncated: result.truncated });
+	// A missing exit status is never success: a signal-killed command reports no status, and
+	// the local backend already maps signal deaths to 128 + signal number.
+	if (result.exitCode === undefined) {
+		return finish("failed", null, after, output, rest);
 	}
-	return finish("success", 0, code, { text, truncated: false });
+	if (result.exitCode !== 0) {
+		return finish("failed", result.exitCode, after, output, rest);
+	}
+	return finish("success", 0, after, output, rest);
 }
 
 export async function verificationStale(evidence: VerificationEvidence): Promise<boolean | null> {
@@ -248,7 +377,9 @@ export async function toVerificationReference(
 		exitStatus: evidence.exitStatus,
 		revision: evidence.code.revision,
 		dirty: evidence.code.dirty,
-		stale: await verificationStale(evidence),
+		changedDuringRun: evidence.changedDuringRun,
+		stale: evidence.changedDuringRun ? null : await verificationStale(evidence),
+		...(evidence.error === undefined ? {} : { error: evidence.error }),
 	};
 	if (options?.shareOutput && evidence.output.text) {
 		reference.outputPreview = evidence.output.text.slice(0, SHARE_PREVIEW_CHARS);
@@ -258,67 +389,92 @@ export async function toVerificationReference(
 
 interface VerificationShareRecord {
 	version: 1;
-	evidenceId: string;
+	/** Null clears a previous share. */
+	evidenceId: string | null;
 }
 
 /** One line for a task note. It names the check and omits command output. */
 export function verificationResultLine(reference: VerificationReference): string {
 	const exit = reference.exitStatus === null ? "no exit status" : `exit ${reference.exitStatus}`;
-	const freshness = reference.stale === null ? "freshness unknown" : reference.stale ? "stale" : "current";
+	const freshness = reference.changedDuringRun
+		? "changed during the run"
+		: reference.stale === null
+			? "freshness unknown"
+			: reference.stale
+				? "stale"
+				: "current";
 	const revision = reference.revision ? `, revision ${reference.revision}` : "";
 	const command = reference.command.length > 160 ? `${reference.command.slice(0, 157)}...` : reference.command;
 	return `Verification evidence ${reference.id}: ${reference.outcome} (${freshness}, ${exit}${revision}) \`${command}\``;
 }
 
-function contextHasEvidence(context: unknown[], evidenceId: string): boolean {
-	for (const entry of context) {
-		if (!entry || typeof entry !== "object") continue;
+function evidenceContextIndex(context: unknown[], evidenceId: string): number {
+	return context.findIndex((entry) => {
+		if (!entry || typeof entry !== "object") return false;
 		const text = (entry as { text?: unknown }).text;
-		if (typeof text !== "string") continue;
+		if (typeof text !== "string") return false;
 		try {
 			const parsed: unknown = JSON.parse(text);
-			if (parsed && typeof parsed === "object" && (parsed as { id?: unknown }).id === evidenceId) return true;
+			return !!parsed && typeof parsed === "object" && (parsed as { id?: unknown }).id === evidenceId;
 		} catch {
-			// Unrelated context text.
+			return false;
 		}
-	}
-	return false;
+	});
 }
+
+/** "limited" means the Bus payload budget was already full; the caller must tell the user. */
+export type VerificationAttachmentResult = "attached" | "not-applicable" | "limited";
 
 /**
  * Attach a shared reference to a Bus task result.
  * Response messages gain a context item. Completed tasks gain a one-line note.
- * Requests are left unchanged. Returns false when nothing was added.
+ * Requests are left unchanged.
+ *
+ * The item and note are always derived from the stored record. A model-written copy carrying
+ * this evidence id is replaced in place, never trusted: schema validation cannot establish
+ * that a written claim matches a process observation.
  */
 export function attachVerificationReference(
 	toolName: string,
 	input: Record<string, unknown>,
-	item: { kind: "text"; title: string; text: string; mediaType: string },
+	item: VerificationContextItem,
 	evidenceId: string,
 	noteLine: string,
-): boolean {
-	if (toolName === BUS_MESSAGE_PEER_TOOL || toolName === "message_peer") {
+): VerificationAttachmentResult {
+	if (toolName === BUS_MESSAGE_PEER_TOOL) {
 		const isResult = input.mode === "response" || typeof input.responseTo === "string";
-		if (!isResult) return false;
+		if (!isResult) return "not-applicable";
 		const context = Array.isArray(input.context) ? input.context : [];
-		if (contextHasEvidence(context, evidenceId)) return false;
+		const index = evidenceContextIndex(context, evidenceId);
+		if (index >= 0) {
+			const next = [...context];
+			next[index] = item;
+			input.context = next;
+			return "attached";
+		}
+		if (context.length >= BUS_MAX_CONTEXT_ITEMS) return "limited";
 		input.context = [...context, item];
-		return true;
+		return "attached";
 	}
-	if (toolName === BUS_COMPLETE_TASK_TOOL || toolName === "complete_task") {
+	if (toolName === BUS_COMPLETE_TASK_TOOL) {
 		const note = typeof input.note === "string" ? input.note : "";
-		if (note.includes(`Verification evidence ${evidenceId}:`)) return false;
-		input.note = note ? `${note}\n${noteLine}` : noteLine;
-		return true;
+		const prefix = `Verification evidence ${evidenceId}:`;
+		const rest = note
+			.split("\n")
+			.filter((line) => !line.startsWith(prefix))
+			.join("\n");
+		const next = rest ? `${rest}\n${noteLine}` : noteLine;
+		if (Buffer.byteLength(next, "utf-8") > BUS_MAX_NOTE_BYTES) return "limited";
+		input.note = next;
+		return "attached";
 	}
-	return false;
+	return "not-applicable";
 }
 
-/** Bus context item carrying the reference, not the local output, unless a preview was requested. */
 export async function verificationContextItem(
 	evidence: VerificationEvidence,
 	options?: { shareOutput?: boolean },
-): Promise<{ kind: "text"; title: string; text: string; mediaType: string }> {
+): Promise<VerificationContextItem> {
 	const reference = await toVerificationReference(evidence, options);
 	return {
 		kind: "text",
@@ -347,54 +503,79 @@ function latestEvidence(
 }
 
 function isShare(value: unknown): value is VerificationShareRecord {
-	return (
-		!!value &&
-		typeof value === "object" &&
-		(value as VerificationShareRecord).version === 1 &&
-		typeof (value as VerificationShareRecord).evidenceId === "string"
-	);
+	if (!value || typeof value !== "object") return false;
+	const record = value as Partial<VerificationShareRecord>;
+	return record.version === 1 && (typeof record.evidenceId === "string" || record.evidenceId === null);
 }
 
+/**
+ * The armed evidence, if any. Sharing arms the latest run only: a newer run disarms it, and
+ * unsharing clears it. Entries are append-only, so the last share record wins.
+ */
 function sharedEvidence(
 	entries: readonly { type: string; customType?: string; data?: unknown }[],
 ): VerificationEvidence | undefined {
-	let evidenceId: string | undefined;
+	let share: VerificationShareRecord | undefined;
 	for (const entry of entries) {
 		if (entry.type === "custom" && entry.customType === VERIFICATION_SHARE_ENTRY && isShare(entry.data)) {
-			evidenceId = entry.data.evidenceId;
+			share = entry.data;
 		}
 	}
-	if (!evidenceId) return undefined;
-	for (const entry of entries) {
-		if (
-			entry.type === "custom" &&
-			entry.customType === VERIFICATION_ENTRY &&
-			isEvidence(entry.data) &&
-			entry.data.id === evidenceId
-		) {
-			return entry.data;
-		}
-	}
-	return undefined;
+	if (!share?.evidenceId) return undefined;
+	const latest = latestEvidence(entries);
+	return latest?.id === share.evidenceId ? latest : undefined;
 }
 
-function formatStatus(evidence: VerificationEvidence, stale: boolean | null): string {
-	const freshness = stale === null ? "freshness unknown" : stale ? "stale" : "current";
+function formatStatus(evidence: VerificationEvidence, stale: boolean | null, armed: boolean): string {
+	const freshness = evidence.changedDuringRun
+		? "changed during the run"
+		: stale === null
+			? "freshness unknown"
+			: stale
+				? "stale"
+				: "current";
 	const exit = evidence.exitStatus === null ? "no exit status" : `exit ${evidence.exitStatus}`;
-	return [
+	const lines = [
 		`${evidence.outcome} (${freshness}, ${exit})`,
 		evidence.command,
 		evidence.code.revision
 			? `revision ${evidence.code.revision}${evidence.code.dirty ? " dirty" : ""}`
 			: "no git revision",
-		"Output stays local. /verify share previews it for a peer reference.",
-	].join("\n");
+		armed ? "Sharing: armed for later task results" : "Sharing: off",
+	];
+	if (evidence.error) lines.push(`error: ${evidence.error}`);
+	if (evidence.output.text) {
+		const tail =
+			evidence.output.text.length > STATUS_OUTPUT_CHARS
+				? `...${evidence.output.text.slice(-STATUS_OUTPUT_CHARS)}`
+				: evidence.output.text;
+		lines.push("--- output ---", tail);
+	}
+	if (evidence.output.truncated) {
+		lines.push(evidence.fullOutputPath ? `Full output: ${evidence.fullOutputPath}` : "Output was truncated.");
+	}
+	lines.push("Output stays local. /verify share previews it for a peer reference.");
+	return lines.join("\n");
 }
+
+const VERIFY_SUBCOMMANDS = ["status", "share", "unshare", "run"];
 
 /** Record explicitly selected commands. The outcome is the observed process result. */
 export function registerVerificationEvidence(pi: ExtensionAPI): void {
+	// Idempotency keys of outgoing keyed messages and the exact attachment they carried, so a
+	// same-key retry resends byte-identical content instead of a freshly evaluated reference.
+	const keyedAttachments = new Map<string, { item: VerificationContextItem; noteLine: string }>();
+
 	pi.registerCommand("verify", {
 		description: "Run a verification command and record its observed result",
+		getArgumentCompletions: (prefix) => {
+			if (prefix.includes(" ")) return null;
+			const trimmed = prefix.trim();
+			return VERIFY_SUBCOMMANDS.filter((subcommand) => subcommand.startsWith(trimmed)).map((subcommand) => ({
+				value: subcommand,
+				label: subcommand,
+			}));
+		},
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
 			const entries = ctx.sessionManager.getBranch();
@@ -404,7 +585,8 @@ export function registerVerificationEvidence(pi: ExtensionAPI): void {
 					ctx.ui.notify("No verification evidence yet. Use /verify run <command>.", "info");
 					return;
 				}
-				ctx.ui.notify(formatStatus(evidence, await verificationStale(evidence)), "info");
+				const armed = sharedEvidence(entries)?.id === evidence.id;
+				ctx.ui.notify(formatStatus(evidence, await verificationStale(evidence), armed), "info");
 				return;
 			}
 			if (trimmed === "share") {
@@ -418,11 +600,22 @@ export function registerVerificationEvidence(pi: ExtensionAPI): void {
 					version: 1,
 					evidenceId: evidence.id,
 				} satisfies VerificationShareRecord);
-				ctx.ui.notify(`Peer reference:\n${item.text}`, "info");
+				ctx.ui.notify(
+					`Peer reference:\n${item.text}\nTask notes are visible to every agent in the task scope.`,
+					"info",
+				);
+				return;
+			}
+			if (trimmed === "unshare") {
+				pi.appendEntry(VERIFICATION_SHARE_ENTRY, {
+					version: 1,
+					evidenceId: null,
+				} satisfies VerificationShareRecord);
+				ctx.ui.notify("Verification sharing is off.", "info");
 				return;
 			}
 			if (!trimmed.startsWith("run ")) {
-				ctx.ui.notify("Usage: /verify status | /verify share | /verify run <command>", "warning");
+				ctx.ui.notify("Usage: /verify status | /verify share | /verify unshare | /verify run <command>", "warning");
 				return;
 			}
 			const command = trimmed.slice(4).trim();
@@ -430,15 +623,17 @@ export function registerVerificationEvidence(pi: ExtensionAPI): void {
 				ctx.ui.notify("Usage: /verify run <command>", "warning");
 				return;
 			}
+			ctx.ui.notify(`Running verification: ${command}`, "info");
 			const evidence = await runVerification({
 				command,
 				cwd: ctx.cwd,
+				runner: (runCommand) => pi.execBash(runCommand),
 				signal: ctx.signal,
-				timeoutMs: 60_000,
 			});
 			pi.appendEntry(VERIFICATION_ENTRY, evidence);
+			// A new run disarms any previous share: sharing always arms the latest run only.
 			ctx.ui.notify(
-				formatStatus(evidence, await verificationStale(evidence)),
+				formatStatus(evidence, await verificationStale(evidence), false),
 				evidence.outcome === "success" ? "info" : "warning",
 			);
 		},
@@ -447,16 +642,44 @@ export function registerVerificationEvidence(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== BUS_MESSAGE_PEER_TOOL && event.toolName !== BUS_COMPLETE_TASK_TOOL) return undefined;
 		const evidence = sharedEvidence(ctx.sessionManager.getBranch());
-		if (!evidence || !event.input || typeof event.input !== "object") return undefined;
-		const item = await verificationContextItem(evidence, { shareOutput: true });
-		const reference = JSON.parse(item.text) as VerificationReference;
-		attachVerificationReference(
-			event.toolName,
-			event.input as Record<string, unknown>,
-			item,
-			evidence.id,
-			verificationResultLine(reference),
-		);
+		if (!evidence) return undefined;
+		const input = event.input as Record<string, unknown>;
+		if (event.toolName === BUS_MESSAGE_PEER_TOOL) {
+			const isResult = input.mode === "response" || typeof input.responseTo === "string";
+			if (!isResult) return undefined;
+		}
+		const rawKey = input.idempotencyKey;
+		const cacheKey = typeof rawKey === "string" && rawKey ? `${event.toolName}:${rawKey}` : undefined;
+		const cached = cacheKey ? keyedAttachments.get(cacheKey) : undefined;
+		let item: VerificationContextItem;
+		let noteLine: string;
+		if (cached) {
+			item = cached.item;
+			noteLine = cached.noteLine;
+		} else {
+			const reference = await toVerificationReference(evidence, { shareOutput: true });
+			item = {
+				kind: "text",
+				title: VERIFICATION_CONTEXT_TITLE,
+				mediaType: "application/json",
+				text: JSON.stringify(reference),
+			};
+			noteLine = verificationResultLine(reference);
+			if (cacheKey) {
+				if (keyedAttachments.size >= MAX_KEYED_ATTACHMENTS) {
+					const oldest = keyedAttachments.keys().next();
+					if (!oldest.done) keyedAttachments.delete(oldest.value);
+				}
+				keyedAttachments.set(cacheKey, { item, noteLine });
+			}
+		}
+		const attached = attachVerificationReference(event.toolName, input, item, evidence.id, noteLine);
+		if (attached === "limited") {
+			ctx.ui.notify(
+				"Verification evidence was not attached: the message context or task note is at its Bus size limit.",
+				"warning",
+			);
+		}
 		return undefined;
 	});
 }

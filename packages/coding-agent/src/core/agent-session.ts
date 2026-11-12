@@ -3595,6 +3595,9 @@ export class AgentSession {
 				setLabel: (entryId, label) => {
 					this.sessionManager.appendLabelChange(entryId, label);
 				},
+				execBash: (command, options) => {
+					return this.executeBash(command, options?.onChunk, { excludeFromContext: true });
+				},
 				getActiveTools: () => this.getActiveToolNames(),
 				getAllTools: () => this.getAllTools(),
 				getSettings: () => this.settingsManager.getSettings(),

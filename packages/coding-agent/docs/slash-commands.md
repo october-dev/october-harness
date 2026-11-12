@@ -46,6 +46,10 @@ Review a session before exporting or sharing it. Sessions can contain prompts, t
 
 | Command | Description |
 |---|---|
+| `/verify run <command>` | Run a command through the session shell and record its observed result, timing, and git identity |
+| `/verify status` | Show the latest verification record and whether the tree still matches |
+| `/verify share` | Arm the latest record for attachment to later Bus task results |
+| `/verify unshare` | Stop attaching verification evidence to task results |
 | `/trust` | Save a project trust decision for future October processes |
 | `/mcp` | Manage MCP servers: sign in, reconnect, enable or disable, and change exposure |
 | `/reload` | Reload keybindings, extensions, skills, templates, themes, and context files |

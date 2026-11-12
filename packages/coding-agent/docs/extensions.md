@@ -1940,6 +1940,17 @@ const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 
 Options: `signal` and `timeout` terminate the command, `cwd` sets the working directory, and `maxBuffer` limits stdout and stderr combined (default 256 MiB). When output exceeds `maxBuffer`, pi terminates the command and returns the output up to the limit with `truncated: true`, `killed: true`, and a nonzero `code`. `killed` is true whenever pi terminated the command: timeout, abort, or `maxBuffer`. A command that ignores SIGTERM gets SIGKILL after 5 seconds.
 
+### pi.execBash(command, options?)
+
+Run a shell command through the session: the configured shell path and command prefix, the session-selected shell runner (host, Docker, or SDK-supplied), and the session's cancellation tracking, so Esc aborts the command and kills its process tree. Prefer this over `pi.exec` for user-facing commands; use `pi.exec` for harness-internal probes such as `git`.
+
+```typescript
+const result = await pi.execBash("npm test");
+// result.output, result.exitCode, result.cancelled, result.truncated, result.fullOutputPath
+```
+
+Options: `onChunk` receives sanitized output chunks while the command runs. A rejecting runner rejects instead of falling back to the host. The result is recorded on the session but excluded from model context. Output is bounded without failing the command; `fullOutputPath` keeps the complete output when truncation applied.
+
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
 
 Manage active tools. This works for both built-in tools and dynamically registered tools. `pi.getActiveTools()` returns the active tool names as `string[]`; `pi.getAllTools()` returns metadata for all configured tools.
