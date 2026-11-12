@@ -7,7 +7,12 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
-import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
+import type {
+	PromptDisposition,
+	QueuedInputDisposition,
+	SessionStats,
+	TeamInboxDispatchState,
+} from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -31,6 +36,8 @@ export type RpcCommand =
 	// State
 	| { id?: string; type: "get_state" }
 	| { id?: string; type: "get_permissions" }
+	| { id?: string; type: "get_team_inbox" }
+	| { id?: string; type: "set_team_inbox"; paused: boolean }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -147,6 +154,20 @@ export type RpcResponse =
 			command: "get_permissions";
 			success: true;
 			data: OctoberPermissionExplanation | null;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_team_inbox";
+			success: true;
+			data: TeamInboxDispatchState;
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_team_inbox";
+			success: true;
+			data: TeamInboxDispatchState;
 	  }
 
 	// Model
