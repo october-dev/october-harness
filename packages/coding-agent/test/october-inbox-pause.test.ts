@@ -328,6 +328,38 @@ describe("automatic inbox dispatch pause", () => {
 		expect(second.bus.acks).toEqual([["m-queued"]]);
 	});
 
+	// #46: tree navigation can leave the pause record outside the active branch.
+	it("keeps the pause choice when its record is not on the active branch", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const beforePause = sessionManager.appendCustomEntry("test-marker");
+		sessionManager.appendCustomEntry(INBOX_PAUSE_ENTRY, { version: 1, paused: true });
+		sessionManager.branch(beforePause);
+		sessionManager.appendCustomEntry("test-marker");
+		expect(readInboxPause(sessionManager.getBranch())).toBe(false);
+
+		const { harness, bus, statuses } = await startBus({ sessionManager });
+		expect(harness.session.getTeamInboxDispatch()).toMatchObject({ available: true, paused: true });
+		expect(statuses.at(-1)).toContain("paused");
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(bus.inboxCalls).toBe(0);
+	});
+
+	// #46: a failed write must leave the choice unchanged and allow a real retry.
+	it.each([true, false])("retries a failed write of paused=%s", async (next) => {
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendCustomEntry(INBOX_PAUSE_ENTRY, { version: 1, paused: !next });
+		const { harness } = await startBus({ sessionManager });
+		const persist = vi.spyOn(sessionManager, "_persist").mockImplementationOnce(() => {
+			throw new Error("write failed");
+		});
+		expect(() => harness.session.setTeamInboxDispatch(next)).toThrow("write failed");
+		expect(harness.session.getTeamInboxDispatch().paused).toBe(!next);
+		expect(pauseValues(harness)).toEqual([!next]);
+		expect(harness.session.setTeamInboxDispatch(next).paused).toBe(next);
+		expect(pauseValues(harness)).toEqual([!next, next]);
+		expect(persist).toHaveBeenCalledTimes(2);
+	});
+
 	it("retries acknowledgement of settled work while paused and leaves an unread batch untouched", async () => {
 		const sessionManager = SessionManager.inMemory();
 		sessionManager.appendCustomEntry(INBOX_PAUSE_ENTRY, { version: 1, paused: true });

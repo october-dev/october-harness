@@ -73,7 +73,7 @@ interface DeliveryBatch {
 	permissionCeiling: OctoberTemporaryPermissionCeiling;
 }
 
-/** The user's pause choice. The latest record on the session branch wins. */
+/** The user's pause choice. The latest valid record in the session wins, whichever branch it was written on. */
 export interface InboxPauseRecord {
 	version: 1;
 	paused: boolean;
@@ -122,7 +122,7 @@ export function parseInboxPauseRecord(value: unknown): InboxPauseRecord | undefi
 	return { version: 1, paused: value.paused };
 }
 
-/** Latest pause choice on a session branch. Missing or malformed records leave delivery automatic. */
+/** Latest valid pause choice among the given entries; defaults to automatic when none is valid. */
 export function readInboxPause(entries: readonly { type: string; customType?: string; data?: unknown }[]): boolean {
 	let paused = false;
 	for (const entry of entries) {
@@ -405,6 +405,7 @@ export function registerOctoberPublicBus(
 	let paused = false;
 	let dispatchEnabled = false;
 	let controllerKey: object | undefined;
+	let controller: InboxDispatchController | undefined;
 	let wakePollWait: (() => void) | undefined;
 	const pending = new Map<string, DeliveryBatch>();
 	const acknowledging = new Set<string>();
@@ -432,8 +433,10 @@ export function registerOctoberPublicBus(
 		});
 	const forgetController = (): void => {
 		if (!controllerKey) return;
-		inboxControllers.delete(controllerKey);
+		// A newer instance may own this session manager's controller.
+		if (inboxControllers.get(controllerKey) === controller) inboxControllers.delete(controllerKey);
 		controllerKey = undefined;
+		controller = undefined;
 	};
 	const deactivateStaleContext = (): void => {
 		closed = true;
@@ -586,9 +589,9 @@ export function registerOctoberPublicBus(
 
 	const applyPause = (next: boolean): TeamInboxDispatchStatus => {
 		if (paused !== next) {
-			paused = next;
 			// Only this control and /inbox write the choice. Incoming peer messages never do.
-			pi.appendEntry<InboxPauseRecord>(INBOX_PAUSE_ENTRY, { version: 1, paused });
+			pi.appendEntry<InboxPauseRecord>(INBOX_PAUSE_ENTRY, { version: 1, paused: next });
+			paused = next;
 		}
 		updateUi();
 		if (!paused && dispatchEnabled) scheduleDispatch();
@@ -927,7 +930,7 @@ export function registerOctoberPublicBus(
 		context = ctx;
 		controllerKey = ctx.sessionManager;
 		dispatchEnabled = ctx.mode === "tui" || ctx.mode === "rpc";
-		paused = readInboxPause(ctx.sessionManager.getBranch());
+		paused = readInboxPause(ctx.sessionManager.getEntries());
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== DELIVERY_ENTRY) continue;
 			const record = parseDeliveryRecord(entry.data);
@@ -943,10 +946,8 @@ export function registerOctoberPublicBus(
 				permissionCeiling: record.permissionCeiling,
 			});
 		}
-		inboxControllers.set(controllerKey, {
-			status: () => currentStatus(),
-			setPaused: (next) => applyPause(next),
-		});
+		controller = { status: () => currentStatus(), setPaused: (next) => applyPause(next) };
+		inboxControllers.set(controllerKey, controller);
 		// Acknowledgement of work that already settled continues while paused. Unread batches do not start.
 		for (const batch of pending.values()) {
 			if (batch.state === "handled") void acknowledge(batch);

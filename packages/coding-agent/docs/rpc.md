@@ -154,8 +154,6 @@ The detailed references formerly on this page now have dedicated pages. These an
 <a id="clear_queue"></a>
 <a id="new_session"></a>
 <a id="get_state"></a>
-<a id="get_team_inbox"></a>
-<a id="set_team_inbox"></a>
 <a id="get_messages"></a>
 <a id="set_model"></a>
 <a id="cycle_model"></a>
