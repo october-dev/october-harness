@@ -80,6 +80,14 @@ import {
 import { formatCacheWarmingStatus, formatCacheWarmingUsage } from "../../core/cache-warmer.ts";
 import { findExtensionStackMatches, recordCrash, takeUnnotifiedCrash } from "../../core/crash-log.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../../core/defaults.ts";
+import {
+	CAPABILITY_LOAD_CHOICE,
+	CAPABILITY_SKIP_CHOICE,
+	type CapabilityPreflightDecision,
+	type CapabilityPreflightHost,
+	type CapabilityPreflightItem,
+	formatCapabilityDisclosureTitle,
+} from "../../core/extensions/capability-preflight.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -472,6 +480,11 @@ export interface InteractiveModeOptions {
 	initialThemeSetting?: string;
 	/** Terminal implementation. Defaults to the current process terminal. */
 	terminal?: Terminal;
+	/**
+	 * Host-owned first-load capability disclosure. Once the TUI has started, prompts for reloads
+	 * and session replacement run through the active UI instead of startup selectors.
+	 */
+	capabilityPreflightHost?: CapabilityPreflightHost;
 }
 
 interface ExtensionChangelogUpdate {
@@ -1051,6 +1064,8 @@ export class InteractiveMode {
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
+		// Route later capability disclosures through the active UI, never a second startup UI.
+		this.options.capabilityPreflightHost?.setInteractiveHandler((items) => this.discloseExtensionCapabilities(items));
 		this.isInitialized = true;
 		this.programStatus.report();
 		this.ensurePngTranscoder();
@@ -2824,6 +2839,25 @@ export class InteractiveMode {
 				notify: ui.notify,
 			},
 		};
+	}
+
+	/**
+	 * First-load capability disclosure backed by the active UI, for `/reload` and session
+	 * replacement after startup (#7). Uses the in-app dialog stack, so keyboard input keeps
+	 * working after the choice.
+	 */
+	async discloseExtensionCapabilities(items: CapabilityPreflightItem[]): Promise<CapabilityPreflightDecision[]> {
+		const decisions: CapabilityPreflightDecision[] = [];
+		for (let index = 0; index < items.length; index++) {
+			const item = items[index];
+			if (!item) continue;
+			const selected = await this.showExtensionSelector(formatCapabilityDisclosureTitle(items, index), [
+				CAPABILITY_LOAD_CHOICE,
+				CAPABILITY_SKIP_CHOICE,
+			]);
+			decisions.push({ path: item.path, accept: selected === CAPABILITY_LOAD_CHOICE });
+		}
+		return decisions;
 	}
 
 	private createExtensionUIContext(): ExtensionUIContext {

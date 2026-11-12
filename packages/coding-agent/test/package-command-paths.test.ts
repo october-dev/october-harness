@@ -15,6 +15,7 @@ import { ModelsError } from "@earendil-works/pi-ai";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
+import { readCapabilityPreflightStore } from "../src/core/extensions/capability-preflight.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { DefaultPackageManager, type ResolvedPaths } from "../src/core/package-manager.ts";
 import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-manager.ts";
@@ -25,6 +26,19 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { handlePackageCommand } from "../src/package-manager-cli.ts";
 import { LATEST_VERSION_URL } from "../src/utils/version-check.ts";
 import { allowNetwork } from "./test-network-env.ts";
+
+const { mockShowStartupSelector, mockSelectConfig } = vi.hoisted(() => ({
+	mockShowStartupSelector: vi.fn(),
+	mockSelectConfig: vi.fn(),
+}));
+vi.mock("../src/cli/startup-ui.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/cli/startup-ui.ts")>();
+	return { ...actual, showStartupSelector: mockShowStartupSelector };
+});
+vi.mock("../src/cli/config-selector.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/cli/config-selector.ts")>();
+	return { ...actual, selectConfig: mockSelectConfig };
+});
 
 describe("package commands", () => {
 	let tempDir: string;
@@ -387,6 +401,101 @@ if (process.platform !== "win32") fs.chmodSync(binPath, 0o755);
 			expect(process.exitCode).toBeUndefined();
 		} finally {
 			logSpy.mockRestore();
+		}
+	});
+
+	// #7: package/config commands disclose an installed package before its code loads.
+	function prepareDisclosurePackage(): { packageRoot: string; marker: string } {
+		mkdirSync(join(projectDir, CONFIG_DIR_NAME), { recursive: true });
+		writeFileSync(join(projectDir, CONFIG_DIR_NAME, "settings.json"), JSON.stringify({}));
+		const packageRoot = join(tempDir, "user-package");
+		const marker = join(tempDir, "package-executed.txt");
+		mkdirSync(join(packageRoot, "extensions"), { recursive: true });
+		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "user-package", version: "1.0.0" }));
+		writeFileSync(
+			join(packageRoot, "extensions", "pkg-ext.ts"),
+			`import { writeFileSync } from "node:fs";
+			writeFileSync(${JSON.stringify(marker)}, "executed");
+			export default function () {}`,
+		);
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
+		return { packageRoot, marker };
+	}
+
+	// #7
+	it("discloses an installed package before list loads it", async () => {
+		const { marker } = prepareDisclosurePackage();
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["list"])).resolves.toBeUndefined();
+
+			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(mockShowStartupSelector).not.toHaveBeenCalled();
+			expect(stderr).toContain("pkg-ext");
+			expect(existsSync(marker)).toBe(true);
+			expect(process.exitCode).toBeUndefined();
+			expect(Object.keys(readCapabilityPreflightStore(agentDir).acknowledgements)).toHaveLength(1);
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
+	// #7
+	it("discloses an installed package before config loads it", async () => {
+		const { marker } = prepareDisclosurePackage();
+		mockSelectConfig.mockImplementation(() => {
+			throw new Error("selectConfig reached");
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["config"])).rejects.toThrow("selectConfig reached");
+			expect(mockSelectConfig).toHaveBeenCalled();
+			expect(mockShowStartupSelector).not.toHaveBeenCalled();
+			expect(existsSync(marker)).toBe(true);
+			expect(Object.keys(readCapabilityPreflightStore(agentDir).acknowledgements)).toHaveLength(1);
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+			mockSelectConfig.mockReset();
+		}
+	});
+
+	// #7: declining the installed package lets the command continue without its code.
+	it("lets list continue when disclosure declines the installed package", async () => {
+		const { marker } = prepareDisclosurePackage();
+		const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+		const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		mockShowStartupSelector.mockImplementation(async (_settingsManager: unknown, title: string) => {
+			if (title.includes("Trust project folder")) return undefined;
+			return false;
+		});
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(main(["list"])).resolves.toBeUndefined();
+
+			expect(mockShowStartupSelector).toHaveBeenCalled();
+			expect(existsSync(marker)).toBe(false);
+			expect(process.exitCode).toBeUndefined();
+			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stderr).toContain("Capability preflight skipped");
+			expect(Object.keys(readCapabilityPreflightStore(agentDir).acknowledgements)).toHaveLength(0);
+		} finally {
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+			mockShowStartupSelector.mockReset();
+			if (stdinDescriptor) Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+			else delete (process.stdin as { isTTY?: unknown }).isTTY;
+			if (stdoutDescriptor) Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+			else delete (process.stdout as { isTTY?: unknown }).isTTY;
 		}
 	});
 

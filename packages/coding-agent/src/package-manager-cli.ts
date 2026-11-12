@@ -13,6 +13,7 @@ import { ModelsError } from "@earendil-works/pi-ai";
 import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import lockfile from "proper-lockfile";
+import { createCapabilityPreflightHost } from "./cli/capability-preflight.ts";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
@@ -32,6 +33,7 @@ import {
 	type SelfUpdatePackageTarget,
 	VERSION,
 } from "./config.ts";
+import { CAPABILITY_SKIP_WARNING_PREFIX } from "./core/extensions/capability-preflight.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { DefaultPackageManager, isOfflineModeEnabled } from "./core/package-manager.ts";
@@ -842,6 +844,10 @@ async function createCommandSettingsManager(options: {
 	}
 
 	const appMode = getCommandAppMode();
+	// Package and config commands bootstrap through the same first-load disclosure as session
+	// startup, so an installed extension never imports before its decision (#7). A decline only
+	// skips the extension; the command continues.
+	const capabilityPreflightHost = createCapabilityPreflightHost({ settingsManager, getMode: () => appMode });
 	const extensionsResult =
 		options.projectTrustOverride === undefined && hasTrustRequiringProjectResources(options.cwd)
 			? await new DefaultResourceLoader({
@@ -849,10 +855,16 @@ async function createCommandSettingsManager(options: {
 					agentDir: options.agentDir,
 					settingsManager,
 					extensionFactories: options.extensionFactories,
+					capabilityPreflight: (items) => capabilityPreflightHost.disclose(items),
 				}).loadProjectTrustExtensions()
 			: undefined;
 	for (const error of extensionsResult?.errors ?? []) {
 		projectTrustWarnings.push(`Failed to load extension "${error.path}": ${error.error}`);
+	}
+	for (const warning of extensionsResult?.warnings ?? []) {
+		if (warning.warning.startsWith(CAPABILITY_SKIP_WARNING_PREFIX)) {
+			projectTrustWarnings.push(`Extension "${warning.path}": ${warning.warning}`);
+		}
 	}
 
 	const projectTrusted = await resolveProjectTrusted({
