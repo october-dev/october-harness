@@ -51,6 +51,7 @@ import {
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
+import type { CapabilityPreflightItem } from "./core/extensions/capability-preflight.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScopeWithDiagnostics, type ScopedModel } from "./core/model-resolver.ts";
@@ -796,6 +797,28 @@ export interface MainOptions {
 	extensionFactories?: InlineExtension[];
 }
 
+/** Show a capability summary before project or installed extension code loads. */
+async function discloseCapabilities(
+	items: CapabilityPreflightItem[],
+	mode: string,
+	settingsManager: SettingsManager,
+): Promise<Array<{ path: string; accept: boolean }>> {
+	const decisions: Array<{ path: string; accept: boolean }> = [];
+	for (const item of items) {
+		if (mode === "interactive") {
+			const selected = await showStartupSelector(settingsManager, `${item.summary}\n\n${item.details}`, [
+				{ label: "Load and remember", value: "load" },
+				{ label: "Skip", value: "skip" },
+			]);
+			decisions.push({ path: item.path, accept: selected === "load" });
+			continue;
+		}
+		console.error(chalk.yellow(`${item.summary}\nA capability manifest is disclosure, not a sandbox.`));
+		decisions.push({ path: item.path, accept: true });
+	}
+	return decisions;
+}
+
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
 	// Commands and startup selectors may load themes before runtime creation.
@@ -1110,6 +1133,7 @@ export async function main(args: string[], options?: MainOptions) {
 				systemPrompt: parsed.systemPrompt,
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories,
+				capabilityPreflight: (items) => discloseCapabilities(items, appMode, startupSettingsManager),
 			},
 		});
 		const { settingsManager, modelRuntime, resourceLoader } = services;

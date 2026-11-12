@@ -13,6 +13,13 @@ import { canonicalizePath, isLocalPath, isPathWithin, pathsEqual, resolvePath } 
 import { stripBom } from "../utils/text.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
+	acknowledgeCapabilities,
+	type CapabilityPreflightItem,
+	planCapabilityPreflight,
+	readCapabilityPreflightStore,
+	recordCapabilityInspection,
+} from "./extensions/capability-preflight.ts";
+import {
 	clearExtensionCache,
 	createExtensionRuntime,
 	loadExtensionFromFactory,
@@ -350,6 +357,11 @@ export interface DefaultResourceLoaderOptions {
 	};
 	systemPromptOverride?: (base: string | undefined) => string | undefined;
 	appendSystemPromptOverride?: (base: string[]) => string[];
+	/**
+	 * Called before project-owned or newly installed extension code loads, when that manifest
+	 * has not been remembered. Return `accept: false` to skip the extension.
+	 */
+	capabilityPreflight?: (items: CapabilityPreflightItem[]) => Promise<Array<{ path: string; accept: boolean }>>;
 }
 
 export class DefaultResourceLoader implements ResourceLoader {
@@ -390,6 +402,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 	};
 	private systemPromptOverride?: (base: string | undefined) => string | undefined;
 	private appendSystemPromptOverride?: (base: string[]) => string[];
+	private capabilityPreflight?: (
+		items: CapabilityPreflightItem[],
+	) => Promise<Array<{ path: string; accept: boolean }>>;
 
 	private extensionsResult: LoadExtensionsResult;
 	private skills: Skill[];
@@ -445,6 +460,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentsFilesOverride = options.agentsFilesOverride;
 		this.systemPromptOverride = options.systemPromptOverride;
 		this.appendSystemPromptOverride = options.appendSystemPromptOverride;
+		this.capabilityPreflight = options.capabilityPreflight;
 
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
 		this.skills = [];
@@ -744,7 +760,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			resolvedPaths.installFailures,
 			cliExtensionPaths.installFailures,
 		);
-		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+		const gated = await this.applyCapabilityPreflight(extensionPaths, metadataByPath);
+		const extensionsResult = await loadExtensionsCached(gated.paths, this.cwd, this.eventBus);
+		extensionsResult.errors.push(...gated.errors);
 		mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
@@ -759,6 +777,64 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return extensionsResult;
 	}
 
+	/**
+	 * Disclosure runs before `loadExtensionsCached`, so declined extensions never import their code.
+	 * With no handler, loading is unchanged.
+	 */
+	private async applyCapabilityPreflight(
+		paths: string[],
+		metadataByPath: Map<string, PathMetadata>,
+	): Promise<{ paths: string[]; errors: Array<{ path: string; error: string }> }> {
+		if (!this.capabilityPreflight) return { paths, errors: [] };
+		const store = readCapabilityPreflightStore(this.agentDir);
+		const plan = planCapabilityPreflight(paths, metadataByPath, store.acknowledgements);
+		const considered = [
+			...plan.pending,
+			...plan.ready.flatMap((entryPath) => {
+				const metadata = metadataByPath.get(entryPath) ?? metadataByPath.get(resolvePath(entryPath));
+				const reason =
+					metadata?.scope === "project" ? "project" : metadata?.origin === "package" ? "installed" : undefined;
+				if (!reason || entryPath.startsWith(BUILTIN_PATH_PREFIX)) return [];
+				return planCapabilityPreflight([entryPath], metadataByPath, {}).pending;
+			}),
+		];
+		try {
+			recordCapabilityInspection(this.agentDir, considered, store.acknowledgements);
+		} catch {
+			// Inspection history is best-effort. A full disk must not skip the disclosure decision.
+		}
+		if (plan.pending.length === 0) return { paths, errors: [] };
+		let decisions: Array<{ path: string; accept: boolean }> = [];
+		try {
+			decisions = await this.capabilityPreflight(plan.pending);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				paths: plan.ready,
+				errors: plan.pending.map((item) => ({
+					path: item.path,
+					error: `Capability preflight failed before loading extension code: ${message}`,
+				})),
+			};
+		}
+		const accepted = new Set(decisions.filter((decision) => decision.accept).map((decision) => decision.path));
+		const acceptedItems = plan.pending.filter((item) => accepted.has(item.path));
+		try {
+			if (acceptedItems.length > 0) acknowledgeCapabilities(this.agentDir, acceptedItems);
+		} catch {
+			// Remembering the choice failed. The extension still loads for this process.
+		}
+		return {
+			paths: [...plan.ready, ...acceptedItems.map((item) => item.path)],
+			errors: plan.pending
+				.filter((item) => !accepted.has(item.path))
+				.map((item) => ({
+					path: item.path,
+					error: `Capability preflight skipped this extension before loading its code. ${item.summary}`,
+				})),
+		};
+	}
+
 	private resolveExtensionLoadPath(path: string): string {
 		return isSyntheticPath(path) ? path : resolvePath(path, this.cwd, { normalizeUnicodeSpaces: true });
 	}
@@ -770,12 +846,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 	/** Load extension paths: files from disk and `builtin:<name>` paths from the built-in extensions. */
 	private async loadExtensionPaths(paths: string[], runtime?: ExtensionRuntime): Promise<LoadExtensionsResult> {
 		const isBuiltinPath = (path: string) => path.startsWith(BUILTIN_PATH_PREFIX);
-		const result = await loadExtensionsCached(
+		const gated = await this.applyCapabilityPreflight(
 			paths.filter((path) => !isBuiltinPath(path)),
-			this.cwd,
-			this.eventBus,
-			runtime,
+			this.resourceMetadataByPath,
 		);
+		const result = await loadExtensionsCached(gated.paths, this.cwd, this.eventBus, runtime);
+		result.errors.push(...gated.errors);
 		for (const path of paths.filter(isBuiltinPath)) {
 			const builtin = this.builtinExtensions.get(path.slice(BUILTIN_PATH_PREFIX.length));
 			if (!builtin) {

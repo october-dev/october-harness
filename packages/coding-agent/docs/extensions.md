@@ -341,6 +341,8 @@ Unknown fields are rejected, so typos surface instead of being ignored. An omitt
 
 A manifest is disclosure metadata written by the extension author. It is not a sandbox and does not prove what the code does. See [Security](security.md#extension-capability-manifests).
 
+Before a project-owned or newly installed extension loads for the first time, October shows a short summary of that manifest. An extension with no manifest is described as unclassified, not as safe. In the interactive terminal you can load and remember it, or skip it; skipping does not run its code. Other modes print the same summary and then load it. `/capabilities` prints the remembered summary, and `/capabilities <name>` prints the full manifest. Remembering a manifest does not sandbox the extension. A changed manifest is shown again.
+
 <a id="understand-the-lifecycle"></a>
 
 ### Lifecycle Overview
