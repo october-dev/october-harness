@@ -1,8 +1,28 @@
 <div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/header/logo-dark.svg">
+    <img src="assets/header/logo-light.svg" alt="october-harness" width="560">
+  </picture>
+  <br>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/header/tagline-dark.svg">
+    <img src="assets/header/tagline-light.svg" alt="Open, multiplayer-first coding harness." width="520">
+  </picture>
+</div>
 
-<img src="assets/october-banner.svg" alt="OCTOBER" width="880">
+---
 
-<h1>October Harness</h1>
+<p>
+  <a href="#five-minute-quickstart"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-start-dark.svg"><img src="assets/header/button-start-light.svg" alt="Quickstart" height="40" align="top"></picture></a>
+  <a href="#two-harnesses-one-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-bus-dark.svg"><img src="assets/header/button-bus-light.svg" alt="October Bus" height="40" align="top"></picture></a>
+  <a href="#extensions-and-customization"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-extend-dark.svg"><img src="assets/header/button-extend-light.svg" alt="Extensions" height="40" align="top"></picture></a>
+  <a href="#contributing-and-upstream-sync"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-contribute-dark.svg"><img src="assets/header/button-contribute-light.svg" alt="Contribute" height="40" align="top"></picture></a>
+  <a href="https://github.com/october-dev/october-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/callout-dark.svg"><img src="assets/header/callout-light.svg" alt="Fast in a terminal. Native to October Bus." height="40" align="top"></picture></a>
+</p>
+
+---
+
+<div align="center">
 
 <p><strong>October's open, multiplayer-first coding harness.</strong></p>
 
