@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import path from "node:path";
 import type { BashResult } from "../../core/bash-executor.ts";
 import { execCommand } from "../../core/exec.ts";
@@ -9,16 +9,29 @@ import type { ExtensionAPI } from "../../core/extensions/types.ts";
 export const VERIFICATION_ENTRY = "october-verification-evidence";
 /** Session record of the latest explicit share (or unshare) decision. */
 export const VERIFICATION_SHARE_ENTRY = "october-verification-share";
+/**
+ * Session record of one keyed send's effective attachment decision. Persisted (not
+ * closure-local) so a retry after reload, resume, or cache pressure replays the exact
+ * bytes the first send carried. Only `message_peer` sends are recorded: the pinned
+ * `complete_task` input has no idempotency key, so its calls are always fresh.
+ */
+export const VERIFICATION_ATTACHMENT_ENTRY = "october-verification-attachment";
 export const VERIFICATION_CONTEXT_TITLE = "Verification evidence";
 /** Public Bus tools whose task results can carry a verification reference. */
 export const BUS_MESSAGE_PEER_TOOL = "mcp__october-bus__message_peer";
 export const BUS_COMPLETE_TASK_TOOL = "mcp__october-bus__complete_task";
 /**
  * Outgoing Bus payload budgets (pinned Bus v0.1.0-rc.4: validation.go caps message context at
- * 32 items, runtime.go caps task notes at 16384 bytes). Attachment stays within them; when the
- * model's own content already fills the budget, the reference is skipped and the user is told.
+ * 32 items, 512 title bytes, 65536 text bytes and 4096 URI bytes per item, and 256 KiB total
+ * across title/text/URI/media-type bytes; runtime.go caps task notes at 16384 bytes).
+ * Attachment stays within them; when adding the reference would break a budget the model's
+ * own content satisfies, the reference is skipped and the user is told.
  */
 export const BUS_MAX_CONTEXT_ITEMS = 32;
+export const BUS_MAX_CONTEXT_TITLE_BYTES = 512;
+export const BUS_MAX_CONTEXT_TEXT_BYTES = 65536;
+export const BUS_MAX_CONTEXT_URI_BYTES = 4096;
+export const BUS_MAX_CONTEXT_TOTAL_BYTES = 262144;
 export const BUS_MAX_NOTE_BYTES = 16384;
 
 const SHARE_PREVIEW_CHARS = 240;
@@ -26,15 +39,29 @@ const STATUS_OUTPUT_CHARS = 2000;
 const MAX_DIRTY_FILES = 100;
 /** Total bytes hashed for one identity capture; past it the identity is marked incomplete. */
 const MAX_IDENTITY_BYTES = 4 * 1024 * 1024;
-/** Keyed attachments remembered so a same-key retry resends byte-identical content. */
-const MAX_KEYED_ATTACHMENTS = 100;
+/**
+ * Reference fields are capped so our own context item always fits the per-field budgets.
+ * The local record keeps the full command and error; only the Bus-bound reference is cut.
+ */
+const REFERENCE_MAX_COMMAND_CHARS = 1024;
+const REFERENCE_MAX_ERROR_CHARS = 1024;
 
 export type VerificationOutcome = "success" | "failed" | "cancelled" | "unknown";
 
 export interface DirtyFileIdentity {
 	path: string;
-	/** Null when the path is a known deletion. Unreadable files fail the whole capture. */
+	/**
+	 * Null when the path is a known deletion. For symlinks the digest covers the link
+	 * target, not the pointed-to bytes. Unreadable files fail the whole capture.
+	 */
 	sha256: string | null;
+	/**
+	 * What the path was at capture time. Missing on records written before kind
+	 * tracking; those read as "file", or "deleted" when the digest is null.
+	 */
+	kind?: "file" | "symlink" | "deleted";
+	/** True when any execute bit was set. Missing on older records; reads as false. */
+	executable?: boolean;
 }
 
 /** Git identity of the tree that was checked. Unavailable outside a repository with a HEAD. */
@@ -57,9 +84,12 @@ export interface VerificationEvidence {
 	outcome: VerificationOutcome;
 	/** Null when the process was cancelled or never produced an exit status. */
 	exitStatus: number | null;
-	/** Identity captured after the run. `changedDuringRun` says whether the tree moved mid-run. */
+	/** Identity captured after the run. `changedDuringRun` says whether the tree provably moved mid-run. */
 	code: CodeIdentity;
-	/** True when the tree differed before and after the run, or the comparison was incomplete. */
+	/**
+	 * True only when the tree provably differed before and after the run. An
+	 * incomplete comparison reads unknown, never changed: see `stale`.
+	 */
 	changedDuringRun: boolean;
 	/** Runner or launch failure detail, such as a rejecting shell runner. */
 	error?: string;
@@ -80,6 +110,7 @@ export interface VerificationReference {
 	exitStatus: number | null;
 	revision: string | null;
 	dirty: boolean;
+	/** True only for a proven before/after difference; incomplete comparisons read unknown. */
 	changedDuringRun: boolean;
 	/** Null when this workspace cannot be compared to the recorded identity. */
 	stale: boolean | null;
@@ -152,50 +183,95 @@ export function parseGitStatusEntries(raw: string): GitStatusEntry[] {
 	return entries;
 }
 
-async function runGit(cwd: string, args: string[]): Promise<{ stdout: string } | undefined> {
+/**
+ * A Git probe counts only when it ran to completion. A timeout kill reports code 0 for
+ * a null exit status (`exec.ts`), so an empty `git status` from a killed probe would
+ * otherwise read as a clean tree. Killed, truncated, and nonzero probes are all
+ * unusable; the identity they were building reads unavailable.
+ */
+export function isUsableGitResult(result: { code: number; killed: boolean; truncated: boolean }): boolean {
+	return result.code === 0 && !result.killed && !result.truncated;
+}
+
+/** Fast probes that never walk the tree. */
+const GIT_PROBE_TIMEOUT_MS = 5_000;
+/**
+ * `git status` walks the tree; five seconds kills it in very large repositories and on
+ * slow filesystems, which would then read "freshness unknown" on every capture.
+ */
+const GIT_STATUS_TIMEOUT_MS = 30_000;
+
+async function runGit(cwd: string, args: string[], timeout: number): Promise<{ stdout: string } | undefined> {
 	try {
-		const result = await execCommand("git", args, cwd, { timeout: 5_000 });
-		return result.code === 0 ? result : undefined;
+		const result = await execCommand("git", args, cwd, { timeout });
+		return isUsableGitResult(result) ? result : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
+interface PathIdentity {
+	kind: "file" | "symlink";
+	digest: string;
+	bytes: number;
+	executable: boolean;
+}
+
 /**
- * Hash one dirty file. Returns "over-budget" when the file alone exceeds the remaining byte
- * budget, undefined when it cannot be read, else the digest and bytes charged.
+ * Identify one dirty path without following symlinks. Returns "over-budget" when a
+ * regular file alone exceeds the remaining byte budget, undefined when the path
+ * cannot be identified (unreadable, or neither a file nor a symlink), else the
+ * kind, digest, and bytes charged. A symlink's digest covers its target: replacing
+ * a file with a link to identical bytes is a change, as is retargeting the link.
  */
-function hashFileWithinBudget(
-	absolute: string,
-	budget: number,
-): { digest: string; bytes: number } | "over-budget" | undefined {
-	let size: number;
+function identifyPathWithinBudget(absolute: string, budget: number): PathIdentity | "over-budget" | undefined {
+	let stat: { isFile(): boolean; isSymbolicLink(): boolean; size: number; mode: number };
 	try {
-		const stat = statSync(absolute);
-		if (!stat.isFile()) return undefined;
-		size = stat.size;
+		stat = lstatSync(absolute);
 	} catch {
 		return undefined;
 	}
-	if (size > budget) return "over-budget";
+	if (stat.isSymbolicLink()) {
+		let target: string;
+		try {
+			target = readlinkSync(absolute);
+		} catch {
+			return undefined;
+		}
+		const bytes = Buffer.byteLength(target, "utf-8");
+		if (bytes > budget) return "over-budget";
+		return {
+			kind: "symlink",
+			digest: createHash("sha256").update("symlink\0").update(target, "utf-8").digest("hex"),
+			bytes,
+			executable: false,
+		};
+	}
+	if (!stat.isFile()) return undefined;
+	if (stat.size > budget) return "over-budget";
 	try {
 		const content = readFileSync(absolute);
-		return { digest: createHash("sha256").update(content).digest("hex"), bytes: content.length };
+		return {
+			kind: "file",
+			digest: createHash("sha256").update(content).digest("hex"),
+			bytes: content.length,
+			executable: (stat.mode & 0o111) !== 0,
+		};
 	} catch {
 		return undefined;
 	}
 }
 
 async function captureCodeIdentity(cwd: string): Promise<CodeIdentity> {
-	const toplevel = await runGit(cwd, ["rev-parse", "--show-toplevel"]);
-	const head = await runGit(cwd, ["rev-parse", "HEAD"]);
+	const toplevel = await runGit(cwd, ["rev-parse", "--show-toplevel"], GIT_PROBE_TIMEOUT_MS);
+	const head = await runGit(cwd, ["rev-parse", "HEAD"], GIT_PROBE_TIMEOUT_MS);
 	if (!toplevel || !head) return EMPTY_IDENTITY;
 	const root = toplevel.stdout.trim();
 	const revision = head.stdout.trim();
 	if (!root || !revision) return EMPTY_IDENTITY;
 	// --untracked-files=all expands untracked directories to files and overrides user config
 	// that would hide untracked files. Status paths are repository-root-relative.
-	const status = await runGit(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
+	const status = await runGit(cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], GIT_STATUS_TIMEOUT_MS);
 	if (!status) return { ...EMPTY_IDENTITY, revision };
 	const seen = new Set<string>();
 	const dirtyEntries: GitStatusEntry[] = [];
@@ -214,14 +290,26 @@ async function captureCodeIdentity(cwd: string): Promise<CodeIdentity> {
 			filesTruncated = true;
 			continue;
 		}
-		const hashed = hashFileWithinBudget(absolute, remaining);
-		if (hashed === "over-budget") {
+		const identified = identifyPathWithinBudget(absolute, remaining);
+		if (identified === "over-budget") {
 			filesTruncated = true;
 			break;
 		}
-		if (hashed === undefined && !entry.deleted) return { ...EMPTY_IDENTITY, revision };
-		if (hashed !== undefined) remaining -= hashed.bytes;
-		files.push({ path: entry.path.split(path.sep).join("/"), sha256: hashed?.digest ?? null });
+		if (identified === undefined) {
+			// Only a known deletion has a useful "missing" identity.
+			if (!entry.deleted) return { ...EMPTY_IDENTITY, revision };
+			files.push({ path: entry.path.split(path.sep).join("/"), sha256: null, kind: "deleted" });
+			continue;
+		}
+		remaining -= identified.bytes;
+		files.push({
+			path: entry.path.split(path.sep).join("/"),
+			sha256: identified.digest,
+			// A staged deletion whose worktree file still exists keeps git's verdict
+			// but tracks the on-disk bytes, so edits to it stay visible.
+			kind: entry.deleted ? "deleted" : identified.kind,
+			executable: identified.executable,
+		});
 	}
 	return {
 		available: true,
@@ -234,6 +322,12 @@ async function captureCodeIdentity(cwd: string): Promise<CodeIdentity> {
 
 type IdentityComparison = "same" | "changed" | "unknown";
 
+/** Records written before kind tracking read as files, or deletions when the digest is null. */
+function fileKind(file: DirtyFileIdentity): "file" | "symlink" | "deleted" {
+	if (file.kind) return file.kind;
+	return file.sha256 === null ? "deleted" : "file";
+}
+
 function compareCodeIdentities(first: CodeIdentity, second: CodeIdentity): IdentityComparison {
 	if (!first.available || !second.available) return "unknown";
 	if (first.revision !== second.revision || first.dirty !== second.dirty) return "changed";
@@ -242,7 +336,14 @@ function compareCodeIdentities(first: CodeIdentity, second: CodeIdentity): Ident
 	for (let index = 0; index < first.files.length; index++) {
 		const previous = first.files[index];
 		const next = second.files[index];
-		if (previous.path !== next.path || previous.sha256 !== next.sha256) return "changed";
+		if (
+			previous.path !== next.path ||
+			previous.sha256 !== next.sha256 ||
+			fileKind(previous) !== fileKind(next) ||
+			(previous.executable ?? false) !== (next.executable ?? false)
+		) {
+			return "changed";
+		}
 	}
 	return "same";
 }
@@ -252,10 +353,12 @@ export function isCodeIdentityStale(recorded: CodeIdentity, current: CodeIdentit
 	return comparison === "unknown" ? null : comparison === "changed";
 }
 
-/** Conservative start/end comparison: anything unprovable counts as changed. */
+/**
+ * Start/end comparison for one run. Only a proven difference counts as changed; an
+ * incomplete comparison is unknown, reported through `stale`, not as a mid-run change.
+ */
 function codeIdentityChanged(before: CodeIdentity, after: CodeIdentity): boolean {
-	if (!before.available && !after.available) return false;
-	return compareCodeIdentities(before, after) !== "same";
+	return compareCodeIdentities(before, after) === "changed";
 }
 
 /**
@@ -362,6 +465,10 @@ export async function verificationStale(evidence: VerificationEvidence): Promise
 	return isCodeIdentityStale(evidence.code, await captureCodeIdentity(evidence.cwd));
 }
 
+function capReferenceField(value: string, maxChars: number): string {
+	return value.length > maxChars ? `${value.slice(0, maxChars - 3)}...` : value;
+}
+
 export async function toVerificationReference(
 	evidence: VerificationEvidence,
 	options?: { shareOutput?: boolean },
@@ -369,7 +476,7 @@ export async function toVerificationReference(
 	const reference: VerificationReference = {
 		version: 1,
 		id: evidence.id,
-		command: evidence.command,
+		command: capReferenceField(evidence.command, REFERENCE_MAX_COMMAND_CHARS),
 		cwd: evidence.cwd,
 		startedAt: evidence.startedAt,
 		endedAt: evidence.endedAt,
@@ -379,7 +486,7 @@ export async function toVerificationReference(
 		dirty: evidence.code.dirty,
 		changedDuringRun: evidence.changedDuringRun,
 		stale: evidence.changedDuringRun ? null : await verificationStale(evidence),
-		...(evidence.error === undefined ? {} : { error: evidence.error }),
+		...(evidence.error === undefined ? {} : { error: capReferenceField(evidence.error, REFERENCE_MAX_ERROR_CHARS) }),
 	};
 	if (options?.shareOutput && evidence.output.text) {
 		reference.outputPreview = evidence.output.text.slice(0, SHARE_PREVIEW_CHARS);
@@ -393,7 +500,12 @@ interface VerificationShareRecord {
 	evidenceId: string | null;
 }
 
-/** One line for a task note. It names the check and omits command output. */
+/**
+ * One line for a task note. It names the check and omits command output. The command
+ * is flattened to one line: a multi-line command must neither split our own note
+ * line (orphan fragments would survive later cleaning) nor inject a fake evidence
+ * line into the note.
+ */
 export function verificationResultLine(reference: VerificationReference): string {
 	const exit = reference.exitStatus === null ? "no exit status" : `exit ${reference.exitStatus}`;
 	const freshness = reference.changedDuringRun
@@ -404,25 +516,69 @@ export function verificationResultLine(reference: VerificationReference): string
 				? "stale"
 				: "current";
 	const revision = reference.revision ? `, revision ${reference.revision}` : "";
-	const command = reference.command.length > 160 ? `${reference.command.slice(0, 157)}...` : reference.command;
+	const flatCommand = reference.command.replace(/[\r\n]+/g, " ");
+	const command = flatCommand.length > 160 ? `${flatCommand.slice(0, 157)}...` : flatCommand;
 	return `Verification evidence ${reference.id}: ${reference.outcome} (${freshness}, ${exit}${revision}) \`${command}\``;
 }
 
-function evidenceContextIndex(context: unknown[], evidenceId: string): number {
-	return context.findIndex((entry) => {
-		if (!entry || typeof entry !== "object") return false;
-		const text = (entry as { text?: unknown }).text;
-		if (typeof text !== "string") return false;
-		try {
-			const parsed: unknown = JSON.parse(text);
-			return !!parsed && typeof parsed === "object" && (parsed as { id?: unknown }).id === evidenceId;
-		} catch {
-			return false;
-		}
-	});
+/**
+ * The harness reserves its context title and note-line format on task results. Any id,
+ * any number of copies: a model-written copy is never evidence, only the stored
+ * observation is. Cleaning runs before share-state and budget decisions, so the
+ * reserved format cannot impersonate harness evidence even when sharing is off.
+ */
+export function isReservedContextItem(entry: unknown): boolean {
+	if (!entry || typeof entry !== "object") return false;
+	return (entry as { title?: unknown }).title === VERIFICATION_CONTEXT_TITLE;
 }
 
-/** "limited" means the Bus payload budget was already full; the caller must tell the user. */
+/** Remove every reserved context item. Anything else is the model's content: keep it. */
+export function stripReservedContextItems(context: unknown[]): unknown[] {
+	return context.filter((entry) => !isReservedContextItem(entry));
+}
+
+/** A reserved note line, optionally bulleted: `[-*+] Verification evidence <anything>`. */
+const RESERVED_NOTE_LINE = /^\s*(?:[-*+]\s+)?Verification evidence(?:\s|:|$)/;
+
+/** Remove every reserved note line. Anything else is the model's content: keep it. */
+export function stripReservedNoteLines(note: string): string {
+	return note
+		.split("\n")
+		.filter((line) => !RESERVED_NOTE_LINE.test(line))
+		.join("\n");
+}
+
+function contextFieldBytes(value: unknown): number {
+	return typeof value === "string" ? Buffer.byteLength(value, "utf-8") : 0;
+}
+
+type ContextBudget = "items" | "field" | "total";
+
+/**
+ * Pinned-Bus context budgets violated by a candidate payload: item count, per-field
+ * bytes (title/text/URI), and aggregate bytes across title/text/URI/media-type.
+ * Mirrors validation.go; kinds and required titles are the model's own problem.
+ */
+export function violatedContextBudgets(context: unknown[]): Set<ContextBudget> {
+	const violated = new Set<ContextBudget>();
+	if (context.length > BUS_MAX_CONTEXT_ITEMS) violated.add("items");
+	let total = 0;
+	for (const entry of context) {
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		const title = contextFieldBytes(record.title);
+		const text = contextFieldBytes(record.text);
+		const uri = contextFieldBytes(record.uri);
+		if (title > BUS_MAX_CONTEXT_TITLE_BYTES || text > BUS_MAX_CONTEXT_TEXT_BYTES || uri > BUS_MAX_CONTEXT_URI_BYTES) {
+			violated.add("field");
+		}
+		total += title + text + uri + contextFieldBytes(record.mediaType);
+	}
+	if (total > BUS_MAX_CONTEXT_TOTAL_BYTES) violated.add("total");
+	return violated;
+}
+
+/** "limited" means our reference would break a budget; the caller must tell the user. */
 export type VerificationAttachmentResult = "attached" | "not-applicable" | "limited";
 
 /**
@@ -430,41 +586,42 @@ export type VerificationAttachmentResult = "attached" | "not-applicable" | "limi
  * Response messages gain a context item. Completed tasks gain a one-line note.
  * Requests are left unchanged.
  *
- * The item and note are always derived from the stored record. A model-written copy carrying
- * this evidence id is replaced in place, never trusted: schema validation cannot establish
- * that a written claim matches a process observation.
+ * Reserved copies are removed first, whatever id they carry, and the cleaned payload
+ * is always written back: even when the reference itself cannot fit, a fabricated
+ * line must not survive. The item and note are always derived from the stored
+ * record, never trusted from model-written copies: schema validation cannot
+ * establish that a written claim matches a process observation.
  */
 export function attachVerificationReference(
 	toolName: string,
 	input: Record<string, unknown>,
 	item: VerificationContextItem,
-	evidenceId: string,
 	noteLine: string,
 ): VerificationAttachmentResult {
 	if (toolName === BUS_MESSAGE_PEER_TOOL) {
 		const isResult = input.mode === "response" || typeof input.responseTo === "string";
 		if (!isResult) return "not-applicable";
 		const context = Array.isArray(input.context) ? input.context : [];
-		const index = evidenceContextIndex(context, evidenceId);
-		if (index >= 0) {
-			const next = [...context];
-			next[index] = item;
-			input.context = next;
-			return "attached";
+		const cleaned = stripReservedContextItems(context);
+		const candidate = [...cleaned, item];
+		const baseViolated = violatedContextBudgets(cleaned);
+		for (const budget of violatedContextBudgets(candidate)) {
+			if (!baseViolated.has(budget)) {
+				input.context = cleaned;
+				return "limited";
+			}
 		}
-		if (context.length >= BUS_MAX_CONTEXT_ITEMS) return "limited";
-		input.context = [...context, item];
+		input.context = candidate;
 		return "attached";
 	}
 	if (toolName === BUS_COMPLETE_TASK_TOOL) {
 		const note = typeof input.note === "string" ? input.note : "";
-		const prefix = `Verification evidence ${evidenceId}:`;
-		const rest = note
-			.split("\n")
-			.filter((line) => !line.startsWith(prefix))
-			.join("\n");
+		const rest = stripReservedNoteLines(note);
 		const next = rest ? `${rest}\n${noteLine}` : noteLine;
-		if (Buffer.byteLength(next, "utf-8") > BUS_MAX_NOTE_BYTES) return "limited";
+		if (Buffer.byteLength(next, "utf-8") > BUS_MAX_NOTE_BYTES) {
+			input.note = rest;
+			return "limited";
+		}
 		input.note = next;
 		return "attached";
 	}
@@ -487,7 +644,70 @@ export async function verificationContextItem(
 function isEvidence(value: unknown): value is VerificationEvidence {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Partial<VerificationEvidence>;
-	return record.version === 1 && typeof record.id === "string" && typeof record.command === "string";
+	if (record.version !== 1 || typeof record.id !== "string" || typeof record.command !== "string") {
+		return false;
+	}
+	// The hook reads these; a hand-edited record missing them must not throw mid-call.
+	if (!record.code || typeof record.code !== "object") return false;
+	if (!record.output || typeof record.output !== "object" || typeof record.output.text !== "string") {
+		return false;
+	}
+	return typeof record.changedDuringRun === "boolean";
+}
+
+/** Effective attachment of one keyed `message_peer` send. Null item means "sent bare". */
+export interface VerificationAttachmentRecord {
+	version: 1;
+	tool: string;
+	key: string;
+	item: VerificationContextItem | null;
+}
+
+function isAttachmentItem(value: unknown): value is VerificationContextItem {
+	if (!value || typeof value !== "object") return false;
+	const record = value as Partial<VerificationContextItem>;
+	return (
+		record.kind === "text" &&
+		typeof record.title === "string" &&
+		typeof record.text === "string" &&
+		typeof record.mediaType === "string"
+	);
+}
+
+function isAttachment(value: unknown): value is VerificationAttachmentRecord {
+	if (!value || typeof value !== "object") return false;
+	const record = value as Partial<VerificationAttachmentRecord>;
+	return (
+		record.version === 1 &&
+		typeof record.tool === "string" &&
+		typeof record.key === "string" &&
+		(record.item === null || isAttachmentItem(record.item))
+	);
+}
+
+type SessionBranchEntry = { type: string; customType?: string; data?: unknown };
+
+/**
+ * The first persisted decision for a keyed send. First wins: the first send is what
+ * the Bus may already have accepted, so every retry replays it byte-identically.
+ */
+export function findKeyedAttachment(
+	entries: readonly SessionBranchEntry[],
+	tool: string,
+	key: string,
+): VerificationAttachmentRecord | undefined {
+	for (const entry of entries) {
+		if (
+			entry.type === "custom" &&
+			entry.customType === VERIFICATION_ATTACHMENT_ENTRY &&
+			isAttachment(entry.data) &&
+			entry.data.tool === tool &&
+			entry.data.key === key
+		) {
+			return entry.data;
+		}
+	}
+	return undefined;
 }
 
 function latestEvidence(
@@ -562,10 +782,6 @@ const VERIFY_SUBCOMMANDS = ["status", "share", "unshare", "run"];
 
 /** Record explicitly selected commands. The outcome is the observed process result. */
 export function registerVerificationEvidence(pi: ExtensionAPI): void {
-	// Idempotency keys of outgoing keyed messages and the exact attachment they carried, so a
-	// same-key retry resends byte-identical content instead of a freshly evaluated reference.
-	const keyedAttachments = new Map<string, { item: VerificationContextItem; noteLine: string }>();
-
 	pi.registerCommand("verify", {
 		description: "Run a verification command and record its observed result",
 		getArgumentCompletions: (prefix) => {
@@ -641,39 +857,82 @@ export function registerVerificationEvidence(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== BUS_MESSAGE_PEER_TOOL && event.toolName !== BUS_COMPLETE_TASK_TOOL) return undefined;
-		const evidence = sharedEvidence(ctx.sessionManager.getBranch());
-		if (!evidence) return undefined;
 		const input = event.input as Record<string, unknown>;
+		const entries = ctx.sessionManager.getBranch();
 		if (event.toolName === BUS_MESSAGE_PEER_TOOL) {
+			// Requests are the model's own content and stay byte-identical: the harness
+			// only ever attaches to results, so a reserved title on a request cannot
+			// impersonate harness evidence.
 			const isResult = input.mode === "response" || typeof input.responseTo === "string";
 			if (!isResult) return undefined;
+			const rawKey = input.idempotencyKey;
+			const key = typeof rawKey === "string" && rawKey ? rawKey : undefined;
+			// A persisted decision replays before current sharing is consulted: the
+			// Bus hashes the whole context and rejects same-key content changes.
+			const replay = key ? findKeyedAttachment(entries, event.toolName, key) : undefined;
+			if (replay) {
+				// A bare replay must not add a context field the first send lacked:
+				// the Bus hashes the whole context, so `[]` and missing differ.
+				if (!Array.isArray(input.context)) {
+					if (replay.item) input.context = [replay.item];
+					return undefined;
+				}
+				const cleaned = stripReservedContextItems(input.context);
+				input.context = replay.item ? [...cleaned, replay.item] : cleaned;
+				return undefined;
+			}
+			const evidence = sharedEvidence(entries);
+			if (!evidence) {
+				// Unarmed: reservation still holds, and a keyed bare send is
+				// recorded so a later share cannot corrupt its retry.
+				if (Array.isArray(input.context)) input.context = stripReservedContextItems(input.context);
+				if (key) {
+					pi.appendEntry(VERIFICATION_ATTACHMENT_ENTRY, {
+						version: 1,
+						tool: event.toolName,
+						key,
+						item: null,
+					} satisfies VerificationAttachmentRecord);
+				}
+				return undefined;
+			}
+			const item = await verificationContextItem(evidence, { shareOutput: true });
+			const attached = attachVerificationReference(event.toolName, input, item, "");
+			if (key) {
+				pi.appendEntry(VERIFICATION_ATTACHMENT_ENTRY, {
+					version: 1,
+					tool: event.toolName,
+					key,
+					item: attached === "attached" ? item : null,
+				} satisfies VerificationAttachmentRecord);
+			}
+			if (attached === "limited") {
+				ctx.ui.notify(
+					"Verification evidence was not attached: the message context or task note is at its Bus size limit.",
+					"warning",
+				);
+			}
+			return undefined;
 		}
-		const rawKey = input.idempotencyKey;
-		const cacheKey = typeof rawKey === "string" && rawKey ? `${event.toolName}:${rawKey}` : undefined;
-		const cached = cacheKey ? keyedAttachments.get(cacheKey) : undefined;
-		let item: VerificationContextItem;
-		let noteLine: string;
-		if (cached) {
-			item = cached.item;
-			noteLine = cached.noteLine;
-		} else {
-			const reference = await toVerificationReference(evidence, { shareOutput: true });
-			item = {
+		// `complete_task` has no idempotency key in the pinned Bus input, so every
+		// completion is evaluated fresh. Reserved lines are still always cleaned.
+		const evidence = sharedEvidence(entries);
+		if (!evidence) {
+			if (typeof input.note === "string") input.note = stripReservedNoteLines(input.note);
+			return undefined;
+		}
+		const reference = await toVerificationReference(evidence, { shareOutput: true });
+		const attached = attachVerificationReference(
+			event.toolName,
+			input,
+			{
 				kind: "text",
 				title: VERIFICATION_CONTEXT_TITLE,
 				mediaType: "application/json",
 				text: JSON.stringify(reference),
-			};
-			noteLine = verificationResultLine(reference);
-			if (cacheKey) {
-				if (keyedAttachments.size >= MAX_KEYED_ATTACHMENTS) {
-					const oldest = keyedAttachments.keys().next();
-					if (!oldest.done) keyedAttachments.delete(oldest.value);
-				}
-				keyedAttachments.set(cacheKey, { item, noteLine });
-			}
-		}
-		const attached = attachVerificationReference(event.toolName, input, item, evidence.id, noteLine);
+			},
+			verificationResultLine(reference),
+		);
 		if (attached === "limited") {
 			ctx.ui.notify(
 				"Verification evidence was not attached: the message context or task note is at its Bus size limit.",

@@ -1814,11 +1814,13 @@ export interface ExtensionAPI {
 	/**
 	 * Run a shell command through the session: the configured shell path and command prefix,
 	 * the session-selected shell runner (host, Docker, or SDK-supplied), and the session's
-	 * cancellation tracking, so Esc aborts the command and kills its process tree.
+	 * cancellation tracking. Esc aborts the command and kills its process tree while the
+	 * session is idle; while the agent streams, Esc first aborts the agent turn.
 	 *
 	 * A rejecting runner rejects instead of falling back to the host. The result is recorded
 	 * on the session but excluded from model context. Output is bounded without failing the
-	 * command; `fullOutputPath` keeps the complete output when truncation applied.
+	 * command; `fullOutputPath` keeps the complete output when truncation applied. There is
+	 * no live progress; use `onChunk` to receive output chunks while the command runs.
 	 */
 	execBash(command: string, options?: ExecBashOptions): Promise<BashResult>;
 

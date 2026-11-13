@@ -1942,7 +1942,7 @@ Options: `signal` and `timeout` terminate the command, `cwd` sets the working di
 
 ### pi.execBash(command, options?)
 
-Run a shell command through the session: the configured shell path and command prefix, the session-selected shell runner (host, Docker, or SDK-supplied), and the session's cancellation tracking, so Esc aborts the command and kills its process tree. Prefer this over `pi.exec` for user-facing commands; use `pi.exec` for harness-internal probes such as `git`.
+Run a shell command through the session: the configured shell path and command prefix, the session-selected shell runner (host, Docker, or SDK-supplied), and the session's cancellation tracking. Esc aborts the command and kills its process tree while the session is idle; while the agent streams, Esc first aborts the agent turn. Progress display is the caller's job: pass `onChunk` to receive sanitized output chunks while the command runs. Prefer this over `pi.exec` for user-facing commands; use `pi.exec` for harness-internal probes such as `git`.
 
 ```typescript
 const result = await pi.execBash("npm test");
