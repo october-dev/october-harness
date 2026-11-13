@@ -55,13 +55,10 @@ export interface DirtyFileIdentity {
 	 * target, not the pointed-to bytes. Unreadable files fail the whole capture.
 	 */
 	sha256: string | null;
-	/**
-	 * What the path was at capture time. Missing on records written before kind
-	 * tracking; those read as "file", or "deleted" when the digest is null.
-	 */
-	kind?: "file" | "symlink" | "deleted";
-	/** True when any execute bit was set. Missing on older records; reads as false. */
-	executable?: boolean;
+	/** What the path was at capture time. */
+	kind: "file" | "symlink" | "deleted";
+	/** True when any execute bit was set. */
+	executable: boolean;
 }
 
 /** Git identity of the tree that was checked. Unavailable outside a repository with a HEAD. */
@@ -84,13 +81,14 @@ export interface VerificationEvidence {
 	outcome: VerificationOutcome;
 	/** Null when the process was cancelled or never produced an exit status. */
 	exitStatus: number | null;
-	/** Identity captured after the run. `changedDuringRun` says whether the tree provably moved mid-run. */
+	/** Identity captured after the run. `changedDuringRun` says whether the tree moved mid-run. */
 	code: CodeIdentity;
 	/**
-	 * True only when the tree provably differed before and after the run. An
-	 * incomplete comparison reads unknown, never changed: see `stale`.
+	 * True when the tree provably differed before and after the run, false when it provably
+	 * did not, null when the comparison was incomplete. Null never reads "current": the
+	 * command may have run against a tree this record does not describe.
 	 */
-	changedDuringRun: boolean;
+	changedDuringRun: boolean | null;
 	/** Runner or launch failure detail, such as a rejecting shell runner. */
 	error?: string;
 	output: { text: string; truncated: boolean };
@@ -110,8 +108,8 @@ export interface VerificationReference {
 	exitStatus: number | null;
 	revision: string | null;
 	dirty: boolean;
-	/** True only for a proven before/after difference; incomplete comparisons read unknown. */
-	changedDuringRun: boolean;
+	/** True for a proven before/after difference, null when that comparison was incomplete. */
+	changedDuringRun: boolean | null;
 	/** Null when this workspace cannot be compared to the recorded identity. */
 	stale: boolean | null;
 	error?: string;
@@ -184,10 +182,9 @@ export function parseGitStatusEntries(raw: string): GitStatusEntry[] {
 }
 
 /**
- * A Git probe counts only when it ran to completion. A timeout kill reports code 0 for
- * a null exit status (`exec.ts`), so an empty `git status` from a killed probe would
- * otherwise read as a clean tree. Killed, truncated, and nonzero probes are all
- * unusable; the identity they were building reads unavailable.
+ * A Git probe counts only when it ran to completion: an empty `git status` from a probe
+ * that was killed or cut short would otherwise read as a clean tree. Killed, truncated,
+ * and nonzero probes are all unusable; the identity they were building reads unavailable.
  */
 export function isUsableGitResult(result: { code: number; killed: boolean; truncated: boolean }): boolean {
 	return result.code === 0 && !result.killed && !result.truncated;
@@ -298,7 +295,7 @@ async function captureCodeIdentity(cwd: string): Promise<CodeIdentity> {
 		if (identified === undefined) {
 			// Only a known deletion has a useful "missing" identity.
 			if (!entry.deleted) return { ...EMPTY_IDENTITY, revision };
-			files.push({ path: entry.path.split(path.sep).join("/"), sha256: null, kind: "deleted" });
+			files.push({ path: entry.path.split(path.sep).join("/"), sha256: null, kind: "deleted", executable: false });
 			continue;
 		}
 		remaining -= identified.bytes;
@@ -322,12 +319,6 @@ async function captureCodeIdentity(cwd: string): Promise<CodeIdentity> {
 
 type IdentityComparison = "same" | "changed" | "unknown";
 
-/** Records written before kind tracking read as files, or deletions when the digest is null. */
-function fileKind(file: DirtyFileIdentity): "file" | "symlink" | "deleted" {
-	if (file.kind) return file.kind;
-	return file.sha256 === null ? "deleted" : "file";
-}
-
 function compareCodeIdentities(first: CodeIdentity, second: CodeIdentity): IdentityComparison {
 	if (!first.available || !second.available) return "unknown";
 	if (first.revision !== second.revision || first.dirty !== second.dirty) return "changed";
@@ -339,8 +330,8 @@ function compareCodeIdentities(first: CodeIdentity, second: CodeIdentity): Ident
 		if (
 			previous.path !== next.path ||
 			previous.sha256 !== next.sha256 ||
-			fileKind(previous) !== fileKind(next) ||
-			(previous.executable ?? false) !== (next.executable ?? false)
+			previous.kind !== next.kind ||
+			previous.executable !== next.executable
 		) {
 			return "changed";
 		}
@@ -351,14 +342,6 @@ function compareCodeIdentities(first: CodeIdentity, second: CodeIdentity): Ident
 export function isCodeIdentityStale(recorded: CodeIdentity, current: CodeIdentity): boolean | null {
 	const comparison = compareCodeIdentities(recorded, current);
 	return comparison === "unknown" ? null : comparison === "changed";
-}
-
-/**
- * Start/end comparison for one run. Only a proven difference counts as changed; an
- * incomplete comparison is unknown, reported through `stale`, not as a mid-run change.
- */
-function codeIdentityChanged(before: CodeIdentity, after: CodeIdentity): boolean {
-	return compareCodeIdentities(before, after) === "changed";
 }
 
 /**
@@ -376,7 +359,7 @@ export async function runVerification(options: RunVerificationOptions): Promise<
 		exitStatus: number | null,
 		code: CodeIdentity,
 		output: { text: string; truncated: boolean },
-		extra: { changedDuringRun: boolean; endedAt: string; error?: string; fullOutputPath?: string },
+		extra: { changedDuringRun: boolean | null; endedAt: string; error?: string; fullOutputPath?: string },
 	): VerificationEvidence => ({
 		version: 1,
 		id: randomUUID(),
@@ -431,7 +414,7 @@ export async function runVerification(options: RunVerificationOptions): Promise<
 			code,
 			{ text: "", truncated: false },
 			{
-				changedDuringRun: codeIdentityChanged(before, code),
+				changedDuringRun: isCodeIdentityStale(before, code),
 				endedAt: now().toISOString(),
 				error: error instanceof Error ? error.message : String(error),
 			},
@@ -440,7 +423,7 @@ export async function runVerification(options: RunVerificationOptions): Promise<
 	// Process completion time, captured before git inspection.
 	const endedAt = now().toISOString();
 	const after = await captureCodeIdentity(cwd);
-	const changedDuringRun = codeIdentityChanged(before, after);
+	const changedDuringRun = isCodeIdentityStale(before, after);
 	const output = { text: result.output, truncated: result.truncated };
 	const rest = {
 		changedDuringRun,
@@ -462,7 +445,9 @@ export async function runVerification(options: RunVerificationOptions): Promise<
 }
 
 export async function verificationStale(evidence: VerificationEvidence): Promise<boolean | null> {
-	return isCodeIdentityStale(evidence.code, await captureCodeIdentity(evidence.cwd));
+	const stale = isCodeIdentityStale(evidence.code, await captureCodeIdentity(evidence.cwd));
+	// An incomplete start/end comparison can prove the tree stale, never current.
+	return evidence.changedDuringRun === null && stale === false ? null : stale;
 }
 
 function capReferenceField(value: string, maxChars: number): string {
@@ -537,8 +522,12 @@ export function stripReservedContextItems(context: unknown[]): unknown[] {
 	return context.filter((entry) => !isReservedContextItem(entry));
 }
 
-/** A reserved note line, optionally bulleted: `[-*+] Verification evidence <anything>`. */
-const RESERVED_NOTE_LINE = /^\s*(?:[-*+]\s+)?Verification evidence(?:\s|:|$)/;
+/**
+ * A reserved note line: the bare prefix at the start of a line, optionally bulleted, or the
+ * harness line with its UUID anywhere on a line (numbered, quoted, or inline copies).
+ */
+const RESERVED_NOTE_LINE =
+	/^\s*(?:[-*+]\s+)?Verification evidence(?:\s|:|$)|\bVerification evidence [0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}: /;
 
 /** Remove every reserved note line. Anything else is the model's content: keep it. */
 export function stripReservedNoteLines(note: string): string {
@@ -652,7 +641,7 @@ function isEvidence(value: unknown): value is VerificationEvidence {
 	if (!record.output || typeof record.output !== "object" || typeof record.output.text !== "string") {
 		return false;
 	}
-	return typeof record.changedDuringRun === "boolean";
+	return typeof record.changedDuringRun === "boolean" || record.changedDuringRun === null;
 }
 
 /** Effective attachment of one keyed `message_peer` send. Null item means "sent bare". */

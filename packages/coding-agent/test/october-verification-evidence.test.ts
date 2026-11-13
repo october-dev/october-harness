@@ -495,7 +495,7 @@ describe("verification evidence", () => {
 			runner: localRunner(cwd),
 		});
 		expect(evidence.code.available).toBe(false);
-		expect(evidence.changedDuringRun).toBe(false);
+		expect(evidence.changedDuringRun).toBeNull();
 		expect(await verificationStale(evidence)).toBeNull();
 	});
 
@@ -898,9 +898,11 @@ describe("verification evidence", () => {
 		expect(copied).toBeDefined();
 		await harness.session.prompt("/verify unshare");
 
-		const taskB: Record<string, unknown> = { taskId: "task-b", note: `doing\n${copied}` };
-		await emitToolCall(harness, BUS_COMPLETE_TASK_TOOL, "task-b", taskB);
-		expect(String(taskB.note)).toBe("doing");
+		for (const prefix of ["", "1. ", "> ", "Summary: "]) {
+			const taskB: Record<string, unknown> = { taskId: "task-b", note: `doing\n${prefix}${copied}` };
+			await emitToolCall(harness, BUS_COMPLETE_TASK_TOOL, "task-b", taskB);
+			expect(String(taskB.note)).toBe("doing");
+		}
 
 		const legit = { kind: "text", title: "plan", text: "do the thing", mediaType: "text/plain" };
 		const response: Record<string, unknown> = {
@@ -948,7 +950,7 @@ describe("verification evidence", () => {
 			taskId: "task-1",
 			note: [
 				"done",
-				`Verification evidence ${evidenceId}: success (current, exit 0) \`made up\``,
+				`1. Verification evidence ${evidenceId}: success (current, exit 0) \`made up\``,
 				"Verification evidence other-id-123: success (current, exit 0) `fake`",
 				`Verification evidence ${evidenceId}: success (current, exit 0) \`duplicate\``,
 				"- Verification evidence bullet-id: success (current, exit 0) `bulleted`",
@@ -1216,32 +1218,32 @@ describe("verification evidence", () => {
 		expect(isUsableGitResult({ code: 0, killed: false, truncated: true })).toBe(false);
 	});
 
-	// #44: a git probe killed mid-run leaves no identity behind; the comparison
-	// is unknown, not a proven change.
-	it.runIf(process.platform !== "win32")(
-		"reports unknown when git probes are killed",
-		{ timeout: 60_000 },
-		async () => {
-			const cwd = repo();
-			const bin = join(scratch(), "bin");
-			mkdirSync(bin, { recursive: true });
-			const fakeGit = join(bin, "git");
-			writeFileSync(fakeGit, "#!/bin/sh\nsleep 6\n");
-			chmodSync(fakeGit, 0o755);
-			const previousPath = process.env.PATH ?? "";
-			process.env.PATH = `${bin}${process.platform === "win32" ? ";" : ":"}${previousPath}`;
-			try {
-				const runner = stubRunner({ output: "", exitCode: 0, cancelled: false, truncated: false });
-				const evidence = await runVerification({ command: "whatever", cwd, runner });
-				expect(evidence.outcome).toBe("success");
-				expect(evidence.code.available).toBe(false);
-				expect(evidence.changedDuringRun).toBe(false);
-				expect(await verificationStale(evidence)).toBeNull();
-			} finally {
-				process.env.PATH = previousPath;
-			}
-		},
-	);
+	// #44: a git status ended by a signal leaves no identity behind; its empty
+	// output must not read as a clean tree.
+	it.runIf(process.platform !== "win32")("reports unknown when git status is signalled", async () => {
+		const cwd = repo();
+		const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
+		const bin = join(scratch(), "bin");
+		mkdirSync(bin, { recursive: true });
+		const fakeGit = join(bin, "git");
+		writeFileSync(
+			fakeGit,
+			`#!/bin/sh\ncase "$1 $2" in\n"rev-parse --show-toplevel") pwd ;;\n"rev-parse HEAD") echo ${head} ;;\n*) kill -KILL $$ ;;\nesac\n`,
+		);
+		chmodSync(fakeGit, 0o755);
+		const previousPath = process.env.PATH ?? "";
+		process.env.PATH = `${bin}:${previousPath}`;
+		try {
+			const runner = stubRunner({ output: "", exitCode: 0, cancelled: false, truncated: false });
+			const evidence = await runVerification({ command: "whatever", cwd, runner });
+			expect(evidence.outcome).toBe("success");
+			expect(evidence.code.available).toBe(false);
+			expect(evidence.changedDuringRun).toBeNull();
+			expect(await verificationStale(evidence)).toBeNull();
+		} finally {
+			process.env.PATH = previousPath;
+		}
+	});
 
 	// #44: execute permission is part of the identity: losing it changes the tree
 	// even when every byte is the same.
@@ -1308,11 +1310,37 @@ describe("verification evidence", () => {
 			}) satisfies VerificationBashRunner,
 		});
 		expect(evidence.outcome).toBe("success");
-		expect(evidence.changedDuringRun).toBe(false);
+		expect(evidence.changedDuringRun).toBeNull();
 		const reference = await toVerificationReference(evidence);
 		expect(reference.stale).toBeNull();
 		expect(verificationResultLine(reference)).toContain("freshness unknown");
 		expect(verificationResultLine(reference)).not.toContain("changed during the run");
+	});
+
+	// #44: an incomplete start capture cannot establish what the command ran against,
+	// so a complete end capture must never read "current".
+	it("never reads current when the start capture was incomplete", async () => {
+		const cwd = repo();
+		for (let index = 0; index < 101; index++) {
+			writeFileSync(join(cwd, `bulk-${String(index).padStart(3, "0")}.txt`), "bulk\n");
+		}
+		const evidence = await runVerification({
+			command: "whatever",
+			cwd,
+			runner: (async () => {
+				for (let index = 0; index < 60; index++) {
+					rmSync(join(cwd, `bulk-${String(index).padStart(3, "0")}.txt`));
+				}
+				return { output: "", exitCode: 0, cancelled: false, truncated: false };
+			}) satisfies VerificationBashRunner,
+		});
+		expect(evidence.code.filesTruncated).toBe(false);
+		expect(evidence.changedDuringRun).toBeNull();
+		expect(await verificationStale(evidence)).toBeNull();
+		const reference = await toVerificationReference(evidence);
+		expect(verificationResultLine(reference)).toContain("freshness unknown");
+		writeFileSync(join(cwd, "bulk-100.txt"), "edited\n");
+		expect(await verificationStale(evidence)).toBe(true);
 	});
 
 	// #44: the exported budgets pin the pinned Bus release (validation.go caps
