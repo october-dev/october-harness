@@ -148,6 +148,7 @@ import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { addMcpServerConfig } from "../../extensions/mcp/config.ts";
 import { logoutOctober } from "../../extensions/october/auth.ts";
 import { getLoginProviderOptions, LOGIN_MENU_OPTIONS, LOGIN_MENU_TITLE } from "../../extensions/october/login-menu.ts";
+import { cleanDisplayLine } from "../../utils/ansi.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -1915,13 +1916,14 @@ export class InteractiveMode {
 	}
 
 	private formatPathWithSource(p: string, sourceInfo?: SourceInfo): string {
+		// Paths and source labels come from the filesystem: clean the composed label.
 		if (sourceInfo) {
 			const shortPath = this.getShortPath(p, sourceInfo);
 			const { label, scopeLabel } = this.getDisplaySourceInfo(sourceInfo);
 			const labelText = scopeLabel ? `${label} (${scopeLabel})` : label;
-			return `${labelText} ${shortPath}`;
+			return cleanDisplayLine(`${labelText} ${shortPath}`);
 		}
-		return this.formatDisplayPath(p);
+		return cleanDisplayLine(this.formatDisplayPath(p));
 	}
 
 	private formatDiagnostics(diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string {
@@ -1945,7 +1947,7 @@ export class InteractiveMode {
 		for (const [name, collisionList] of collisions) {
 			const first = collisionList[0]?.collision;
 			if (!first) continue;
-			lines.push(theme.fg("warning", `  "${name}" collision:`));
+			lines.push(theme.fg("warning", `  "${cleanDisplayLine(name)}" collision:`));
 			lines.push(
 				theme.fg(
 					"dim",
@@ -1968,9 +1970,9 @@ export class InteractiveMode {
 			if (d.path) {
 				const formattedPath = this.formatPathWithSource(d.path, this.findSourceInfoForPath(d.path, sourceInfos));
 				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${formattedPath}`));
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `    ${d.message}`));
+				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `    ${cleanDisplayLine(d.message)}`));
 			} else {
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${d.message}`));
+				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${cleanDisplayLine(d.message)}`));
 			}
 		}
 

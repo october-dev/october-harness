@@ -205,6 +205,23 @@ describe("extension capability manifests", () => {
 			expect(fs.existsSync(marker)).toBe(false);
 		});
 
+		it("cleans hostile manifest field names from load errors", async () => {
+			const marker = path.join(tempDir, "executed.txt");
+			const entry = write("ext/hostile.ts", markerExtension(marker));
+			write("ext/hostile.capabilities.json", { manifestVersion: 1, "evil\u001b[2J\nfield": true });
+
+			const result = await discoverAndLoadExtensions([entry], tempDir, path.join(tempDir, "agent"));
+
+			expect(result.extensions).toHaveLength(0);
+			expect(result.errors).toHaveLength(1);
+			const error = result.errors[0]?.error ?? "";
+			expect(error).toContain("Invalid capability manifest");
+			expect(error).toContain("unknown field");
+			expect(error).not.toContain("\u001b");
+			expect(error).not.toContain("\n");
+			expect(fs.existsSync(marker)).toBe(false);
+		});
+
 		it("loads an extension whose manifest is valid", async () => {
 			const marker = path.join(tempDir, "executed.txt");
 			const entry = write("ext/declared.ts", markerExtension(marker));

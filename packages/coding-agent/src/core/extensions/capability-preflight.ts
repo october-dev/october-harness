@@ -6,6 +6,7 @@ import { cleanDisplayLine, cleanDisplayText } from "../../utils/ansi.ts";
 import { getCwdRelativePath, resolvePath } from "../../utils/paths.ts";
 import type { PathMetadata } from "../package-manager.ts";
 import { getResourcePathKey } from "../source-info.ts";
+import { sliceHead, sliceTail } from "../tools/truncate.ts";
 import { type CapabilityDisclosure, type CapabilityManifest, readCapabilityManifest } from "./capabilities.ts";
 import type { ExtensionAPI } from "./types.ts";
 
@@ -55,6 +56,67 @@ export interface CapabilityPreflightHost {
 export const CAPABILITY_LOAD_CHOICE = "Load and remember";
 export const CAPABILITY_SKIP_CHOICE = "Skip";
 
+/** Longest identity kept in a choice title; the full identity prints with the details. */
+const TITLE_IDENTITY_MAX_CHARS = 60;
+
+function countLabel(count: number, singular: string, plural: string): string {
+	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+/**
+ * Bounded capability line for a choice title: category scopes and value counts, never the
+ * values themselves, so the title length cannot grow with the manifest. The full
+ * declaration prints with {@link formatCapabilityDisclosureDetails}.
+ */
+function describeDisclosureCategories(disclosure: CapabilityDisclosure): string {
+	if (disclosure.status === "unclassified") return "unclassified; no capability manifest";
+	if (disclosure.status === "invalid") {
+		return `invalid capability manifest; ${countLabel(disclosure.errors.length, "problem", "problems")}`;
+	}
+	const manifest = disclosure.manifest;
+	const parts: string[] = [];
+	if (manifest.filesystem) {
+		const scopes: string[] = [];
+		if (manifest.filesystem.read) scopes.push(`read ${manifest.filesystem.read}`);
+		if (manifest.filesystem.write) scopes.push(`write ${manifest.filesystem.write}`);
+		parts.push(scopes.length > 0 ? `filesystem ${scopes.join(" ")}` : "filesystem none");
+	}
+	if (manifest.shell !== undefined) parts.push(manifest.shell ? "shell" : "no shell");
+	if (manifest.network !== undefined) {
+		parts.push(
+			manifest.network.length > 0 ? `network ${countLabel(manifest.network.length, "host", "hosts")}` : "no network",
+		);
+	}
+	if (manifest.environment !== undefined) {
+		parts.push(
+			manifest.environment.length > 0
+				? `environment ${countLabel(manifest.environment.length, "var", "vars")}`
+				: "no environment",
+		);
+	}
+	if (manifest.credentials !== undefined) {
+		parts.push(
+			manifest.credentials.length > 0
+				? `credentials ${countLabel(manifest.credentials.length, "name", "names")}`
+				: "no credentials",
+		);
+	}
+	if (manifest.octoberBus !== undefined) parts.push(manifest.octoberBus ? "October Bus" : "no October Bus");
+	return parts.length > 0 ? parts.join("; ") : "no capabilities declared";
+}
+
+/**
+ * Identity for a choice title: cleaned (it may come from a stored record or a caller)
+ * and middle-bounded so a deep path keeps both its start and its entry name.
+ */
+function boundTitleIdentity(identity: string): string {
+	const clean = cleanDisplayLine(identity);
+	if (clean.length <= TITLE_IDENTITY_MAX_CHARS) return clean;
+	const headLength = Math.floor(TITLE_IDENTITY_MAX_CHARS / 2);
+	const tailLength = TITLE_IDENTITY_MAX_CHARS - 1 - headLength;
+	return `${sliceHead(clean, headLength)}…${sliceTail(clean, tailLength)}`;
+}
+
 /**
  * Short disclosure title for one pending item (#7). The title names the current extension
  * and fits the terminal frame with both choices visible; the full pending set and
@@ -63,12 +125,12 @@ export const CAPABILITY_SKIP_CHOICE = "Skip";
  */
 export function formatCapabilityDisclosureTitle(items: readonly CapabilityPreflightItem[], index: number): string {
 	const current = items[index];
-	const summary = current ? current.summary : "";
-	const shortSummary = summary.length > 500 ? `${summary.slice(0, 497)}...` : summary;
+	const identity = current ? boundTitleIdentity(current.identity) : "unknown extension";
+	const categories = current ? cleanDisplayLine(describeDisclosureCategories(current.disclosure)) : "no declaration";
 	return [
 		`Extension capabilities (${index + 1} of ${items.length})`,
 		"",
-		shortSummary,
+		`${identity}: ${categories}`,
 		"",
 		"Full declaration printed above; scroll to review before choosing.",
 	].join("\n");

@@ -1,12 +1,17 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createCapabilityPreflightHost } from "../src/cli/capability-preflight.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
+import type { ResourceDiagnostic } from "../src/core/diagnostics.ts";
 import { readCapabilityManifest } from "../src/core/extensions/capabilities.ts";
 import {
 	acknowledgeCapabilities,
+	CAPABILITY_LOAD_CHOICE,
+	CAPABILITY_SKIP_CHOICE,
 	CAPABILITY_SKIP_RECOVERY_HINT,
 	CAPABILITY_SKIP_WARNING_PREFIX,
 	capabilityFingerprint,
@@ -28,12 +33,15 @@ import { flushRawStdout } from "../src/core/output-guard.ts";
 import type { PathMetadata } from "../src/core/package-manager.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { getResourcePathKey } from "../src/core/source-info.ts";
+import { getResourcePathKey, type SourceInfo } from "../src/core/source-info.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { OCTOBER_DEFAULT_PACKAGES } from "../src/extensions/october/default-packages.ts";
 import { main } from "../src/main.ts";
+import { createChatViewport } from "../src/modes/interactive/chat-viewport.ts";
 import { ExtensionSelectorComponent } from "../src/modes/interactive/components/extension-selector.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { handlePackageCommand } from "../src/package-manager-cli.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { resolvePath } from "../src/utils/paths.ts";
 import { createHarness, createTestUiContext, type Harness } from "./suite/harness.ts";
@@ -765,6 +773,241 @@ describe("capability preflight", () => {
 		expect(details).toContain("unknown field");
 	});
 
+	// #7: the composed CLI diagnostic cleans the hostile path prefix, not just the
+	// inner loader error; the extension never executes.
+	it("cleans hostile paths from CLI load diagnostics and never executes", async () => {
+		const tempRoot = tempDir();
+		const projectDir = join(tempRoot, "project");
+		const agentDir = join(tempRoot, "agent");
+		const extensionsDir = join(projectDir, ".october", "extensions");
+		mkdirSync(extensionsDir, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const hostileBase = "evil\u001b[2J\nname";
+		const marker = join(projectDir, "executed.txt");
+		write(
+			extensionsDir,
+			`${hostileBase}.ts`,
+			`import { writeFileSync } from "node:fs";
+			writeFileSync(${JSON.stringify(marker)}, "executed");
+			export default function () {}`,
+		);
+		write(
+			extensionsDir,
+			`${hostileBase}.capabilities.json`,
+			JSON.stringify({ manifestVersion: 1, "bad\u001b[0m\nkey": true }),
+		);
+		writeFileSync(join(projectDir, ".october", "settings.json"), JSON.stringify({}));
+		new ProjectTrustStore(agentDir).set(projectDir, true);
+
+		class ProcessExit extends Error {
+			code?: unknown;
+			constructor(code?: unknown) {
+				super(`process exit ${String(code)}`);
+				this.code = code;
+			}
+		}
+		const originalCwd = process.cwd();
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: unknown) => {
+			throw new ProcessExit(code);
+		}) as typeof process.exit);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		process.env[ENV_AGENT_DIR] = agentDir;
+		process.chdir(projectDir);
+		try {
+			await expect(main(["--help"])).rejects.toThrow(ProcessExit);
+			const output = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(output).toContain("Failed to load extension");
+			expect(output).toContain("Invalid capability manifest");
+			expect(output).toContain("unknown field");
+			expect(output).not.toContain("\u001b");
+			expect(output).not.toContain("[2J");
+			expect(output).not.toContain(hostileBase);
+			expect(existsSync(marker)).toBe(false);
+		} finally {
+			process.chdir(originalCwd);
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			exitSpy.mockRestore();
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
+	// #7: declining a hostile-named extension cleans the path in its skip warning.
+	// The invalid sibling forces the run to exit after diagnostics, before the TUI boots.
+	it("cleans hostile paths from CLI skip warnings", async () => {
+		const tempRoot = tempDir();
+		const projectDir = join(tempRoot, "project");
+		const agentDir = join(tempRoot, "agent");
+		const extensionsDir = join(projectDir, ".october", "extensions");
+		mkdirSync(extensionsDir, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const declinedBase = "evil\u001b[2J\nname";
+		const invalidBase = "bad\u001b[2J\next";
+		const declinedMarker = join(projectDir, "declined-executed.txt");
+		const invalidMarker = join(projectDir, "invalid-executed.txt");
+		const markerSource = (marker: string): string => `import { writeFileSync } from "node:fs";
+			writeFileSync(${JSON.stringify(marker)}, "executed");
+			export default function () {}`;
+		write(extensionsDir, `${declinedBase}.ts`, markerSource(declinedMarker));
+		write(extensionsDir, `${declinedBase}.capabilities.json`, JSON.stringify({ manifestVersion: 1, shell: true }));
+		write(extensionsDir, `${invalidBase}.ts`, markerSource(invalidMarker));
+		write(
+			extensionsDir,
+			`${invalidBase}.capabilities.json`,
+			JSON.stringify({ manifestVersion: 1, "bad\u001b[0m\nkey": true }),
+		);
+		writeFileSync(join(projectDir, ".october", "settings.json"), JSON.stringify({}));
+		new ProjectTrustStore(agentDir).set(projectDir, true);
+
+		class ProcessExit extends Error {
+			code?: unknown;
+			constructor(code?: unknown) {
+				super(`process exit ${String(code)}`);
+				this.code = code;
+			}
+		}
+		const originalCwd = process.cwd();
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+		const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: unknown) => {
+			throw new ProcessExit(code);
+		}) as typeof process.exit);
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		process.env[ENV_AGENT_DIR] = agentDir;
+		process.chdir(projectDir);
+		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+		try {
+			mockShowStartupSelector.mockResolvedValue(undefined);
+			await expect(main([])).rejects.toThrow("process exit 1");
+			expect(mockShowStartupSelector).toHaveBeenCalled();
+			const output = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(output).toContain(CAPABILITY_SKIP_WARNING_PREFIX);
+			expect(output).toContain("Failed to load extension");
+			expect(output).not.toContain("\u001b");
+			expect(output).not.toContain(declinedBase);
+			expect(output).not.toContain(invalidBase);
+			expect(existsSync(declinedMarker)).toBe(false);
+			expect(existsSync(invalidMarker)).toBe(false);
+		} finally {
+			process.chdir(originalCwd);
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			if (stdinDescriptor) Object.defineProperty(process.stdin, "isTTY", stdinDescriptor);
+			else delete (process.stdin as { isTTY?: unknown }).isTTY;
+			if (stdoutDescriptor) Object.defineProperty(process.stdout, "isTTY", stdoutDescriptor);
+			else delete (process.stdout as { isTTY?: unknown }).isTTY;
+			exitSpy.mockRestore();
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
+	// #7: package commands clean hostile paths in their composed diagnostics.
+	// The bootstrap pass skips project extensions, so the hostile extension lives in
+	// the user extensions directory; the project settings file triggers that pass.
+	it("cleans hostile paths from package-command diagnostics", async () => {
+		const tempRoot = tempDir();
+		const projectDir = join(tempRoot, "project");
+		const agentDir = join(tempRoot, "agent");
+		const extensionsDir = join(agentDir, "extensions");
+		mkdirSync(extensionsDir, { recursive: true });
+		mkdirSync(join(projectDir, ".october"), { recursive: true });
+		const hostileBase = "evil\u001b[2J\nname";
+		const marker = join(tempRoot, "executed.txt");
+		write(
+			extensionsDir,
+			`${hostileBase}.ts`,
+			`import { writeFileSync } from "node:fs";
+			writeFileSync(${JSON.stringify(marker)}, "executed");
+			export default function () {}`,
+		);
+		write(
+			extensionsDir,
+			`${hostileBase}.capabilities.json`,
+			JSON.stringify({ manifestVersion: 1, "bad\u001b[0m\nkey": true }),
+		);
+		writeFileSync(join(projectDir, ".october", "settings.json"), JSON.stringify({}));
+		new ProjectTrustStore(agentDir).set(projectDir, true);
+
+		const originalCwd = process.cwd();
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		const originalExitCode = process.exitCode;
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		process.env[ENV_AGENT_DIR] = agentDir;
+		process.chdir(projectDir);
+		try {
+			expect(await handlePackageCommand(["list"])).toBe(true);
+			const output = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(output).toContain("Failed to load extension");
+			expect(output).not.toContain("\u001b");
+			expect(output).not.toContain(hostileBase);
+			expect(existsSync(marker)).toBe(false);
+		} finally {
+			process.chdir(originalCwd);
+			process.exitCode = originalExitCode;
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			logSpy.mockRestore();
+			errorSpy.mockRestore();
+		}
+	});
+
+	// #7: the interactive diagnostics renderer cleans hostile paths, names, and messages.
+	it("cleans hostile paths and messages from in-app diagnostics", () => {
+		initTheme("dark");
+		const proto = InteractiveMode.prototype as unknown as {
+			formatDiagnostics: (
+				diagnostics: readonly ResourceDiagnostic[],
+				sourceInfos: Map<string, SourceInfo>,
+			) => string;
+			formatPathWithSource: (p: string, sourceInfo?: SourceInfo) => string;
+		};
+		const hostilePath = "/extensions/evil\u001b[2J\n.ts";
+		const hostileName = "evil\u001b[2J\nname";
+		const diagnostics: ResourceDiagnostic[] = [
+			{
+				type: "error",
+				path: hostilePath,
+				message: `Invalid capability manifest for ${hostilePath} (sidecar): bad\u001b[0m\nkey: unknown field`,
+			},
+			{
+				type: "collision",
+				message: "",
+				collision: {
+					resourceType: "extension",
+					name: hostileName,
+					winnerPath: hostilePath,
+					loserPath: hostilePath,
+				},
+			},
+		];
+		const output = stripAnsi(
+			proto.formatDiagnostics.call(
+				{
+					formatPathWithSource: proto.formatPathWithSource,
+					findSourceInfoForPath: () => undefined,
+					formatDisplayPath: (p: string) => p,
+				},
+				diagnostics,
+				new Map<string, SourceInfo>(),
+			),
+		);
+		expect(output).toContain("unknown field");
+		expect(output).not.toContain("\u001b");
+		expect(output).not.toContain("[2J");
+		expect(output).not.toContain(hostilePath);
+		expect(output).not.toContain(hostileName);
+		// No forged lines: two lines for the error plus three for the collision.
+		expect(output.split("\n")).toHaveLength(5);
+	});
+
 	// #7: both inspection forms clean their output, including records stored
 	// before display cleaning existed.
 	it("cleans both inspection forms, including dirty stored records", () => {
@@ -902,21 +1145,39 @@ describe("capability preflight", () => {
 			initTheme("dark");
 		});
 
-		function frameLines(title: string): string[] {
+		// Mount the choice the way the running UI does: details in the scrollable
+		// transcript document, the selector in the editor slot, and a footer below.
+		function mountDisclosure(
+			title: string,
+			details: string,
+		): {
+			render: (width: number, height: number) => string[];
+			transcript: { scrollToStart: () => void; scrollToEnd: () => void };
+		} {
+			const document = new Container();
+			document.addChild(new Spacer(1));
+			document.addChild(new Text(details, 1, 0));
 			const selector = new ExtensionSelectorComponent(
 				title,
-				["Load and remember", "Skip"],
+				[CAPABILITY_LOAD_CHOICE, CAPABILITY_SKIP_CHOICE],
 				() => {},
 				() => {},
 			);
-			return stripAnsi(selector.render(80).join("\n")).split("\n");
+			const viewport = createChatViewport({
+				document,
+				pendingMessages: new Container(),
+				status: new Container(),
+				editor: selector,
+				footer: new Text("enter select · esc skip", 1, 0),
+			});
+			return {
+				transcript: viewport.transcript,
+				render: (width: number, height: number) =>
+					renderLayoutFrame(viewport.root, width, height, () => {}).lines.map((line) => stripAnsi(line).trimEnd()),
+			};
 		}
 
-		// #7: in an 80x24 fullscreen frame, a long declaration must not push the
-		// choices out of the dock: the dock paints from the first line, so the
-		// bottom is what gets cut. Full details stay reachable in the transcript.
-		it("keeps both choices visible in an 80x24 frame with a long declaration", () => {
-			const directory = tempDir();
+		function planLongDeclaration(directory: string) {
 			const manifest = {
 				manifestVersion: 1,
 				shell: true,
@@ -943,17 +1204,41 @@ describe("capability preflight", () => {
 					{ source: `npm:example-${index}@1.0.0`, scope: "user", origin: "package" },
 				]),
 			]);
-			const plan = planCapabilityPreflight([current, ...others], metadata, { cwd: directory });
+			return planCapabilityPreflight([current, ...others], metadata, {}, { cwd: directory });
+		}
+
+		// #7: in an 80x24 fullscreen frame, a long declaration must not push the
+		// choices out of the dock. Full details stay reachable in the transcript.
+		it("keeps both choices visible in an 80x24 frame with a long declaration", () => {
+			const plan = planLongDeclaration(tempDir());
 			expect(plan.pending).toHaveLength(5);
 			const title = formatCapabilityDisclosureTitle(plan.pending, 0);
-			const visible = frameLines(title).slice(0, 24).join("\n");
-			expect(visible).toContain("Load and remember");
-			expect(visible).toContain("Skip");
-			expect(visible).toContain("current-extension-entry");
+			// The title carries counts, not values, so it cannot grow with the manifest.
+			expect(title).toContain("30 vars");
+			expect(title).toContain("current-extension-entry");
+			expect(title).not.toContain("OCTOBER_LONG_VARIABLE_29");
 			const details = formatCapabilityDisclosureDetails(plan.pending, 0);
 			expect(details).toContain("OCTOBER_LONG_VARIABLE_29");
 			expect(details).toContain("npm:example-3@1.0.0");
 			expect(details).toContain('"deploy-token"');
+			const frame = mountDisclosure(title, details);
+			const visible = frame.render(80, 24);
+			expect(visible).toHaveLength(24);
+			const text = visible.join("\n");
+			expect(text).toContain("Load and remember");
+			expect(text).toContain("Skip");
+			expect(text).toContain("→");
+			// Page keys drive the transcript: scrolling reaches the full declaration
+			// while the choices stay put.
+			frame.transcript.scrollToStart();
+			const scrolled = frame.render(80, 24).join("\n");
+			expect(scrolled).toContain("Pending extensions:");
+			expect(scrolled).toContain("Load and remember");
+			expect(scrolled).toContain("Skip");
+			frame.transcript.scrollToEnd();
+			const tail = frame.render(80, 24).join("\n");
+			expect(tail).toContain("does not prove what the extension does");
+			expect(tail).toContain("Load and remember");
 		});
 
 		// #7: a hostile single-line summary cannot push the choices out either.
@@ -968,11 +1253,53 @@ describe("capability preflight", () => {
 			const metadata = new Map<string, PathMetadata>([projectMetadata(entryPath)]);
 			const plan = planCapabilityPreflight([entryPath], metadata, {});
 			const title = formatCapabilityDisclosureTitle(plan.pending, 0);
-			expect(title).toContain("...");
-			const visible = frameLines(title).slice(0, 24).join("\n");
-			expect(visible).toContain("Load and remember");
-			expect(visible).toContain("Skip");
-			expect(formatCapabilityDisclosureDetails(plan.pending, 0)).toContain("x".repeat(100));
+			expect(title.length).toBeLessThan(400);
+			expect(title).toContain("1 name");
+			expect(title).not.toContain("x".repeat(100));
+			const details = formatCapabilityDisclosureDetails(plan.pending, 0);
+			expect(details).toContain("x".repeat(100));
+			const frame = mountDisclosure(title, details);
+			const text = frame.render(40, 24).join("\n");
+			expect(text).toContain("Load and remember");
+			expect(text).toContain("Skip");
+			expect(text).toContain("→");
+		});
+
+		// #7: wide characters wrap by column, not by character, and the choices
+		// stay visible in a narrow frame.
+		it("keeps both choices visible with wide characters in a 40x24 frame", () => {
+			const directory = tempDir();
+			const entryPath = write(directory, "日本語-extension/拡張機能-entry.ts", "export default function () {}");
+			write(
+				directory,
+				"日本語-extension/拡張機能-entry.capabilities.json",
+				JSON.stringify({ manifestVersion: 1, shell: true, network: ["api.example.com"] }),
+			);
+			const metadata = new Map<string, PathMetadata>([projectMetadata(entryPath)]);
+			const plan = planCapabilityPreflight([entryPath], metadata, {}, { cwd: directory });
+			const title = formatCapabilityDisclosureTitle(plan.pending, 0);
+			expect(title).toContain("拡張機能");
+			const details = formatCapabilityDisclosureDetails(plan.pending, 0);
+			const frame = mountDisclosure(title, details);
+			const text = frame.render(40, 24).join("\n");
+			expect(text).toContain("Load and remember");
+			expect(text).toContain("Skip");
+			expect(text).toContain("→");
+		});
+
+		// #7: shrinking the terminal with a choice open keeps both actions visible.
+		it("keeps both choices visible when the frame shrinks with a choice open", () => {
+			const plan = planLongDeclaration(tempDir());
+			const title = formatCapabilityDisclosureTitle(plan.pending, 0);
+			const details = formatCapabilityDisclosureDetails(plan.pending, 0);
+			const frame = mountDisclosure(title, details);
+			expect(frame.render(80, 24).join("\n")).toContain("Load and remember");
+			const shrunk = frame.render(80, 18).join("\n");
+			expect(shrunk).toContain("Load and remember");
+			expect(shrunk).toContain("Skip");
+			const narrowShrunk = frame.render(40, 20).join("\n");
+			expect(narrowShrunk).toContain("Load and remember");
+			expect(narrowShrunk).toContain("Skip");
 		});
 	});
 });

@@ -86,6 +86,7 @@ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-schema.ts";
 import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { cleanDisplayLine } from "./utils/ansi.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -1127,11 +1128,12 @@ export async function main(args: string[], options?: MainOptions) {
 			...collectSettingsDiagnostics(settingsManager),
 			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
 				type: "error" as const,
-				message: `Failed to load extension "${path}": ${error}`,
+				// Paths and load errors are extension-supplied: clean them at composition.
+				message: `Failed to load extension "${cleanDisplayLine(path)}": ${cleanDisplayLine(error)}`,
 			})),
 			...(resourceLoader.getExtensions().warnings ?? []).map(({ path, warning }) => ({
 				type: "warning" as const,
-				message: `Extension "${path}": ${warning}`,
+				message: `Extension "${cleanDisplayLine(path)}": ${cleanDisplayLine(warning)}`,
 			})),
 		];
 

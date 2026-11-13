@@ -41,6 +41,7 @@ import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import { DefaultResourceLoader, formatPackageInstallWarning, isBuiltinExtension } from "./core/resource-loader.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { cleanDisplayLine } from "./utils/ansi.ts";
 import { spawnProcess, spawnProcessSync, waitForChildProcess } from "./utils/child-process.ts";
 import { canonicalizePath, getCwdRelativePath } from "./utils/paths.ts";
 import { getPiUserAgent } from "./utils/pi-user-agent.ts";
@@ -859,11 +860,16 @@ async function createCommandSettingsManager(options: {
 				}).loadProjectTrustExtensions()
 			: undefined;
 	for (const error of extensionsResult?.errors ?? []) {
-		projectTrustWarnings.push(`Failed to load extension "${error.path}": ${error.error}`);
+		// Paths and load errors are extension-supplied: clean them at composition.
+		projectTrustWarnings.push(
+			`Failed to load extension "${cleanDisplayLine(error.path)}": ${cleanDisplayLine(error.error)}`,
+		);
 	}
 	for (const warning of extensionsResult?.warnings ?? []) {
 		if (warning.warning.startsWith(CAPABILITY_SKIP_WARNING_PREFIX)) {
-			projectTrustWarnings.push(`Extension "${warning.path}": ${warning.warning}`);
+			projectTrustWarnings.push(
+				`Extension "${cleanDisplayLine(warning.path)}": ${cleanDisplayLine(warning.warning)}`,
+			);
 		}
 	}
 
