@@ -65,6 +65,8 @@ After a runtime replacement, subscriptions belong to the old `AgentSession` and 
 
 `prompt()` handles extension commands and expands file-based prompt templates before ordinary user messages enter the agent. For an accepted agent run, it resolves after the run finishes, including automatic retries.
 
+`session.getTeamInboxDispatch()` reports whether automatic public Bus inbox delivery is active. `session.setTeamInboxDispatch(paused)` pauses or resumes it without a model call and stores the choice on the session. Both report `available: false` until the public Bus extension has started; setting the choice then throws. Pausing leaves unread peer messages pending. It does not acknowledge or discard them, and peer messages cannot clear the pause. A turn that already started may settle normally. Interactive and RPC sessions start the next queued batch only after resume. The same control is `/inbox pause`, `/inbox resume`, and `/inbox status`.
+
 A prompt sent while the session is already streaming must specify whether it should steer the current run or follow it. Calling `prompt()` without that choice rejects rather than guessing.
 
 A steering message enters after the current assistant turn and its tool calls. A follow-up enters after the current run finishes its pending work. `steer()` and `followUp()` expose those behaviors directly and return `"queued"` if the input was queued (including after an extension transformed it), or `"handled"` if an extension consumed it.
