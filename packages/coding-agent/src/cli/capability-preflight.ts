@@ -6,6 +6,7 @@ import {
 	type CapabilityPreflightHandler,
 	type CapabilityPreflightHost,
 	type CapabilityPreflightItem,
+	formatCapabilityDisclosureDetails,
 	formatCapabilityDisclosureTitle,
 } from "../core/extensions/capability-preflight.ts";
 import { writeRawStdout } from "../core/output-guard.ts";
@@ -21,6 +22,9 @@ async function discloseStartupCapabilities(
 	for (let index = 0; index < items.length; index++) {
 		const item = items[index];
 		if (!item) continue;
+		// The full declaration stays in terminal scrollback; the selector title stays short
+		// so its beginning is not pushed out of view.
+		console.error(formatCapabilityDisclosureDetails(items, index));
 		const selected = await showStartupSelector(settingsManager, formatCapabilityDisclosureTitle(items, index), [
 			{ label: CAPABILITY_LOAD_CHOICE, value: true },
 			{ label: CAPABILITY_SKIP_CHOICE, value: false },

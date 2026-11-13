@@ -14,6 +14,7 @@ import { stripBom } from "../utils/text.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
 	acknowledgeCapabilities,
+	CAPABILITY_SKIP_RECOVERY_HINT,
 	CAPABILITY_SKIP_WARNING_PREFIX,
 	type CapabilityPreflightDecision,
 	type CapabilityPreflightHandler,
@@ -769,7 +770,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			...packageWarnings,
 			...gated.skipped.map((skipped) => ({
 				path: skipped.path,
-				warning: `${CAPABILITY_SKIP_WARNING_PREFIX} ${skipped.summary}`,
+				warning: `${CAPABILITY_SKIP_WARNING_PREFIX} ${skipped.summary} ${CAPABILITY_SKIP_RECOVERY_HINT}`,
 			})),
 		]);
 		if (!options.includeInlineFactories) {
@@ -870,7 +871,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			result,
 			gated.skipped.map((skipped) => ({
 				path: skipped.path,
-				warning: `${CAPABILITY_SKIP_WARNING_PREFIX} ${skipped.summary}`,
+				warning: `${CAPABILITY_SKIP_WARNING_PREFIX} ${skipped.summary} ${CAPABILITY_SKIP_RECOVERY_HINT}`,
 			})),
 		);
 		for (const path of paths.filter(isBuiltinPath)) {

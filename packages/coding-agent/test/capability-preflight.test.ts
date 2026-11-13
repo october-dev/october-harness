@@ -1,18 +1,21 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createCapabilityPreflightHost } from "../src/cli/capability-preflight.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { readCapabilityManifest } from "../src/core/extensions/capabilities.ts";
 import {
 	acknowledgeCapabilities,
+	CAPABILITY_SKIP_RECOVERY_HINT,
 	CAPABILITY_SKIP_WARNING_PREFIX,
 	capabilityFingerprint,
 	capabilityPreflightReason,
 	clearCapabilityDeclinesForTests,
 	formatCapabilityDetails,
+	formatCapabilityDisclosureDetails,
 	formatCapabilityDisclosureTitle,
+	formatCapabilityInspection,
 	formatCapabilitySummary,
 	planCapabilityPreflight,
 	readCapabilityPreflightStore,
@@ -29,6 +32,9 @@ import { getResourcePathKey } from "../src/core/source-info.ts";
 import { ProjectTrustStore } from "../src/core/trust-manager.ts";
 import { OCTOBER_DEFAULT_PACKAGES } from "../src/extensions/october/default-packages.ts";
 import { main } from "../src/main.ts";
+import { ExtensionSelectorComponent } from "../src/modes/interactive/components/extension-selector.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 import { resolvePath } from "../src/utils/paths.ts";
 import { createHarness, createTestUiContext, type Harness } from "./suite/harness.ts";
 
@@ -182,8 +188,9 @@ describe("capability preflight", () => {
 		}
 	});
 
-	// #7: every per-item choice shows the whole pending set plus the current full disclosure.
-	it("presents the pending set together with per-item choices", () => {
+	// #7: the choice title stays short; the whole pending set plus the current full
+	// disclosure print where they can scroll.
+	it("presents a short choice with scrollable full disclosure", () => {
 		const directory = tempDir();
 		const entryA = write(directory, "pkg-a/index.ts", "export default function () {}");
 		const entryB = write(directory, "pkg-b/index.ts", "export default function () {}");
@@ -196,11 +203,19 @@ describe("capability preflight", () => {
 		const first = formatCapabilityDisclosureTitle(plan.pending, 0);
 		expect(first).toContain("1 of 2");
 		expect(first).toContain("npm:example-a@1.0.0");
-		expect(first).toContain("npm:example-b@2.0.0");
-		expect(first).toContain(plan.pending[0]?.details ?? "");
+		expect(first).not.toContain("npm:example-b@2.0.0");
+		expect(first).not.toContain(plan.pending[0]?.details ?? "missing");
+		expect(first).toContain("scroll to review");
 		const second = formatCapabilityDisclosureTitle(plan.pending, 1);
 		expect(second).toContain("2 of 2");
-		expect(second).toContain(plan.pending[1]?.details ?? "");
+		expect(second).toContain("npm:example-b@2.0.0");
+		expect(second).not.toContain("npm:example-a@1.0.0");
+
+		const details = formatCapabilityDisclosureDetails(plan.pending, 0);
+		expect(details).toContain("1 of 2");
+		expect(details).toContain("npm:example-a@1.0.0");
+		expect(details).toContain("npm:example-b@2.0.0");
+		expect(details).toContain(plan.pending[0]?.details ?? "missing");
 	});
 
 	// #7: Skip continues without the extension: no load error, no code execution.
@@ -683,5 +698,281 @@ describe("capability preflight", () => {
 		await harness.session.prompt("/capabilities demo");
 		expect(notify.calls.at(-1)).toContain('"shell": true');
 		expect(notify.calls.at(-1)).toContain("not an operating-system sandbox");
+	});
+
+	// #7: manifest values are untrusted display text: escapes, newlines, and
+	// bidirectional controls must not reach the terminal or forge new lines.
+	it("cleans credential escapes and newlines from display text", () => {
+		const directory = tempDir();
+		const entryPath = write(directory, "evil.ts", "export default function () {}");
+		write(
+			directory,
+			"evil.capabilities.json",
+			JSON.stringify({
+				manifestVersion: 1,
+				credentials: ["tok\u001b[8m\nVerified safe", "ok\u202eRTL"],
+			}),
+		);
+		const disclosure = readCapabilityManifest(entryPath);
+		expect(disclosure.status).toBe("declared");
+		const summary = formatCapabilitySummary(entryPath, disclosure);
+		expect(summary).not.toContain("\u001b");
+		expect(summary).not.toContain("\n");
+		expect(summary).not.toContain("\u202e");
+		// The credential is still named, flattened onto the summary line.
+		expect(summary).toContain("tok Verified safe");
+		expect(summary).toContain("okRTL");
+		const details = formatCapabilityDetails(entryPath, disclosure);
+		expect(details).not.toContain("\u001b");
+		expect(details).not.toContain("\u202e");
+		expect(details).toContain("Verified safe");
+	});
+
+	// #7: package sources and paths come from the filesystem, not from us.
+	it("cleans package and path text in identities", () => {
+		const directory = tempDir();
+		const entryPath = write(directory, "pkg/index.ts", "export default function () {}");
+		const metadata = new Map<string, PathMetadata>([
+			[entryPath, { source: "npm:evil\u001b[31m\npkg", scope: "user", origin: "package" }],
+		]);
+		const plan = planCapabilityPreflight([entryPath], metadata, {});
+		expect(plan.pending).toHaveLength(1);
+		const identity = plan.pending[0]?.identity ?? "";
+		expect(identity).not.toContain("\u001b");
+		expect(identity).not.toContain("\n");
+		expect(identity).toContain("npm:evil");
+		expect(identity).toContain("pkg");
+		expect(plan.pending[0]?.summary ?? "").not.toContain("\u001b");
+	});
+
+	// #7: validation errors echo extension-authored field names and paths.
+	it("cleans validation errors and sources in display text", () => {
+		const directory = tempDir();
+		const entryPath = write(directory, "bad.ts", "export default function () {}");
+		write(
+			directory,
+			"bad.capabilities.json",
+			JSON.stringify({ manifestVersion: 1, "evil\u001b\nfield": true, shell: "yes" }),
+		);
+		const disclosure = readCapabilityManifest(entryPath);
+		expect(disclosure.status).toBe("invalid");
+		const summary = formatCapabilitySummary(entryPath, disclosure);
+		expect(summary).not.toContain("\u001b");
+		expect(summary).not.toContain("\n");
+		expect(summary).toContain("invalid capability manifest");
+		const details = formatCapabilityDetails(entryPath, disclosure);
+		expect(details).not.toContain("\u001b");
+		expect(details).toContain("unknown field");
+	});
+
+	// #7: both inspection forms clean their output, including records stored
+	// before display cleaning existed.
+	it("cleans both inspection forms, including dirty stored records", () => {
+		const agentDir = tempDir();
+		const directory = tempDir();
+		const entryPath = write(directory, "evil.ts", "export default function () {}");
+		write(
+			directory,
+			"evil.capabilities.json",
+			JSON.stringify({ manifestVersion: 1, credentials: ["tok\u001b[8m\nVerified safe"] }),
+		);
+		const metadata = new Map<string, PathMetadata>([projectMetadata(entryPath)]);
+		const plan = planCapabilityPreflight([entryPath], metadata, {});
+		recordCapabilityInspection(agentDir, plan.pending);
+		const list = formatCapabilityInspection(agentDir);
+		expect(list).not.toContain("\u001b");
+		expect(list).not.toContain("Verified safe\n");
+		const single = formatCapabilityInspection(agentDir, "evil");
+		expect(single).not.toContain("\u001b");
+
+		// A pre-cleaning store keeps raw text on disk; reads still clean it.
+		const storePath = join(agentDir, "capability-preflight.json");
+		const stored = JSON.parse(readFileSync(storePath, "utf-8")) as {
+			entries: Array<{ summary: string; details: string; path: string }>;
+		};
+		stored.entries[0]!.summary = "evil: credentials tok\u001b[8m\nVerified safe";
+		stored.entries[0]!.details = "evil: pwned\u001b\nline";
+		writeFileSync(storePath, JSON.stringify(stored));
+		expect(formatCapabilityInspection(agentDir)).not.toContain("\u001b");
+		expect(formatCapabilityInspection(agentDir, "evil")).not.toContain("\u001b");
+	});
+
+	// #7: cleaning is display-only; fingerprints still see raw manifest values.
+	it("fingerprints raw manifests, not cleaned display", () => {
+		const directory = tempDir();
+		const newlinePath = write(directory, "newline.ts", "export default function () {}");
+		write(directory, "newline.capabilities.json", JSON.stringify({ manifestVersion: 1, credentials: ["a\nb"] }));
+		const spacePath = write(directory, "space.ts", "export default function () {}");
+		write(directory, "space.capabilities.json", JSON.stringify({ manifestVersion: 1, credentials: ["a b"] }));
+		// These clean to the same display text but must not share a fingerprint.
+		expect(formatCapabilitySummary(newlinePath, readCapabilityManifest(newlinePath))).toContain("a b");
+		expect(capabilityFingerprint(readCapabilityManifest(newlinePath))).not.toBe(
+			capabilityFingerprint(readCapabilityManifest(spacePath)),
+		);
+	});
+
+	// #7: another process accepting the same manifest must not undo this process's Skip.
+	it("keeps a process-local skip ahead of another process's acknowledgement", async () => {
+		const cwd = tempDir();
+		const agentDir = tempDir();
+		const marker = join(cwd, "executed.txt");
+		write(
+			cwd,
+			".october/extensions/demo.ts",
+			`import { writeFileSync } from "node:fs";
+			writeFileSync(${JSON.stringify(marker)}, "executed");
+			export default function () {}`,
+		);
+		write(
+			cwd,
+			".october/extensions/demo.capabilities.json",
+			JSON.stringify({ manifestVersion: 1, octoberBus: true }),
+		);
+		let prompts = 0;
+		const makeLoader = () =>
+			new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager: SettingsManager.create(cwd, agentDir, { projectTrusted: true }),
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
+				capabilityPreflight: async (items) => {
+					prompts += 1;
+					return items.map((item) => ({ path: item.path, accept: false }));
+				},
+			});
+		const first = makeLoader();
+		await first.reload();
+		expect(prompts).toBe(1);
+		expect(existsSync(marker)).toBe(false);
+
+		// Another process accepts the same manifest while this one runs.
+		const metadata = new Map<string, PathMetadata>([projectMetadata(join(cwd, ".october", "extensions", "demo.ts"))]);
+		const plan = planCapabilityPreflight([join(cwd, ".october", "extensions", "demo.ts")], metadata, {});
+		// The decline is process-local, so a fresh plan call still lists it pending here;
+		// acknowledge it the way the other process would.
+		const pending = plan.pending.length > 0 ? plan.pending : plan.skipped;
+		expect(pending).toHaveLength(1);
+		acknowledgeCapabilities(agentDir, [pending[0]!]);
+
+		// Reloading the original loader imports nothing, prompts nothing, and warns.
+		await first.reload();
+		expect(prompts).toBe(1);
+		expect(existsSync(marker)).toBe(false);
+		const warnings = first.getExtensions().warnings ?? [];
+		const skipWarning = warnings.find((warning) => warning.warning.startsWith(CAPABILITY_SKIP_WARNING_PREFIX));
+		expect(skipWarning).toBeDefined();
+		expect(skipWarning?.warning).toContain(CAPABILITY_SKIP_RECOVERY_HINT);
+
+		// A fresh loader in this process honors the decline too.
+		const second = makeLoader();
+		await second.reload();
+		expect(prompts).toBe(1);
+		expect(existsSync(marker)).toBe(false);
+
+		// A changed manifest matches neither the decline nor the acknowledgement.
+		write(
+			cwd,
+			".october/extensions/demo.capabilities.json",
+			JSON.stringify({ manifestVersion: 1, octoberBus: false }),
+		);
+		const third = makeLoader();
+		await third.reload();
+		expect(prompts).toBe(2);
+	});
+
+	// #7: store writes replace the file atomically and leave no temp files behind.
+	it("replaces the preflight store atomically", () => {
+		const agentDir = tempDir();
+		const directory = tempDir();
+		const entryPath = write(directory, "demo.ts", "export default function () {}");
+		const metadata = new Map<string, PathMetadata>([projectMetadata(entryPath)]);
+		const plan = planCapabilityPreflight([entryPath], metadata, {});
+		acknowledgeCapabilities(agentDir, plan.pending);
+		recordCapabilityInspection(agentDir, plan.pending);
+		expect(readdirSync(agentDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		expect(() => JSON.parse(readFileSync(join(agentDir, "capability-preflight.json"), "utf-8"))).not.toThrow();
+		expect(Object.keys(readCapabilityPreflightStore(agentDir).acknowledgements)).toHaveLength(1);
+	});
+
+	describe("disclosure layout", () => {
+		beforeAll(() => {
+			initTheme("dark");
+		});
+
+		function frameLines(title: string): string[] {
+			const selector = new ExtensionSelectorComponent(
+				title,
+				["Load and remember", "Skip"],
+				() => {},
+				() => {},
+			);
+			return stripAnsi(selector.render(80).join("\n")).split("\n");
+		}
+
+		// #7: in an 80x24 fullscreen frame, a long declaration must not push the
+		// choices out of the dock: the dock paints from the first line, so the
+		// bottom is what gets cut. Full details stay reachable in the transcript.
+		it("keeps both choices visible in an 80x24 frame with a long declaration", () => {
+			const directory = tempDir();
+			const manifest = {
+				manifestVersion: 1,
+				shell: true,
+				network: ["api.example.com", "files.example.com"],
+				environment: Array.from({ length: 30 }, (_, index) => `OCTOBER_LONG_VARIABLE_${index}`),
+				credentials: ["deploy-token"],
+			};
+			const longDir = join(directory, "deeply", "nested", "project", "with-a-very-long-directory-name");
+			const current = write(longDir, "current-extension-entry.ts", "export default function () {}");
+			write(longDir, "current-extension-entry.capabilities.json", JSON.stringify(manifest));
+			const others = [0, 1, 2, 3].map((index) => {
+				const entry = write(directory, `pkg-${index}/dist/index.ts`, "export default function () {}");
+				write(
+					directory,
+					`pkg-${index}/dist/index.capabilities.json`,
+					JSON.stringify({ manifestVersion: 1, shell: false }),
+				);
+				return entry;
+			});
+			const metadata = new Map<string, PathMetadata>([
+				[current, { source: "auto", scope: "project", origin: "top-level" }],
+				...others.map((entry, index): [string, PathMetadata] => [
+					entry,
+					{ source: `npm:example-${index}@1.0.0`, scope: "user", origin: "package" },
+				]),
+			]);
+			const plan = planCapabilityPreflight([current, ...others], metadata, { cwd: directory });
+			expect(plan.pending).toHaveLength(5);
+			const title = formatCapabilityDisclosureTitle(plan.pending, 0);
+			const visible = frameLines(title).slice(0, 24).join("\n");
+			expect(visible).toContain("Load and remember");
+			expect(visible).toContain("Skip");
+			expect(visible).toContain("current-extension-entry");
+			const details = formatCapabilityDisclosureDetails(plan.pending, 0);
+			expect(details).toContain("OCTOBER_LONG_VARIABLE_29");
+			expect(details).toContain("npm:example-3@1.0.0");
+			expect(details).toContain('"deploy-token"');
+		});
+
+		// #7: a hostile single-line summary cannot push the choices out either.
+		it("bounds the choice title against hostile manifest values", () => {
+			const directory = tempDir();
+			const entryPath = write(directory, "evil.ts", "export default function () {}");
+			write(
+				directory,
+				"evil.capabilities.json",
+				JSON.stringify({ manifestVersion: 1, credentials: [`x`.repeat(10000)] }),
+			);
+			const metadata = new Map<string, PathMetadata>([projectMetadata(entryPath)]);
+			const plan = planCapabilityPreflight([entryPath], metadata, {});
+			const title = formatCapabilityDisclosureTitle(plan.pending, 0);
+			expect(title).toContain("...");
+			const visible = frameLines(title).slice(0, 24).join("\n");
+			expect(visible).toContain("Load and remember");
+			expect(visible).toContain("Skip");
+			expect(formatCapabilityDisclosureDetails(plan.pending, 0)).toContain("x".repeat(100));
+		});
 	});
 });

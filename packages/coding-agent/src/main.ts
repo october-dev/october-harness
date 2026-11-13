@@ -1131,7 +1131,7 @@ export async function main(args: string[], options?: MainOptions) {
 			})),
 			...(resourceLoader.getExtensions().warnings ?? []).map(({ path, warning }) => ({
 				type: "warning" as const,
-				message: `Extension package "${path}": ${warning}`,
+				message: `Extension "${path}": ${warning}`,
 			})),
 		];
 
