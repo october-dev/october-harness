@@ -12,6 +12,7 @@ import { mcpNamespace } from "@earendil-works/pi-mcp";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { createJiti } from "jiti";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../config.ts";
+import { cleanDisplayLine } from "../../utils/ansi.ts";
 import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
@@ -656,9 +657,12 @@ async function loadExtension(
 	// Read and validate the capability manifest before any extension code runs (#7).
 	const capabilities = readCapabilityManifest(resolvedPath);
 	if (capabilities.status === "invalid") {
+		// Field names and paths are extension-supplied: clean the composed error before display.
 		return {
 			extension: null,
-			error: `Invalid capability manifest for ${extensionPath} (${capabilities.source}): ${capabilities.errors.join("; ")}`,
+			error: cleanDisplayLine(
+				`Invalid capability manifest for ${extensionPath} (${capabilities.source}): ${capabilities.errors.join("; ")}`,
+			),
 		};
 	}
 

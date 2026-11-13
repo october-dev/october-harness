@@ -341,6 +341,12 @@ Unknown fields are rejected, so typos surface instead of being ignored. An omitt
 
 A manifest is disclosure metadata written by the extension author. It is not a sandbox and does not prove what the code does. See [Security](security.md#extension-capability-manifests).
 
+Before a project-owned or newly installed extension loads for the first time, October shows that manifest. An extension with no manifest is described as unclassified, not as safe. Each choice names the current extension by its package source and entry path, or by its project-relative file path; the whole pending set and the full declaration print where they can scroll, so no choice is made blind. Manifest text is cleaned before display: terminal escapes and control characters never reach the screen.
+
+In the interactive terminal you choose "Load and remember" or "Skip" for each one; skipping continues without that extension and never runs its code. Pressing Esc counts as Skip. A skip lasts for the rest of the process, so `/new`, `/fork`, `/resume`, and `/reload` do not ask again; restart October (or change the manifest) to be asked again. Another process accepting the same manifest does not undo your Skip. Reloads and session switches disclose through the running terminal UI.
+
+Outside the interactive terminal there is no prompt: print, JSON, and RPC runs print the same summary and remember it automatically, which suppresses the next terminal prompt for that manifest. Package and config commands (`list`, `config`, `install`, `remove`) disclose the same way before loading. `--help` and `--list-models` acknowledge without ever prompting. `/capabilities` prints the remembered summaries in the interactive terminal, and `/capabilities <name>` prints one full manifest. Remembering a manifest does not sandbox the extension. A changed manifest is shown again.
+
 <a id="understand-the-lifecycle"></a>
 
 ### Lifecycle Overview

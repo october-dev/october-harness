@@ -31,6 +31,7 @@ import {
 import { runAuthLogin } from "./cli/auth-login.ts";
 import { runAuthLogout } from "./cli/auth-logout.ts";
 import { createProcessLoginTerminal } from "./cli/auth-terminal.ts";
+import { createCapabilityPreflightHost } from "./cli/capability-preflight.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { runDoctorCommand } from "./cli/doctor.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
@@ -85,6 +86,7 @@ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-schema.ts";
 import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { cleanDisplayLine } from "./utils/ansi.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -1035,6 +1037,12 @@ export async function main(args: string[], options?: MainOptions) {
 			: undefined;
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
+	// Like project trust, capability disclosure never prompts for metadata commands. The host is
+	// shared by every runtime, and the interactive UI backs it once the TUI has started.
+	const capabilityPreflightHost = createCapabilityPreflightHost({
+		settingsManager: startupSettingsManager,
+		getMode: () => trustPromptMode,
+	});
 
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
@@ -1110,6 +1118,7 @@ export async function main(args: string[], options?: MainOptions) {
 				systemPrompt: parsed.systemPrompt,
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories,
+				capabilityPreflight: (items) => capabilityPreflightHost.disclose(items),
 			},
 		});
 		const { settingsManager, modelRuntime, resourceLoader } = services;
@@ -1119,11 +1128,12 @@ export async function main(args: string[], options?: MainOptions) {
 			...collectSettingsDiagnostics(settingsManager),
 			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
 				type: "error" as const,
-				message: `Failed to load extension "${path}": ${error}`,
+				// Paths and load errors are extension-supplied: clean them at composition.
+				message: `Failed to load extension "${cleanDisplayLine(path)}": ${cleanDisplayLine(error)}`,
 			})),
 			...(resourceLoader.getExtensions().warnings ?? []).map(({ path, warning }) => ({
 				type: "warning" as const,
-				message: `Extension package "${path}": ${warning}`,
+				message: `Extension "${cleanDisplayLine(path)}": ${cleanDisplayLine(warning)}`,
 			})),
 		];
 
@@ -1290,6 +1300,7 @@ export async function main(args: string[], options?: MainOptions) {
 			shellRunnerNotice,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
+			capabilityPreflightHost,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

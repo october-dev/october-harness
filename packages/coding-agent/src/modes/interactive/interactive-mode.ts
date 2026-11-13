@@ -80,6 +80,15 @@ import {
 import { formatCacheWarmingStatus, formatCacheWarmingUsage } from "../../core/cache-warmer.ts";
 import { findExtensionStackMatches, recordCrash, takeUnnotifiedCrash } from "../../core/crash-log.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../../core/defaults.ts";
+import {
+	CAPABILITY_LOAD_CHOICE,
+	CAPABILITY_SKIP_CHOICE,
+	type CapabilityPreflightDecision,
+	type CapabilityPreflightHost,
+	type CapabilityPreflightItem,
+	formatCapabilityDisclosureDetails,
+	formatCapabilityDisclosureTitle,
+} from "../../core/extensions/capability-preflight.ts";
 import type {
 	AutocompleteProviderFactory,
 	EditorFactory,
@@ -139,6 +148,7 @@ import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { addMcpServerConfig } from "../../extensions/mcp/config.ts";
 import { logoutOctober } from "../../extensions/october/auth.ts";
 import { getLoginProviderOptions, LOGIN_MENU_OPTIONS, LOGIN_MENU_TITLE } from "../../extensions/october/login-menu.ts";
+import { cleanDisplayLine } from "../../utils/ansi.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -472,6 +482,11 @@ export interface InteractiveModeOptions {
 	initialThemeSetting?: string;
 	/** Terminal implementation. Defaults to the current process terminal. */
 	terminal?: Terminal;
+	/**
+	 * Host-owned first-load capability disclosure. Once the TUI has started, prompts for reloads
+	 * and session replacement run through the active UI instead of startup selectors.
+	 */
+	capabilityPreflightHost?: CapabilityPreflightHost;
 }
 
 interface ExtensionChangelogUpdate {
@@ -597,6 +612,12 @@ export class InteractiveMode {
 	// Extension dialogs shown in the editor slot (select, confirm, input, editor, inline custom).
 	// The last entry is visible; see pushExtensionDialog().
 	private extensionDialogs: Array<{ component: ExtensionDialogComponent; blocked: BlockedStatus | undefined }> = [];
+	/**
+	 * Non-editable background for the editor slot while set. When the last dialog closes
+	 * (for example a disclosure prompt during `/reload`), this shows instead of the
+	 * editor, so input cannot reach a half-reloaded session.
+	 */
+	private dialogBackgroundComponent: Component | undefined;
 	/** Numbers the program status sources of blocking overlays, so closing one keeps the others. */
 	private nextBlockingOverlayId = 0;
 	/**
@@ -1051,6 +1072,8 @@ export class InteractiveMode {
 
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
+		// Route later capability disclosures through the active UI, never a second startup UI.
+		this.options.capabilityPreflightHost?.setInteractiveHandler((items) => this.discloseExtensionCapabilities(items));
 		this.isInitialized = true;
 		this.programStatus.report();
 		this.ensurePngTranscoder();
@@ -1893,13 +1916,14 @@ export class InteractiveMode {
 	}
 
 	private formatPathWithSource(p: string, sourceInfo?: SourceInfo): string {
+		// Paths and source labels come from the filesystem: clean the composed label.
 		if (sourceInfo) {
 			const shortPath = this.getShortPath(p, sourceInfo);
 			const { label, scopeLabel } = this.getDisplaySourceInfo(sourceInfo);
 			const labelText = scopeLabel ? `${label} (${scopeLabel})` : label;
-			return `${labelText} ${shortPath}`;
+			return cleanDisplayLine(`${labelText} ${shortPath}`);
 		}
-		return this.formatDisplayPath(p);
+		return cleanDisplayLine(this.formatDisplayPath(p));
 	}
 
 	private formatDiagnostics(diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string {
@@ -1923,7 +1947,7 @@ export class InteractiveMode {
 		for (const [name, collisionList] of collisions) {
 			const first = collisionList[0]?.collision;
 			if (!first) continue;
-			lines.push(theme.fg("warning", `  "${name}" collision:`));
+			lines.push(theme.fg("warning", `  "${cleanDisplayLine(name)}" collision:`));
 			lines.push(
 				theme.fg(
 					"dim",
@@ -1946,9 +1970,9 @@ export class InteractiveMode {
 			if (d.path) {
 				const formattedPath = this.formatPathWithSource(d.path, this.findSourceInfoForPath(d.path, sourceInfos));
 				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${formattedPath}`));
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `    ${d.message}`));
+				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `    ${cleanDisplayLine(d.message)}`));
 			} else {
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${d.message}`));
+				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${cleanDisplayLine(d.message)}`));
 			}
 		}
 
@@ -2826,6 +2850,34 @@ export class InteractiveMode {
 		};
 	}
 
+	/**
+	 * First-load capability disclosure backed by the active UI, for `/reload` and session
+	 * replacement after startup (#7). Uses the in-app dialog stack, so keyboard input keeps
+	 * working after the choice. The full pending set and declaration print to the scrollable
+	 * transcript first; the choice title stays short so both choices fit the frame.
+	 */
+	async discloseExtensionCapabilities(items: CapabilityPreflightItem[]): Promise<CapabilityPreflightDecision[]> {
+		const decisions: CapabilityPreflightDecision[] = [];
+		for (let index = 0; index < items.length; index++) {
+			const item = items[index];
+			if (!item) continue;
+			this.showCapabilityDisclosureDetails(formatCapabilityDisclosureDetails(items, index));
+			const selected = await this.showExtensionSelector(formatCapabilityDisclosureTitle(items, index), [
+				CAPABILITY_LOAD_CHOICE,
+				CAPABILITY_SKIP_CHOICE,
+			]);
+			decisions.push({ path: item.path, accept: selected === CAPABILITY_LOAD_CHOICE });
+		}
+		return decisions;
+	}
+
+	/** Print one disclosure's full details where page keys can reach them during the choice. */
+	private showCapabilityDisclosureDetails(text: string): void {
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(text, 1, 0));
+		this.ui.requestRender();
+	}
+
 	private createExtensionUIContext(): ExtensionUIContext {
 		return {
 			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
@@ -2902,7 +2954,7 @@ export class InteractiveMode {
 
 	private showTopExtensionDialog(): void {
 		const top = this.extensionDialogs.at(-1);
-		const component = top?.component ?? this.editor;
+		const component = top?.component ?? this.dialogBackgroundComponent ?? this.editor;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(component);
 		this.ui.setFocus(component);
@@ -6683,10 +6735,14 @@ export class InteractiveMode {
 		this.editorContainer.clear();
 		this.editorContainer.addChild(reloadBox);
 		this.ui.setFocus(reloadBox);
+		// Disclosure prompts during reload open above this box; when each closes, the
+		// box (not the editor) returns until loading finishes.
+		this.dialogBackgroundComponent = reloadBox;
 		this.ui.requestRender(true);
 		await new Promise((resolve) => process.nextTick(resolve));
 
 		const dismissReloadBox = (editor: Component) => {
+			this.dialogBackgroundComponent = undefined;
 			this.editorContainer.clear();
 			this.editorContainer.addChild(editor);
 			this.ui.setFocus(editor);
