@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="358" viewBox="0 0 880 358" role="img" aria-label="Two October Harness agents coordinating over October Bus: the planner finds the builder, sends a durable review request, the builder claims the task and sends a correlated reply.">
+  <style>
+    .l0 { animation: show0 16.0s steps(1) infinite; }
+    @keyframes show0 { 0% { opacity: 0; } 0.00% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l1 { animation: show1 16.0s steps(1) infinite; }
+    @keyframes show1 { 0% { opacity: 0; } 5.62% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l2 { animation: show2 16.0s steps(1) infinite; }
+    @keyframes show2 { 0% { opacity: 0; } 11.25% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l3 { animation: show3 16.0s steps(1) infinite; }
+    @keyframes show3 { 0% { opacity: 0; } 16.88% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l4 { animation: show4 16.0s steps(1) infinite; }
+    @keyframes show4 { 0% { opacity: 0; } 22.50% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l5 { animation: show5 16.0s steps(1) infinite; }
+    @keyframes show5 { 0% { opacity: 0; } 28.12% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l6 { animation: show6 16.0s steps(1) infinite; }
+    @keyframes show6 { 0% { opacity: 0; } 33.75% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l7 { animation: show7 16.0s steps(1) infinite; }
+    @keyframes show7 { 0% { opacity: 0; } 39.38% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l8 { animation: show8 16.0s steps(1) infinite; }
+    @keyframes show8 { 0% { opacity: 0; } 45.00% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l9 { animation: show9 16.0s steps(1) infinite; }
+    @keyframes show9 { 0% { opacity: 0; } 50.62% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l10 { animation: show10 16.0s steps(1) infinite; }
+    @keyframes show10 { 0% { opacity: 0; } 56.25% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .l11 { animation: show11 16.0s steps(1) infinite; }
+    @keyframes show11 { 0% { opacity: 0; } 61.88% { opacity: 1; } 94% { opacity: 1; } 95%,100% { opacity: 0; } }
+    .caret { animation: blink 1s steps(1) infinite; }
+    @keyframes blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .l, .caret { animation: none; opacity: 1; } }
+  </style>
+  <rect width="880" height="358" rx="12" fill="#101820"/>
+  <rect width="880" height="36" rx="12" fill="#1A2430"/>
+  <rect y="24" width="880" height="12" fill="#1A2430"/>
+  <circle cx="22" cy="18" r="6" fill="#FF5F57"/><circle cx="42" cy="18" r="6" fill="#FEBC2E"/><circle cx="62" cy="18" r="6" fill="#28C840"/>
+  <text x="440" y="23" text-anchor="middle" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#8B949E">planner · builder — one October Bus scope</text>
+  <text class="l l0" x="28" y="64" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#FFC452" font-weight="700">planner </tspan><tspan fill="#6E7681">→ </tspan>list_peers()</text>
+  <text class="l l1" x="28" y="86" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#BE400C" font-weight="700">bus     </tspan><tspan fill="#6E7681">→ </tspan>builder [attached, ready, local]</text>
+  <text class="l l2" x="28" y="108" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#FFC452" font-weight="700">planner </tspan><tspan fill="#6E7681">→ </tspan>message_peer(builder, mode=request,</text>
+  <text class="l l3" x="28" y="130" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan>        </tspan><tspan fill="#6E7681">  </tspan>"Review the authentication flow for failure cases.")</text>
+  <text class="l l4" x="28" y="152" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#BE400C" font-weight="700">bus     </tspan><tspan fill="#6E7681">→ </tspan>request accepted durably as msg_01</text>
+  <text class="l l5" x="28" y="174" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#F7820E" font-weight="700">builder </tspan><tspan fill="#6E7681">→ </tspan>check_inbox()</text>
+  <text class="l l6" x="28" y="196" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#FFC452" font-weight="700">planner </tspan><tspan fill="#6E7681">→ </tspan>add_task(title="Review authentication flow") → task_01</text>
+  <text class="l l7" x="28" y="218" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#F7820E" font-weight="700">builder </tspan><tspan fill="#6E7681">→ </tspan>claim_task(taskId=task_01)</text>
+  <text class="l l8" x="28" y="240" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#F7820E" font-weight="700">builder </tspan><tspan fill="#6E7681">→ </tspan>message_peer(planner, mode=response, responseTo=msg_01,</text>
+  <text class="l l9" x="28" y="262" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan>        </tspan><tspan fill="#6E7681">  </tspan>"Found two gaps: expired-device-code recovery and token revocation UX.")</text>
+  <text class="l l10" x="28" y="284" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#F7820E" font-weight="700">builder </tspan><tspan fill="#6E7681">→ </tspan>acknowledge_messages(messageIds=[msg_01])</text>
+  <text class="l l11" x="28" y="306" font-family="Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" fill="#E6EDF3" xml:space="preserve"><tspan fill="#FFC452" font-weight="700">planner </tspan><tspan fill="#6E7681">→ </tspan>check_inbox() → correlated response received ✓</text>
+  <rect class="caret" x="28" y="314" width="9" height="16" fill="#F7820E"/>
+</svg>

@@ -8,6 +8,7 @@
 - Added `pi.execBash()` for extensions to run a shell command through the session: the configured shell path and command prefix, the session-selected shell runner, and session cancellation, with the result recorded but excluded from model context ([#68](https://github.com/october-dev/october-harness/pull/68)).
 - Added `/permissions`, which explains the session's tool permission policy: the selected mode and its source, any trusted project restriction, the active delegation ceiling, and whether read, edit and command tools are allowed, ask, or are blocked. Denials and approval prompts now name the layer that applied ([#62](https://github.com/october-dev/october-harness/pull/62) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 - Added read-only SDK and RPC access to the locked October permission explanation through `AgentSession.getPermissionInfo()` and `get_permissions` ([#63](https://github.com/october-dev/october-harness/pull/63) by [@flam3z3122](https://github.com/flam3z3122)).
+- Added pause and resume for automatic public Bus inbox delivery. `/inbox pause`, `/inbox resume`, and `/inbox status`, plus `AgentSession.getTeamInboxDispatch()` / `setTeamInboxDispatch()` and the RPC commands `get_team_inbox` and `set_team_inbox`, stop new peer batches without a model call. Unread messages stay pending, an in-flight peer turn may settle, and the choice is restored with the session. The team status line and `/cockpit` show it ([#46](https://github.com/october-dev/october-harness/issues/46)).
 
 ### Fixed
 

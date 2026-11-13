@@ -58,6 +58,10 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { OCTOBER_SESSION_REFRESHED_CODE } from "../extensions/october/auth.ts";
+import {
+	getTeamInboxDispatch as readTeamInboxDispatch,
+	setTeamInboxDispatch as writeTeamInboxDispatch,
+} from "../extensions/october/bus/public.ts";
 import type { OctoberPermissionExplanation } from "../extensions/october/permissions.ts";
 import { getThemeByName, theme } from "../modes/interactive/theme/theme.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
@@ -269,6 +273,17 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 	return headers
 		? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null))
 		: undefined;
+}
+
+/** Automatic public Bus inbox delivery, as reported by the SDK and RPC. */
+export interface TeamInboxDispatchState {
+	/** False when this session is not running the public Bus delivery loop. */
+	available: boolean;
+	paused: boolean;
+	/** Recorded deliveries that are not acknowledged yet. */
+	pending: number;
+	/** A peer batch whose turn is still in flight. */
+	active: boolean;
 }
 
 export interface AgentSessionConfig {
@@ -1587,6 +1602,28 @@ export class AgentSession {
 	/** Read the locked October permission policy explanation, if the October permission gate is loaded. */
 	getPermissionInfo(): OctoberPermissionExplanation | undefined {
 		return getSessionPermissionInfo(this.sessionManager, this._extensionRunner.hasUI());
+	}
+
+	/**
+	 * Automatic public Bus inbox dispatch for this session.
+	 * `available` is false until the public Bus extension has started.
+	 * Pausing does not call the model, acknowledge peer messages, or discard them.
+	 */
+	getTeamInboxDispatch(): TeamInboxDispatchState {
+		const status = readTeamInboxDispatch(this.sessionManager);
+		return status ?? { available: false, paused: false, pending: 0, active: false };
+	}
+
+	/**
+	 * Pause or resume automatic public Bus inbox dispatch without a model call.
+	 * The choice is stored on the session. Peer messages and tool results cannot change it.
+	 */
+	setTeamInboxDispatch(paused: boolean): TeamInboxDispatchState {
+		const status = writeTeamInboxDispatch(this.sessionManager, paused);
+		if (!status) {
+			throw new Error("October Bus automatic inbox dispatch is not active in this session");
+		}
+		return status;
 	}
 
 	/** Get the names of the tools that tools can call through `ctx.executeTool()`. */
