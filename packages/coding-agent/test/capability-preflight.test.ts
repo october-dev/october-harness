@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
-import { renderLayoutFrame } from "@earendil-works/pi-tui/dist/layout.js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { renderLayoutFrame } from "../../tui/src/layout.ts";
 import { createCapabilityPreflightHost } from "../src/cli/capability-preflight.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.ts";
