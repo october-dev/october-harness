@@ -31,6 +31,8 @@ An extension runs inside the October process with the same operating-system perm
 
 See [examples/extensions/](../examples/extensions/) for working implementations.
 
+For deterministic tests of extension factories and tools, see the [Public Extension Testing Kit](extension-testing.md).
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -61,6 +63,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
 - [Custom UI](#custom-ui)
 - [Error Handling](#error-handling)
 - [Mode Behavior](#mode-behavior)
+- [Testing Extensions](#testing-extensions)
 - [Examples Reference](#examples-reference)
 
 <a id="create-an-extension"></a>
@@ -3314,8 +3317,11 @@ const highlighted = highlightCode(code, lang);
 
 Use `ctx.mode === "tui"` before TUI-specific features (`custom()`, component factories, terminal input). Use `ctx.hasUI` before dialog and notification methods that work in both TUI and RPC modes.
 
-<a id="use-examples-as-the-implementation-reference"></a>
+## Testing Extensions
 
+The [Public Extension Testing Kit](extension-testing.md) provides a deterministic faux model and October's standard extension runtime for testing extension factories, tools, events, blocking, cancellation, and cleanup from a separate extension project.
+
+<a id="use-examples-as-the-implementation-reference"></a>
 ## Examples Reference
 
 All examples in [examples/extensions/](../examples/extensions/).

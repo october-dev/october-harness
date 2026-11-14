@@ -143,6 +143,7 @@ function outputBytes(metafiles) {
 for (const entry of [
 	join(codingAgentDistDir, "cli.js"),
 	join(codingAgentDistDir, "index.js"),
+	join(codingAgentDistDir, "testing.js"),
 	join(codingAgentDistDir, "rpc-entry.js"),
 	join(codingAgentDistDir, "utils", "image-resize-worker.js"),
 	join(codingAgentDistDir, "extensions", "codemode", "worker.js"),
@@ -159,7 +160,7 @@ mkdirSync(bundleDir, { recursive: true });
 
 // Keep the compiler output for standalone Bun builds and repeat bundle builds.
 // npm's public entries below must use this checkout's merged workspace code.
-for (const name of ["cli", "index"]) {
+for (const name of ["cli", "index", "testing"]) {
 	const source = readFileSync(join(codingAgentDistDir, `${name}.js`), "utf8");
 	if (!source.includes('"./bundle/')) {
 		writeFileSync(join(codingAgentDistDir, `${name}-unbundled.js`), source);
@@ -174,6 +175,7 @@ const mainResult = await build({
 		"cli-runtime": join(codingAgentDistDir, "cli.js"),
 		index: join(codingAgentDistDir, "index.js"),
 		"rpc-entry": join(codingAgentDistDir, "rpc-entry.js"),
+		testing: join(codingAgentDistDir, "testing.js"),
 	},
 	outdir: bundleDir,
 	chunkNames: "chunks/[name]-[hash]",
@@ -272,6 +274,7 @@ const cliSource = readFileSync(join(codingAgentDistDir, "cli-unbundled.js"), "ut
 if (!cliSource.includes('"./cli-run.js"')) throw new Error("CLI bootstrap no longer loads cli-run.js");
 writeFileSync(join(codingAgentDistDir, "cli.js"), cliSource.replace('"./cli-run.js"', '"./bundle/cli-runtime.js"'));
 writeFileSync(join(codingAgentDistDir, "index.js"), 'export * from "./bundle/index.js";\n');
+writeFileSync(join(codingAgentDistDir, "testing.js"), 'export * from "./bundle/testing.js";\n');
 // Bun must bundle its own runtime setup and workspace modules together, without
 // introducing a second copy of the Node bundle's module state.
 const bunCli = join(codingAgentDistDir, "bun", "cli.js");
