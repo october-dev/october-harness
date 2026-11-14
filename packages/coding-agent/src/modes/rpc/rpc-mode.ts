@@ -486,6 +486,21 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_state", state);
 			}
 
+			case "get_permissions": {
+				return success(id, "get_permissions", session.getPermissionInfo() ?? null);
+			}
+
+			case "get_team_inbox": {
+				return success(id, "get_team_inbox", session.getTeamInboxDispatch());
+			}
+
+			case "set_team_inbox": {
+				if (typeof command.paused !== "boolean") {
+					return error(id, "set_team_inbox", "paused must be a boolean");
+				}
+				return success(id, "set_team_inbox", session.setTeamInboxDispatch(command.paused));
+			}
+
 			// =================================================================
 			// Model
 			// =================================================================

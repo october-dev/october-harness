@@ -146,7 +146,8 @@ export async function execCommand(
 		stderr += stderrDecoder.end();
 	}
 
-	const exitCode = code ?? 0;
+	// A missing exit status means the process died from a signal, never that it succeeded.
+	const exitCode = code ?? 1;
 	return {
 		stdout,
 		stderr,

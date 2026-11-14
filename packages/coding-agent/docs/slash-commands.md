@@ -24,6 +24,7 @@ Extensions, prompt templates, and skills can add commands. The command menu in O
 | `/resume` | Resume another session |
 | `/name [name]` | Set the session display name, or show the current name when omitted |
 | `/session` | Show current session information and statistics |
+| `/permissions` | Explain this session's tool permission policy: the selected mode and its source, any trusted project restriction, the delegation ceiling (`inherit` adds no restriction), and whether read, edit and command tools are allowed, ask, or are blocked |
 | `/tree` | Navigate the session tree |
 | `/fork` | Create a new session from an earlier user message |
 | `/clone` | Duplicate the current session at its current position |
@@ -45,6 +46,10 @@ Review a session before exporting or sharing it. Sessions can contain prompts, t
 
 | Command | Description |
 |---|---|
+| `/verify run <command>` | Run a command through the session shell and record its observed result, timing, and git identity |
+| `/verify status` | Show the latest verification record and whether the tree still matches |
+| `/verify share` | Arm the latest record for attachment to later Bus task results |
+| `/verify unshare` | Stop attaching verification evidence to task results |
 | `/trust` | Save a project trust decision for future October processes |
 | `/mcp` | Manage MCP servers: sign in, reconnect, enable or disable, and change exposure |
 | `/reload` | Reload keybindings, extensions, skills, templates, themes, and context files |

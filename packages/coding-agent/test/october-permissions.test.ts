@@ -7,12 +7,16 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+import { emitSessionShutdownEvent } from "../src/core/extensions/runner.ts";
+import type { ExtensionAPI, LoadExtensionsResult } from "../src/core/extensions/types.ts";
 import octoberExtension from "../src/extensions/october/index.ts";
 import {
 	createOctoberPermissionController,
+	formatOctoberPermissionExplanation,
 	registerOctoberPermissions,
 } from "../src/extensions/october/permissions.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
+import { createHarness, createTestUiContext, type Harness } from "./suite/harness.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 const harnesses: Harness[] = [];
 const settingsDirectories: string[] = [];
@@ -66,6 +70,99 @@ afterEach(() => {
 });
 
 describe("october permission modes", () => {
+	// Regression test for #48.
+	it("does not lock during SDK inspection and matches the /permissions output", async () => {
+		process.env.OCTOBER_PERMISSION_MODE = "accept-edits";
+		const notifications: string[] = [];
+		const harness = await createHarness({
+			tools: [dummyTool("read"), dummyTool("write"), dummyTool("bash")],
+			extensionFactories: [registerOctoberPermissions],
+		});
+		harnesses.push(harness);
+
+		expect(harness.session.getPermissionInfo()).toBeUndefined();
+		mkdirSync(join(harness.tempDir, ".october"));
+		writeFileSync(join(harness.tempDir, ".october", "settings.json"), JSON.stringify({ permissionMode: "ask" }));
+		harness.settingsManager.setProjectTrusted(true);
+		await harness.session.bindExtensions({
+			mode: "tui",
+			uiContext: createTestUiContext({ notify: (message) => notifications.push(message) }),
+		});
+
+		const explanation = harness.session.getPermissionInfo();
+		expect(explanation).toMatchObject({
+			locked: true,
+			selected: { mode: "accept-edits", source: "environment" },
+			project: { trusted: true, setting: "ask", tightened: true },
+			effectiveMode: "ask",
+		});
+		const command = harness.session.extensionRunner.getCommand("permissions");
+		await command?.handler("", harness.session.extensionRunner.createCommandContext());
+		expect(notifications.at(-1)).toBe(formatOctoberPermissionExplanation(explanation!));
+	});
+
+	// Regression test for #48.
+	it("registers SDK inspection on the first tool call and again after an unbound reload", async () => {
+		const factory = (pi: ExtensionAPI) =>
+			registerOctoberPermissions(pi, createOctoberPermissionController(), { mode: "ask" });
+		let extensionsResult: LoadExtensionsResult = await createTestExtensionsResult([factory]);
+		const baseResourceLoader = createTestResourceLoader();
+		const resourceLoader = {
+			...baseResourceLoader,
+			getExtensions: () => extensionsResult,
+			reload: async () => {
+				extensionsResult = await createTestExtensionsResult([factory]);
+			},
+		};
+		const harness = await createHarness({ tools: [dummyTool("bash")], resourceLoader });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		expect(harness.session.getPermissionInfo()).toBeUndefined();
+		await harness.session.prompt("first unbound prompt");
+		expect(toolResult(harness)?.isError).toBe(true);
+		expect(harness.session.getPermissionInfo()).toMatchObject({
+			locked: true,
+			selected: { mode: "ask" },
+			tools: { command: { outcome: "block" } },
+		});
+
+		await harness.session.reload();
+		expect(harness.session.getPermissionInfo()).toBeUndefined();
+		const blocked = await harness.session.extensionRunner.emitToolCall({
+			type: "tool_call",
+			toolName: "bash",
+			toolCallId: "reload-probe",
+			input: { command: "true" },
+		});
+		expect(blocked?.block).toBe(true);
+		expect(harness.session.getPermissionInfo()).toMatchObject({
+			locked: true,
+			selected: { mode: "ask" },
+			tools: { command: { outcome: "block" } },
+		});
+	});
+
+	// Regression test for #48.
+	it("unregisters SDK permission inspection after shutdown", async () => {
+		const harness = await createHarness({
+			tools: [dummyTool("bash")],
+			extensionFactories: [
+				(pi) => registerOctoberPermissions(pi, createOctoberPermissionController(), { mode: "ask" }),
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.bindExtensions({});
+		expect(harness.session.getPermissionInfo()?.locked).toBe(true);
+
+		await emitSessionShutdownEvent(harness.session.extensionRunner, { type: "session_shutdown", reason: "quit" });
+
+		expect(harness.session.getPermissionInfo()).toBeUndefined();
+	});
+
 	it("applies October permissions to upstream nested tool execution", async () => {
 		const edit = dummyTool("edit");
 		const execute = vi.fn(edit.execute);

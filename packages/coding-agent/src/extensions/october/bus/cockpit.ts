@@ -10,7 +10,7 @@ import {
 import { type CockpitViewData, OctoberCockpitView } from "./cockpit-view.ts";
 import type { OctoberBusEnv, OctoberPublicBusEnv } from "./env.ts";
 import type { OctoberMcpClient } from "./mcp-client.ts";
-import { callObject, errorMessage, isRecord } from "./public.ts";
+import { callObject, errorMessage, getTeamInboxDispatch, isRecord, readInboxDispatchSnapshot } from "./public.ts";
 import { readBusResponse } from "./response.ts";
 
 const READ_TIMEOUT_MS = 10_000;
@@ -143,9 +143,18 @@ export function registerOctoberCockpit(pi: ExtensionAPI, options: OctoberCockpit
 						node === "error" ? "error" : failed.length ? "warning" : pending.length ? "muted" : "success";
 					return { text, tone };
 				};
+				const inbox =
+					getTeamInboxDispatch(ctx.sessionManager) ?? readInboxDispatchSnapshot(ctx.sessionManager.getBranch());
+				const inboxLine = [
+					`Inbox dispatch: ${inbox.paused ? "paused" : "automatic"}`,
+					inbox.pending ? `${inbox.pending} pending` : undefined,
+					"active" in inbox && inbox.active ? "peer turn in flight" : undefined,
+				]
+					.filter((part): part is string => !!part)
+					.join(" · ");
 				let data: CockpitViewData = {
 					transport: `Transport: public Bus ${bus.address}`,
-					identity: [`Agent ${bus.agentId} · execution ${bus.executionId}`],
+					identity: [`Agent ${bus.agentId} · execution ${bus.executionId}`, inboxLine],
 					connection: connection(),
 					snapshotAt: new Date().toISOString(),
 					peers: { state: "loading" },
@@ -188,6 +197,7 @@ export function registerOctoberCockpit(pi: ExtensionAPI, options: OctoberCockpit
 										`Lifecycle ${node.lifecycle}${readiness}${node.leaseExpiresAt ? ` · lease until ${node.leaseExpiresAt}` : ""}`,
 									]
 								: []),
+							inboxLine,
 						],
 					});
 				});

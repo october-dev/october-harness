@@ -22,6 +22,7 @@ export {
 	type PromptOptions,
 	parseSkillBlock,
 	type SessionStats,
+	type TeamInboxDispatchState,
 } from "./core/agent-session.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 export type { CacheWarmingDecision, CacheWarmingStatus } from "./core/cache-warmer.ts";
@@ -444,6 +445,15 @@ export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extens
 export type { CodemodeStoreEntryData, CodemodeToolDetails } from "./extensions/codemode/tool.ts";
 export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "./extensions/mcp/config.ts";
 export { createMcpExtension, type McpExtensionOptions, type McpTransportFactory } from "./extensions/mcp/index.ts";
+export type {
+	OctoberPermissionExplanation,
+	OctoberPermissionMode,
+	OctoberPermissionModeSource,
+	OctoberPermissionPolicy,
+	OctoberTemporaryPermissionCeiling,
+	OctoberToolDecision,
+	ToolPermissionClass,
+} from "./extensions/october/permissions.ts";
 export { createToolSearchExtension } from "./extensions/tool-search/index.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";

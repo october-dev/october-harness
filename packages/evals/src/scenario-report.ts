@@ -1,12 +1,26 @@
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ScenarioResult } from "./scenario-runner.ts";
+import { VERSION as OCTOBER_VERSION } from "@october-dev/october";
+import { SCENARIO_FORMAT_VERSION } from "./scenario.ts";
+import { FAUX_MODEL, type ScenarioResult } from "./scenario-runner.ts";
 
-export const SCENARIO_REPORT_VERSION = 1;
+/** Version 2 adds `runner` and per-scenario `fingerprint`, which baseline comparison requires. */
+export const SCENARIO_REPORT_VERSION = 2;
+
+const EVALS_VERSION: string = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")).version;
+
+/** Versions of the code that produced a report. Shown in comparisons; a difference is expected, not an error. */
+export type ScenarioRunner = {
+	october: string;
+	evals: string;
+	scenarioFormat: number;
+};
 
 export type ScenarioReport = {
 	reportVersion: typeof SCENARIO_REPORT_VERSION;
 	createdAt: string;
+	runner: ScenarioRunner;
 	mode: "faux" | "model";
 	/** `provider/id` of the model that ran every scenario. */
 	model: string;
@@ -19,8 +33,9 @@ export function buildScenarioReport(results: ScenarioResult[], createdAt = new D
 	return {
 		reportVersion: SCENARIO_REPORT_VERSION,
 		createdAt: createdAt.toISOString(),
+		runner: { october: OCTOBER_VERSION, evals: EVALS_VERSION, scenarioFormat: SCENARIO_FORMAT_VERSION },
 		mode: results[0]?.mode ?? "faux",
-		model: results[0]?.model ?? "faux/faux",
+		model: results[0]?.model ?? FAUX_MODEL,
 		passed: results.filter((result) => result.passed).length,
 		total: results.length,
 		scenarios: results,

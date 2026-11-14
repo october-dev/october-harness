@@ -7,11 +7,17 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { PromptDisposition, QueuedInputDisposition, SessionStats } from "../../core/agent-session.ts";
+import type {
+	PromptDisposition,
+	QueuedInputDisposition,
+	SessionStats,
+	TeamInboxDispatchState,
+} from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { PortableSessionDiagnostic } from "../../core/session-portable.ts";
+import type { OctoberPermissionExplanation } from "../../extensions/october/permissions.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
@@ -251,6 +257,27 @@ export class RpcClient {
 	 */
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.send({ type: "get_state" });
+		return this.getData(response);
+	}
+
+	/** Get the locked October permission policy explanation, or null when the gate is unavailable. */
+	async getPermissions(): Promise<OctoberPermissionExplanation | null> {
+		const response = await this.send({ type: "get_permissions" });
+		return this.getData(response);
+	}
+
+	/** Read automatic public Bus inbox dispatch. Does not call the model. */
+	async getTeamInbox(): Promise<TeamInboxDispatchState> {
+		const response = await this.send({ type: "get_team_inbox" });
+		return this.getData(response);
+	}
+
+	/**
+	 * Pause or resume automatic public Bus inbox dispatch. Does not call the model.
+	 * Fails when this session has no public Bus delivery loop.
+	 */
+	async setTeamInbox(paused: boolean): Promise<TeamInboxDispatchState> {
+		const response = await this.send({ type: "set_team_inbox", paused });
 		return this.getData(response);
 	}
 
