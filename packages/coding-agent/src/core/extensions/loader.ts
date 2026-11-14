@@ -24,6 +24,7 @@ import type { ModelRouteRequest, VirtualModelDefinition } from "../virtual-model
 import { readCapabilityManifest } from "./capabilities.ts";
 import type {
 	EntryRenderer,
+	ExecBashOptions,
 	Extension,
 	ExtensionAPI,
 	ExtensionFactory,
@@ -181,6 +182,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
+		execBash: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
 		getSettings: notInitialized,
@@ -424,6 +426,11 @@ function createExtensionAPI(
 		exec(command: string, args: string[], options?: ExecOptions) {
 			assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);
+		},
+
+		execBash(command: string, options?: ExecBashOptions) {
+			assertActive();
+			return runtime.execBash(command, options);
 		},
 
 		getActiveTools(): string[] {
