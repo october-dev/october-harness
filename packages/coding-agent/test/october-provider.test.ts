@@ -244,6 +244,7 @@ describe("october inference provider", () => {
 		expect(models[1]?.maxTokens).toBe(32000);
 	});
 
+	// Regression: harshsaver/october-desktop#349.
 	it("marks the gateway's claude/* routes as seeing images", async () => {
 		const { url } = await listen((request, response) => {
 			if (request.url === "/v1/models" || request.url?.startsWith("/v1/models?")) {
