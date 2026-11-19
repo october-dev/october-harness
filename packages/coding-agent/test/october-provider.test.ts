@@ -244,6 +244,31 @@ describe("october inference provider", () => {
 		expect(models[1]?.maxTokens).toBe(32000);
 	});
 
+	it("marks the gateway's claude/* routes as seeing images", async () => {
+		const { url } = await listen((request, response) => {
+			if (request.url === "/v1/models" || request.url?.startsWith("/v1/models?")) {
+				json(response, {
+					data: [
+						{ id: "claude/lite", name: "Lite AI", context_window: 1000000 },
+						{ id: "claude/pro", name: "Pro AI", context_window: 1000000 },
+						{ id: "claudette/lite", context_window: 64000 },
+					],
+				});
+				return;
+			}
+			response.writeHead(404).end();
+		});
+		process.env.OCTOBER_INFERENCE_BASE_URL = `${url}/v1`;
+		process.env.OCTOBER_INFERENCE_TOKEN = "test-token";
+
+		const models = await refreshOctoberModels(refreshContext());
+		const byId = new Map(models.map((model) => [model.id, model]));
+		expect(byId.get("claude/lite")?.input).toEqual(["text", "image"]);
+		expect(byId.get("claude/pro")?.input).toEqual(["text", "image"]);
+		// Only the `claude/` namespace, not a lookalike prefix.
+		expect(byId.get("claudette/lite")?.input).toEqual(["text"]);
+	});
+
 	it("does not normalize model ids when resolving --provider/--model", async () => {
 		const runtime = await ModelRuntime.create({
 			credentials: AuthStorage.inMemory(),

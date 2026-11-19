@@ -48,6 +48,18 @@ const MODEL_META: Record<string, OctoberModelMeta> = {
 	"october/Qwen/Qwen3.6-35B-A3B-FP8": { name: "Qwen3.6 35B A3B (recommended)", input: ["text"], reasoning: true },
 };
 
+/**
+ * The gateway's `claude/*` routes (`claude/lite`, `claude/pro`) are Claude models on October's own
+ * Anthropic account. The gateway turns `image_url` parts into Anthropic image blocks, so they see
+ * images. Matched by namespace so the model behind a plan name can change without a harness release.
+ */
+const CLAUDE_ROUTE_PREFIX = "claude/";
+const CLAUDE_ROUTE_META: OctoberModelMeta = { name: "", input: ["text", "image"], reasoning: false };
+
+function metaFor(id: string): OctoberModelMeta {
+	return MODEL_META[id] ?? (id.startsWith(CLAUDE_ROUTE_PREFIX) ? CLAUDE_ROUTE_META : DEFAULT_META);
+}
+
 /** The first entry is what bare `--provider october` selects. */
 export const OCTOBER_DEFAULT_MODEL_ID = "october/Qwen/Qwen3.6-35B-A3B-FP8";
 // Seed only models known to be served. Paused models (e.g. Kimi) keep their metadata above and
@@ -117,7 +129,7 @@ function modelFor(
 	pricing?: OctoberPricing,
 	maxOutputTokens?: number,
 ): ProviderChatModelConfig {
-	const meta = MODEL_META[id] ?? DEFAULT_META;
+	const meta = metaFor(id);
 	return {
 		id,
 		name: meta.name.length > 0 ? meta.name : id,
