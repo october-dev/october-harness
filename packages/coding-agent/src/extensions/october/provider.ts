@@ -39,14 +39,21 @@ interface OctoberModelMeta {
 
 /**
  * Per-model metadata the `/models` catalogue does not carry, from the gateway handover. Ids not in
- * this table fall back to DEFAULT_META and are still exposed — a new October model must not require a
- * harness release to become usable.
+ * this table use CLAUDE_ROUTE_META in the `claude/` namespace and DEFAULT_META otherwise, and are
+ * still exposed — a new October model must not require a harness release to become usable.
  */
 const DEFAULT_META: OctoberModelMeta = { name: "", input: ["text"], reasoning: false };
 const MODEL_META: Record<string, OctoberModelMeta> = {
 	"october/Kimi-K2.7-Code": { name: "Kimi K2.7 Code", input: ["text", "image"], reasoning: false },
 	"october/Qwen/Qwen3.6-35B-A3B-FP8": { name: "Qwen3.6 35B A3B (recommended)", input: ["text"], reasoning: true },
 };
+
+/**
+ * The gateway's `claude/*` routes (`claude/lite`, `claude/pro`) are Claude models on October's own
+ * Anthropic account. One gateway adapter serves the whole namespace and turns `image_url` parts into
+ * Anthropic image blocks, so every route in it sees images, including plan names added later.
+ */
+const CLAUDE_ROUTE_META: OctoberModelMeta = { name: "", input: ["text", "image"], reasoning: false };
 
 /** The first entry is what bare `--provider october` selects. */
 export const OCTOBER_DEFAULT_MODEL_ID = "october/Qwen/Qwen3.6-35B-A3B-FP8";
@@ -117,7 +124,7 @@ function modelFor(
 	pricing?: OctoberPricing,
 	maxOutputTokens?: number,
 ): ProviderChatModelConfig {
-	const meta = MODEL_META[id] ?? DEFAULT_META;
+	const meta = MODEL_META[id] ?? (id.startsWith("claude/") ? CLAUDE_ROUTE_META : DEFAULT_META);
 	return {
 		id,
 		name: meta.name.length > 0 ? meta.name : id,
