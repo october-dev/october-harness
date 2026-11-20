@@ -1,7 +1,7 @@
 import { type Component, type Keybinding, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme, ThemeColor } from "../../../modes/interactive/theme/theme.ts";
-import { stripAnsi } from "../../../utils/ansi.ts";
+import { cleanDisplayLine, cleanDisplayText } from "../../../utils/ansi.ts";
 import type { CockpitMessage, CockpitPeer, CockpitReceipt, CockpitSection, CockpitTask } from "./cockpit-data.ts";
 
 export interface CockpitViewData {
@@ -47,14 +47,11 @@ type ReceiptState =
 
 /** Remove terminal escapes and control characters from untrusted text. Keeps newlines. */
 export function cleanText(value: string): string {
-	return stripAnsi(value)
-		.replace(/\r\n?/g, "\n")
-		.replace(/\t/g, "    ")
-		.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, "");
+	return cleanDisplayText(value);
 }
 
 function oneLine(value: string): string {
-	return cleanText(value).replace(/\n+/g, " ").trim();
+	return cleanDisplayLine(value);
 }
 
 export function formatTime(value: string | undefined): string {

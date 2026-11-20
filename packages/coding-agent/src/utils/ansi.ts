@@ -83,3 +83,19 @@ export function stripAnsi(value: string): string {
 	// and doing it manually has a performance penalty.
 	return value.replace(ansiRegex, "");
 }
+
+// Control characters (minus newline) plus Unicode bidirectional controls.
+const CONTROL_AND_BIDI_REGEX = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * Remove terminal escapes and control characters from untrusted text. Keeps newlines.
+ * Use for multi-line display; loading, matching, and fingerprinting keep raw values.
+ */
+export function cleanDisplayText(value: string): string {
+	return stripAnsi(value).replace(/\r\n?/g, "\n").replace(/\t/g, "    ").replace(CONTROL_AND_BIDI_REGEX, "");
+}
+
+/** Single-line form of {@link cleanDisplayText}: flattened to one trimmed line. */
+export function cleanDisplayLine(value: string): string {
+	return cleanDisplayText(value).replace(/\n+/g, " ").trim();
+}
