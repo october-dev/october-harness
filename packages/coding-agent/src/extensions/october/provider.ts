@@ -38,7 +38,7 @@ interface OctoberModelMeta {
 }
 
 /**
- * Per-model metadata the `/models` catalogue does not carry, from the gateway handover. Ids not in
+ * Fallback metadata from the gateway handover when `/models` omits capability tags. Ids not in
  * this table use CLAUDE_ROUTE_META in the `claude/` namespace and DEFAULT_META otherwise, and are
  * still exposed — a new October model must not require a harness release to become usable.
  */
@@ -123,13 +123,14 @@ function modelFor(
 	contextWindow: number = DEFAULT_CONTEXT_WINDOW,
 	pricing?: OctoberPricing,
 	maxOutputTokens?: number,
+	supportsImages = false,
 ): ProviderChatModelConfig {
 	const meta = MODEL_META[id] ?? (id.startsWith("claude/") ? CLAUDE_ROUTE_META : DEFAULT_META);
 	return {
 		id,
 		name: meta.name.length > 0 ? meta.name : id,
 		reasoning: meta.reasoning,
-		input: pricing ? ["text"] : meta.input,
+		input: pricing ? ["text"] : supportsImages ? ["text", "image"] : meta.input,
 		cost: pricing
 			? { input: pricing.inputUsdPerMillion, output: pricing.outputUsdPerMillion, cacheRead: 0, cacheWrite: 0 }
 			: ZERO_COST,
@@ -213,17 +214,44 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 
 		const live: ProviderChatModelConfig[] = [];
 		const pricing = new Map<string, OctoberPricing>();
+		const seenIds = new Set<string>();
+		const rejectedIds = new Set<string>();
 		for (const entry of data) {
 			if (!entry || typeof entry !== "object") continue;
 			const fields = entry as Record<string, unknown>;
 			const id = fields.id;
 			if (typeof id !== "string" || id.length === 0) continue;
+			if (seenIds.has(id)) {
+				// Conflicting duplicate metadata could otherwise combine a free image entry with a
+				// paid route's pricing. Do not choose an arbitrary entry for an ambiguous route.
+				rejectedIds.add(id);
+				pricing.delete(id);
+				continue;
+			}
+			seenIds.add(id);
 			const entryPricing = parseOctoberPricing(fields.pricing);
+			if (entryPricing === null) {
+				rejectedIds.add(id);
+				continue;
+			}
 			if (entryPricing) pricing.set(id, entryPricing);
-			live.push(modelFor(id, contextWindowFromEntry(fields), entryPricing, maxOutputTokensFromEntry(fields)));
+			const capabilities = fields.capabilities;
+			const supportsImages =
+				Array.isArray(capabilities) &&
+				capabilities.every((tag): tag is string => typeof tag === "string") &&
+				capabilities.some((tag) => ["vision", "image", "images", "image_input"].includes(tag.trim().toLowerCase()));
+			live.push(
+				modelFor(
+					id,
+					contextWindowFromEntry(fields),
+					entryPricing,
+					maxOutputTokensFromEntry(fields),
+					supportsImages,
+				),
+			);
 		}
 
-		const byId = new Map(live.map((model) => [model.id, model]));
+		const byId = new Map(live.filter((model) => !rejectedIds.has(model.id)).map((model) => [model.id, model]));
 		const ordered: ProviderChatModelConfig[] = [];
 		for (const seedId of SEED_ORDER) {
 			const match = byId.get(seedId);
@@ -242,8 +270,12 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 		}
 		// An empty live catalogue ({"data":[]}, or only entries without ids) must not wipe the seed
 		// list — otherwise `--provider october` has no models until the next successful refresh.
-		if (!ordered.length) return seedFallback("empty catalogue");
-		setOctoberPricing(pricing);
+		// Rejected metadata must not be resurrected as a free seed by the fallback.
+		if (!ordered.length && rejectedIds.size === 0) return seedFallback("empty catalogue");
+		setOctoberPricing(
+			pricing,
+			ordered.filter((model) => !pricing.has(model.id)).map((model) => model.id),
+		);
 		octoberCatalogLive = true;
 		return ordered;
 	} catch (error) {
