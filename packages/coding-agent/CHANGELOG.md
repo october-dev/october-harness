@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed October model discovery reading image support from the gateway's `capabilities.vision` field. Unknown prices no longer imply free access, request-only and one-sided fees remain visible, and invalid or duplicate model metadata is rejected ([#72](https://github.com/october-dev/october-harness/pull/72)).
 - `october local-models` no longer offers Ollama models that cannot chat, such as embedding models: it skips any model whose reported capabilities lack `completion` ([#54](https://github.com/october-dev/october-harness/pull/54) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 - Fixed `pi.exec` reporting exit code 0 for a command that died from a signal, including one stopped by its timeout or abort signal. It now reports a nonzero code ([#44](https://github.com/october-dev/october-harness/issues/44)).
 

@@ -103,7 +103,7 @@ export function octoberModelBadge(model: PricedModel): string | undefined {
 export function octoberModelPricingDetail(model: PricedModel): string | undefined {
 	if (model.provider !== OCTOBER_PROVIDER_ID) return undefined;
 	const pricing = pricingFor(model);
-	if (pricing === null) return "Refresh the October model catalogue to check pricing";
+	if (pricing === null) return "Price not listed for this model";
 	if (!pricing) return "Free with October sign-in";
 	const request = pricing.requestUsd === undefined ? "" : ` + ${formatUsd(pricing.requestUsd)} per request`;
 	return `${formatUsd(pricing.inputUsdPerMillion)} input / ${formatUsd(pricing.outputUsdPerMillion)} output per 1M tokens${request}, billed at cost from October Pro/Max credit`;

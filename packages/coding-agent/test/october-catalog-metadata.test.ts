@@ -140,6 +140,7 @@ describe("October catalogue pricing", () => {
 		expect(models.map((model) => model.id)).toEqual([...unknownIds, ...freeIds]);
 		for (const id of unknownIds) {
 			expect(octoberModelBadge({ provider: "october", id })).toBe("pricing unavailable");
+			expect(octoberModelPricingDetail({ provider: "october", id })).toBe("Price not listed for this model");
 		}
 		for (const id of freeIds) expect(octoberModelBadge({ provider: "october", id })).toBe("free");
 	});
