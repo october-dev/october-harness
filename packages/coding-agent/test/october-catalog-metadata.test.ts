@@ -34,10 +34,10 @@ afterEach(() => {
 });
 
 describe("October catalogue capabilities", () => {
-	it.each(["vision", "image", "images", "image_input", " IMAGE_INPUT "])(
-		"keeps image content for an unpriced route advertising %s",
-		async (tag) => {
-			const [entry] = await catalogue([{ id: "google/new-vision-route", capabilities: [tag] }]);
+	it.each([{ vision: true }, { vision: true, reasoning: false, tools: true }])(
+		"keeps image content for an unpriced route the gateway reports as %j",
+		async (capabilities) => {
+			const [entry] = await catalogue([{ id: "google/new-vision-route", capabilities }]);
 			expect(entry?.input).toEqual(["text", "image"]);
 			const model: Model<"openai-completions"> = {
 				...entry!,
@@ -54,13 +54,20 @@ describe("October catalogue capabilities", () => {
 		},
 	);
 
-	it.each([undefined, [], ["text"], ["image_output"], "vision", ["vision", null], { vision: true }])(
-		"keeps unknown routes text-only for absent, unrelated or malformed tags: %j",
-		async (capabilities) => {
-			const [model] = await catalogue([{ id: "groq/unknown", capabilities }]);
-			expect(model?.input).toEqual(["text"]);
-		},
-	);
+	it.each([
+		undefined,
+		null,
+		{},
+		{ vision: false },
+		{ tools: true },
+		{ vision: "true" },
+		["tools"],
+		["vision"],
+		"vision",
+	])("keeps unknown routes text-only unless the gateway reports vision: %j", async (capabilities) => {
+		const [model] = await catalogue([{ id: "groq/unknown", capabilities }]);
+		expect(model?.input).toEqual(["text"]);
+	});
 
 	it("preserves existing Kimi and Claude image metadata without tags", async () => {
 		const models = await catalogue([
@@ -87,8 +94,8 @@ describe("October catalogue pricing", () => {
 	])("retains request-only and one-sided rates: $wire", async ({ wire, expected }) => {
 		expect(parseOctoberPricing(wire)).toEqual(expected);
 		const models = await catalogue([
-			{ id: "paid/route", pricing: wire, capabilities: ["vision"] },
-			{ id: "october/free-route", capabilities: ["vision"] },
+			{ id: "paid/route", pricing: wire, capabilities: { vision: true } },
+			{ id: "october/free-route", capabilities: { vision: true } },
 		]);
 		expect(models.map((model) => model.id)).toEqual(["october/free-route", "paid/route"]);
 		const paid = { ...models[1]!, provider: "october" };
@@ -141,7 +148,7 @@ describe("October catalogue pricing", () => {
 		"rejects conflicting duplicate pricing and capabilities (paid first: %s)",
 		async (paidFirst) => {
 			const duplicate = [
-				{ id: "october/duplicate", capabilities: ["vision"] },
+				{ id: "october/duplicate", capabilities: { vision: true } },
 				{ id: "october/duplicate", pricing: { request_usd: 0.002 } },
 			];
 			const models = await catalogue([

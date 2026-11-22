@@ -38,7 +38,7 @@ interface OctoberModelMeta {
 }
 
 /**
- * Fallback metadata from the gateway handover when `/models` omits capability tags. Ids not in
+ * Fallback metadata from the gateway handover when `/models` does not report `capabilities.vision`. Ids not in
  * this table use CLAUDE_ROUTE_META in the `claude/` namespace and DEFAULT_META otherwise, and are
  * still exposed — a new October model must not require a harness release to become usable.
  */
@@ -235,11 +235,13 @@ export async function refreshOctoberModels(context: RefreshModelsContext): Promi
 				continue;
 			}
 			if (entryPricing) pricing.set(id, entryPricing);
+			// The gateway sends `capabilities` as an object of booleans. An absent field means unknown,
+			// so only an explicit `vision: true` adds image input.
 			const capabilities = fields.capabilities;
 			const supportsImages =
-				Array.isArray(capabilities) &&
-				capabilities.every((tag): tag is string => typeof tag === "string") &&
-				capabilities.some((tag) => ["vision", "image", "images", "image_input"].includes(tag.trim().toLowerCase()));
+				typeof capabilities === "object" &&
+				capabilities !== null &&
+				(capabilities as { vision?: unknown }).vision === true;
 			live.push(
 				modelFor(
 					id,
