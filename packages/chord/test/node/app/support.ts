@@ -16,7 +16,7 @@ import {
 	AppInfo,
 	type AppOptions,
 	Files,
-	Sessions,
+	SignIns,
 	startServer,
 	WorkerInfo,
 } from "../../../src/node/app/index.ts";
@@ -40,7 +40,7 @@ export type UserPrincipal =
 export const Project = hostKind("project", { id: str() });
 
 /** The tests' API v1: Chord's surface and the kit's objects, as an app's API re-exports them. */
-export const API_V1 = { ...chord, AppInfo, WorkerInfo, Files, Sessions };
+export const API_V1 = { ...chord, AppInfo, WorkerInfo, Files, SignIns };
 
 /** The tests' API, as the server and the fixture worker have it. */
 export const API = {
@@ -160,16 +160,12 @@ export const Notes = remote("test.notes", {
 	version: 1,
 	params: { id: str() },
 	hostAddress: ({ id }) => Project({ id }),
-	variants: {
-		main: {
-			state: { text: str(), start: unknown() },
-			methods: {
-				write: method(str()),
-				visit: method(str(), int()),
-				attach: method(str(), str()),
-				file: method(str(), str()),
-			},
-		},
+	state: { text: str(), start: unknown() },
+	methods: {
+		write: method(str()),
+		visit: method(str(), int()),
+		attach: method(str(), str()),
+		file: method(str(), str()),
 	},
 });
 
@@ -185,9 +181,10 @@ export const NOTES_PLUGIN: Readonly<Record<string, string>> = {
 		"\tversion: 1,",
 		"\tparams: { id: str() },",
 		"\thostAddress: ({ id }) => Project({ id }),",
-		"\tvariants: { main: { state: { text: str(), start: unknown() }, methods: {",
+		"\tstate: { text: str(), start: unknown() },",
+		"\tmethods: {",
 		"\t\twrite: method(str()), visit: method(str(), int()), attach: method(str(), str()), file: method(str(), str()),",
-		"\t} } },",
+		"\t},",
 		"});",
 	].join("\n"),
 	"worker.ts": [
@@ -211,14 +208,14 @@ export const NOTES_PLUGIN: Readonly<Record<string, string>> = {
 		"\t\tconst info = self.get(WorkerInfo, {});",
 		"\t\tconst files = self.get(Files, {});",
 		"\t\tconst decoder = new TextDecoder();",
-		'\t\treturn { variant: "main", members: {',
+		"\t\treturn {",
 		"\t\t\ttext: self.derive([store.text], ([value]) => value),",
 		"\t\t\tstart: self.derive([info.start], ([value]) => value),",
 		"\t\t\twrite: (next, ctx) => store.write(next, ctx),",
 		"\t\t\tvisit: (page, ctx) => store.visit(page, ctx),",
 		'\t\t\tattach: async (body, ctx) => (await files.put({ space: "notes", path: "note.txt", mime: "text/plain", source: "test", bytes: new TextEncoder().encode(body) }, ctx)).id,',
 		"\t\t\tfile: async (id, ctx) => decoder.decode(await files.read({ id, offset: 0, length: 1024 }, ctx)),",
-		"\t\t} };",
+		"\t\t};",
 		"\t});",
 		"});",
 	].join("\n"),
@@ -231,13 +228,13 @@ export const WHOAMI = [
 	'export default defineFacet((_host, self) => self.contribute(Http, { routes: { "GET /whoami": async (_request, ctx) => ({ kind: "json", value: ctx.principal ?? null }) } }));',
 ].join("\n");
 
-/** The `Authorization` header of a new device session for `principal` on `app`. */
+/** The `Authorization` header of a new device sign-in for `principal` on `app`. */
 export async function bearerFor<P extends Principal>(
 	app: App<P>,
 	principal: P,
 ): Promise<{ readonly authorization: string }> {
 	const { token } = await app.host.root(
-		async (ctx) => (await ctx.get(Sessions, {})).issue({ principal, label: "test", kind: "device" }, ctx),
+		async (ctx) => (await ctx.get(SignIns, {})).issue({ principal, label: "test", kind: "device" }, ctx),
 		context,
 	);
 	return { authorization: `Bearer ${token}` };

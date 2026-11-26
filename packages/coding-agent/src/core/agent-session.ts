@@ -32,7 +32,13 @@ import {
 	type StreamFn,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText, getCurrentSystemMessage, getCurrentTools, retryDelayMs } from "@earendil-works/pi-ai";
+import {
+	contentText,
+	getCurrentSystemMessage,
+	getCurrentTools,
+	type Message,
+	retryDelayMs,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -85,6 +91,16 @@ import {
 	prepareCompaction,
 	shouldCompact,
 } from "./compaction/index.ts";
+import {
+	type BuildContextSnapshotInput,
+	type BuiltContextSnapshot,
+	buildContextSnapshot,
+	type ContextOmission,
+	type ContextSnapshot,
+	type ContextSnapshotOptions,
+	type ContextTransformRecord,
+	MAX_CONTEXT_SNAPSHOTS,
+} from "./context-snapshot.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
@@ -137,6 +153,7 @@ import {
 	type SessionEntry,
 	SessionManager,
 	type SessionProjection,
+	sessionEntryToContextMessages,
 } from "./session-manager.ts";
 import { getSessionPermissionInfo } from "./session-permission-info.ts";
 import { exportPortableSession, type PortableSessionExportResult } from "./session-portable.ts";
@@ -507,9 +524,11 @@ export class AgentSession {
 	/**
 	 * Tools of the restored or reloaded loadout that are not registered yet, such as tools of MCP
 	 * servers that are still connecting. They are activated when they are registered, and dropped when
-	 * `setActiveToolsByName()` deactivates a tool or the next agent run starts.
+	 * `setActiveToolsByName()` deactivates a tool of that loadout or the next agent run starts.
 	 */
 	private _pendingToolNames = new Set<string>();
+	/** The restored or reloaded loadout that `_pendingToolNames` belongs to. */
+	private _restoredToolNames = new Set<string>();
 	private _usesDefaultTools: boolean;
 	private _defaultToolModifiers: string[];
 	/** Matches the `--tools` entries: tool names or patterns. */
@@ -530,6 +549,8 @@ export class AgentSession {
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
 	private _extensionHandlerObserver?: ExtensionHandlerObserver;
+	// Set by bindExtensions(): reload() restarts extensions only if the host started them.
+	private _extensionsBound = false;
 
 	private _modelRuntime: ModelRuntime;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
@@ -547,6 +568,13 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	/** Prompt options after before_agent_start mutations for the active run. */
 	private _runSystemPromptOptions?: NormalizedBuildSystemPromptOptions;
+	/** The session projection the latest request was built from, for the context inspector. */
+	private _lastRequestProjection?: SessionProjection;
+	private _contextRequestCount = 0;
+	/** What extension handlers changed since the last recorded request. */
+	private _pendingContextTransforms: ContextTransformRecord[] = [];
+	/** The last few requests' inputs. The snapshot is built when first inspected, not on the request path. */
+	private _recordedContextRequests: Array<{ input: BuildContextSnapshotInput; built?: BuiltContextSnapshot }> = [];
 
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
@@ -584,6 +612,8 @@ export class AgentSession {
 		this._installAgentBoundaryHooks();
 		this._installHiddenDeclarationsProjection();
 		this._installAgentForcedPromptProjection();
+		// Last, so it sees the transcript after every other transform and projection.
+		this._installContextSnapshotCapture();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -888,6 +918,7 @@ export class AgentSession {
 			this._failedResponse = undefined;
 			const prepare = async () => {
 				const projection = this.sessionManager.buildSessionProjection();
+				this._lastRequestProjection = projection;
 				const canonicalContext = {
 					...request.context,
 					messages: projection.messages,
@@ -1631,6 +1662,37 @@ export class AgentSession {
 		return status;
 	}
 
+	/**
+	 * Describe the context the latest model request (or the one named by `requestId`) was built
+	 * from, grouped by source. The session keeps the last few snapshots; older ones return
+	 * undefined. Reading never loads a source again or calls the model. Item content is left out
+	 * unless `includeContent` is set.
+	 */
+	getContextSnapshot(options: ContextSnapshotOptions = {}): ContextSnapshot | undefined {
+		const built = this._getBuiltContextRequest(options.requestId);
+		if (!built) return undefined;
+		const snapshot = structuredClone(built.snapshot);
+		if (options.includeContent) {
+			snapshot.items = snapshot.items.map((item) => ({ ...item, content: built.readContent(item.index) ?? "" }));
+		}
+		return snapshot;
+	}
+
+	/** The content of one item of the latest (or named) request's context, or undefined when there is no such item. */
+	getContextItemContent(index: number, requestId?: string): string | undefined {
+		return this._getBuiltContextRequest(requestId)?.readContent(index);
+	}
+
+	private _getBuiltContextRequest(requestId: string | undefined): BuiltContextSnapshot | undefined {
+		const recorded =
+			requestId === undefined
+				? this._recordedContextRequests.at(-1)
+				: this._recordedContextRequests.find((candidate) => candidate.input.requestId === requestId);
+		if (!recorded) return undefined;
+		recorded.built ??= buildContextSnapshot(recorded.input);
+		return recorded.built;
+	}
+
 	/** Get the names of the tools that tools can call through `ctx.executeTool()`. */
 	getCallableToolNames(): string[] {
 		return this._getCallableTools().map((t) => t.name);
@@ -1666,10 +1728,14 @@ export class AgentSession {
 	setActiveToolsByName(toolNames: string[]): void {
 		const previous = this.getActiveToolNames();
 		this._setActiveTools(toolNames);
-		// A loadout that deactivates a tool replaces the restored one, whose pending tools are dropped.
-		// One that only adds tools, like activating tool_search, keeps them.
+		// A loadout that deactivates a tool of the restored one replaces it, and its pending tools are
+		// dropped. One that only adds tools, like activating tool_search, keeps them, and so does one
+		// that only deactivates tools outside the restored loadout, such as an extension's own tool that
+		// the restore or reload activated as newly registered.
 		const active = new Set(this.getActiveToolNames());
-		if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
+		if (previous.some((name) => !active.has(name) && this._restoredToolNames.has(name))) {
+			this._pendingToolNames.clear();
+		}
 	}
 
 	private _setActiveTools(toolNames: string[]): void {
@@ -1955,6 +2021,110 @@ export class AgentSession {
 	}
 
 	/**
+	 * Record what each request's context was made of. Runs after every other transform, so the
+	 * snapshot describes the messages the agent loop converts and sends. It only reads what the
+	 * request already assembled: no source is loaded again and no model is called.
+	 */
+	private _installContextSnapshotCapture(): void {
+		let model = this.agent.state.model;
+		const prepare = this.agent.prepareRequest;
+		this.agent.prepareRequest = async (request, signal) => {
+			const prepared = await prepare?.(request, signal);
+			model = prepared?.model ?? request.model;
+			return prepared ?? undefined;
+		};
+		let base: AgentMessage[] = [];
+		const convert = this.agent.convertToLlm;
+		this.agent.convertToLlm = async (messages) => {
+			const converted = await convert(messages);
+			this._recordContextSnapshot(base, [...messages], [...converted], model);
+			return converted;
+		};
+		const previousTransformContext = this.agent.transformContext;
+		this.agent.transformContext = async (messages, signal) => {
+			base = [...messages];
+			return previousTransformContext ? previousTransformContext(messages, signal) : messages;
+		};
+	}
+
+	private _recordContextSnapshot(
+		baseMessages: AgentMessage[],
+		finalMessages: AgentMessage[],
+		converted: Message[],
+		model: AgentState["model"],
+	): void {
+		const projection = this._lastRequestProjection;
+		const entryIds = new Map<AgentMessage, string>();
+		for (const entry of projection?.entries ?? []) {
+			for (const message of entry.messages) entryIds.set(message, entry.sourceEntry.id);
+		}
+		this._contextRequestCount += 1;
+		this._recordedContextRequests.push({
+			input: {
+				requestId: String(this._contextRequestCount),
+				createdAt: Date.now(),
+				model,
+				converted,
+				contextFiles: [...this._baseSystemPromptOptions.contextFiles],
+				baseMessages,
+				entryIdOf: (message) => entryIds.get(message),
+				finalMessages,
+				transforms: this._pendingContextTransforms.splice(0),
+				omitted: this._collectContextOmissions(projection),
+			},
+		});
+		if (this._recordedContextRequests.length > MAX_CONTEXT_SNAPSHOTS) this._recordedContextRequests.shift();
+	}
+
+	/** Context the session left out of the request on purpose, with the reason. */
+	private _collectContextOmissions(projection: SessionProjection | undefined): ContextOmission[] {
+		const omitted: ContextOmission[] = [];
+		const conversationTokens = (entry: SessionEntry): { count: number; estTokens: number } => {
+			const messages = sessionEntryToContextMessages(entry).filter((message) => message.role !== "system");
+			return {
+				count: messages.length,
+				estTokens: messages.reduce((sum, message) => sum + estimateTokens(message), 0),
+			};
+		};
+		if (projection) {
+			const included = new Set(projection.entries.map((entry) => entry.sourceEntry.id));
+			const branch = this.sessionManager.getBranch();
+			const latestCompaction = getLatestCompactionEntry(branch);
+			if (latestCompaction) {
+				let count = 0;
+				let estTokens = 0;
+				for (const entry of branch) {
+					if (entry.id === latestCompaction.id) break;
+					// An earlier compaction's summary was replaced by the latest one, not summarized as conversation.
+					if (included.has(entry.id) || entry.type === "compaction") continue;
+					const size = conversationTokens(entry);
+					count += size.count;
+					estTokens += size.estTokens;
+				}
+				if (count > 0) omitted.push({ kind: "conversation", reason: "compacted", count, estTokens });
+			}
+			for (const entry of projection.entries) {
+				if (entry.messages.length > 0 || entry.sourceEntry.type === "compaction") continue;
+				const size = conversationTokens(entry.sourceEntry);
+				if (size.count === 0) continue;
+				omitted.push({
+					kind: "conversation",
+					reason: "context_edit",
+					sourceId: entry.sourceEntry.id,
+					estTokens: size.estTokens,
+				});
+			}
+		}
+		const promptOptions = this._runSystemPromptOptions ?? this._baseSystemPromptOptions;
+		for (const skill of promptOptions.skills) {
+			if (skill.disableModelInvocation) {
+				omitted.push({ kind: "instructions", reason: "skill_hidden_from_model", sourceId: skill.name });
+			}
+		}
+		return omitted;
+	}
+
+	/**
 	 * Restore the active tool loadout declared by the session transcript, if it declares one.
 	 * Tools reachable only from other tools are never declared, but they do not depend on the active
 	 * set, so the transcript's declarations are the whole loadout.
@@ -1962,6 +2132,7 @@ export class AgentSession {
 	 */
 	private _restoreToolsFromTranscript(modifiers: readonly string[] = []): void {
 		this._pendingToolNames.clear();
+		this._restoredToolNames.clear();
 		// All system messages on the branch, including those before a compaction. Compaction snapshots
 		// are derived from these, so replaying them gives the current loadout.
 		const systemMessages = this.sessionManager
@@ -1989,6 +2160,12 @@ export class AgentSession {
 		// Recorded tools that are not registered yet, such as MCP tools of servers still connecting, are
 		// activated when they register. Excluded tools never register, so they are not kept pending.
 		this._pendingToolNames = new Set(names.filter((name) => this._isAllowedTool(name)));
+		this._restoredToolNames = new Set(
+			applyToolModifiers(
+				getCurrentTools(systemMessages).map((tool) => tool.name),
+				modifiers,
+			),
+		);
 		// Ignores names that are not registered.
 		this._setActiveTools(names);
 	}
@@ -3493,6 +3670,7 @@ export class AgentSession {
 			this._extensionErrorListener = bindings.onError;
 		}
 
+		this._extensionsBound = true;
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
 		this._extensionRunner.reportUnhandledMcpServers();
@@ -3873,6 +4051,7 @@ export class AgentSession {
 			this.sessionManager,
 			new ModelRegistry(this._modelRuntime),
 		);
+		this._extensionRunner.onContextTransform((record) => this._pendingContextTransforms.push(record));
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
 		}
@@ -3919,18 +4098,14 @@ export class AgentSession {
 		const addedDefaultTools = getDefaultTools().filter((name) => !previousDefaultTools.has(name));
 		// Tools the new extensions register later, such as MCP tools, are pending until then.
 		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
+		this._restoredToolNames = new Set(this.getActiveToolNames());
 		this._buildRuntime({
 			activeToolNames: [...this.getActiveToolNames(), ...addedDefaultTools],
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
 
-		const hasBindings =
-			this._extensionUIContext ||
-			this._extensionCommandContextActions ||
-			this._extensionShutdownHandler ||
-			this._extensionErrorListener;
-		if (hasBindings) {
+		if (this._extensionsBound) {
 			await options?.beforeSessionStart?.();
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
 			this._extensionRunner.reportUnhandledMcpServers();
@@ -4140,6 +4315,7 @@ export class AgentSession {
 			cancelled: result.cancelled,
 			truncated: result.truncated,
 			fullOutputPath: result.fullOutputPath,
+			...(result.fullOutputError === undefined ? {} : { fullOutputError: result.fullOutputError }),
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};
@@ -4610,9 +4786,9 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
-	 * Get text content of last assistant message.
+	 * Get text content of the last assistant reply.
 	 * Useful for /copy command.
-	 * @returns Text content, or undefined if no assistant message exists
+	 * @returns Text content, or undefined if no assistant message exists or the last reply has no text
 	 */
 	getLastAssistantText(): string | undefined {
 		const lastAssistant = this.messages
@@ -4621,8 +4797,9 @@ export class AgentSession {
 			.find((m) => {
 				if (m.role !== "assistant") return false;
 				const msg = m as AssistantMessage;
-				// Skip aborted messages with no content
-				if (msg.stopReason === "aborted" && msg.content.length === 0) return false;
+				// Skip messages without text from a turn that did not end normally: aborted, failed or only
+				// calling tools (#12119). A reply that ended normally stays the last reply even without text.
+				if (msg.stopReason !== "stop" && !msg.content.some((c) => c.type === "text" && c.text.trim())) return false;
 				return true;
 			});
 

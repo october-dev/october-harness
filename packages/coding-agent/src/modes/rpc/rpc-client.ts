@@ -15,8 +15,13 @@ import type {
 } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ContextSnapshot, ContextSnapshotOptions } from "../../core/context-snapshot.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
-import type { PortableSessionDiagnostic } from "../../core/session-portable.ts";
+import type {
+	PortableCompatibilityReport,
+	PortableModelChoice,
+	PortableSessionDiagnostic,
+} from "../../core/session-portable.ts";
 import type { OctoberPermissionExplanation } from "../../extensions/october/permissions.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -282,6 +287,19 @@ export class RpcClient {
 	}
 
 	/**
+	 * Get what the latest model request (or `requestId`) included, grouped by source, or null when
+	 * there is none. Metadata only unless `includeContent` is true.
+	 */
+	async getContextSnapshot(options: ContextSnapshotOptions = {}): Promise<ContextSnapshot | null> {
+		const response = await this.send({
+			type: "get_context_snapshot",
+			requestId: options.requestId,
+			includeContent: options.includeContent,
+		});
+		return this.getData(response);
+	}
+
+	/**
 	 * Set model by provider and ID.
 	 */
 	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
@@ -416,11 +434,21 @@ export class RpcClient {
 	}
 
 	/**
+	 * Compare a portable session JSONL file with the agent's models, tools, and renderers. Writes nothing.
+	 */
+	async inspectImportJsonl(inputPath: string): Promise<PortableCompatibilityReport> {
+		const response = await this.send({ type: "inspect_import_jsonl", inputPath });
+		return this.getData(response);
+	}
+
+	/**
 	 * Import a portable session JSONL file as a new session and switch to it.
+	 * @param model Replacement model, as `{ provider, modelId }`, when the file's model is unavailable.
+	 *   Without it, a blocked import rejects and nothing is written.
 	 * @returns Object with `cancelled: true` if an extension cancelled the switch
 	 */
-	async importJsonl(inputPath: string): Promise<{ cancelled: boolean }> {
-		const response = await this.send({ type: "import_jsonl", inputPath });
+	async importJsonl(inputPath: string, model?: PortableModelChoice): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "import_jsonl", inputPath, model });
 		return this.getData(response);
 	}
 

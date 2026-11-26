@@ -198,7 +198,7 @@ class ConfigSelectorHeader implements Component {
 		const switchHint = this.projectModeAvailable ? keyHint("tui.input.tab", "switch mode") + sep : "";
 		const actionHint =
 			this.writeScope === "project" ? rawKeyHint("space", "cycle inherit/+/-") : rawKeyHint("space", "toggle");
-		const hint = switchHint + actionHint + sep + rawKeyHint("esc", "close");
+		const hint = switchHint + actionHint + sep + keyHint("tui.select.cancel", "close");
 		const spacing = Math.max(1, width - visibleWidth(title) - visibleWidth(hint));
 		const scopeHint =
 			this.writeScope === "project"
@@ -501,9 +501,11 @@ class ResourceList implements Component, Focusable {
 			return;
 		}
 
-		// Pass to search input
+		// Pass to search input. Cursor keys leave the query as it is and must not move the selection.
+		const previousQuery = this.searchInput.getValue();
 		this.searchInput.handleInput(data);
-		this.filterItems(this.searchInput.getValue());
+		const query = this.searchInput.getValue();
+		if (query !== previousQuery) this.filterItems(query);
 	}
 
 	private toggleResource(item: ResourceItem): boolean | undefined {

@@ -55,7 +55,7 @@ See the checked [sessions example](../examples/sdk/11-sessions.ts) for creating,
 
 `session.dispose()` aborts active work, invalidates extension contexts, disconnects from the agent, and removes event listeners. Call it when the session is no longer needed.
 
-`AgentSessionRuntime` adds `newSession()`, `switchSession()`, `fork()`, `importPortable()`, and `importFromJsonl()`. Each operation replaces the active `AgentSession` and recreates services for the target working directory.
+`AgentSessionRuntime` adds `newSession()`, `switchSession()`, `fork()`, `inspectPortableImport()`, `importPortable()`, and `importFromJsonl()`. The session-changing operations replace the active `AgentSession` and recreate services for the target working directory. `inspectPortableImport(path)` returns a [compatibility report](session-format.md#compatibility-report) and writes nothing. `importPortable(path, { model, chooseModel })` throws `SessionImportSelectionRequiredError` before writing when the file's next-turn model is unavailable and neither `model` nor `chooseModel` supplies a replacement; `chooseModel` returning `undefined` cancels.
 
 To move a session between machines or entry points, use [portable sessions](session-format.md#portable-sessions). `session.exportToJsonl(path)` writes the active branch and returns `{ path, diagnostics }`. `runtime.importPortable(path)` accepts only portable files and imports into the runtime's cwd. `runtime.importFromJsonl(path)` accepts both: portable files go through `importPortable()`, and other session files are copied into the session directory unchanged and opened with their header cwd. Without a runtime, `importPortableSession(path, { cwd, sessionDir })` writes the native session and returns its path for `SessionManager.open()`.
 
@@ -98,6 +98,19 @@ Session events report message updates, tool execution, queues, compaction, retri
 `message_end` contains the authoritative completed message. `agent_end` marks the end of one low-level agent run, but automatic recovery or queued work can still follow.
 
 Use `agent_settled` when the host needs to know that October will not continue automatically.
+
+## Inspecting request context
+
+`session.getContextSnapshot()` describes the context the latest model request was built from: instructions, tools, conversation, compaction summaries, and extension or Bus contributions, each with an estimated size, its position in the request, and the reason when content was omitted or truncated. It returns `undefined` before the first request.
+
+```typescript
+const snapshot = session.getContextSnapshot();
+for (const group of snapshot?.groups ?? []) {
+  console.log(group.kind, group.itemCount, group.estTokens);
+}
+```
+
+The session keeps the last five snapshots. Pass `{ requestId }` to read an earlier one. The snapshot comes from the context the request already assembled, so reading it does not reload sources or send a model request. It holds metadata only; pass `{ includeContent: true }` to add a `content` string to every item, or call `session.getContextItemContent(index, requestId?)` to read just one item. Items the harness cannot attribute carry `attributed: false`. See the [`get_context_snapshot` RPC command](rpc-commands.md#get_context_snapshot) for the fields, and `formatContextSnapshot()` for the terminal rendering.
 
 ## Configuring a session
 

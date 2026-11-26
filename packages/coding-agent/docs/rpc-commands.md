@@ -218,6 +218,55 @@ Response:
 
 The `tools` record reports the `read`, `edit`, and `command` classes: read tools are `read`, `grep`, `find`, and `ls`; edit tools are `edit` and `write`; all other tools are `command`. Each class reports `allow`, `ask`, or `block` with the same reason used by the permission gate. The explanation reflects the locked policy, while `delegationCeiling` is current and may change during delegated work. `inherit` adds no restriction. The CLI loads the October permission gate; the default `createAgentSession()` does not. SDK inspection returns `undefined` and RPC returns `null` until the gate is loaded and the policy locks. The terminal `/permissions` command can report an unlocked policy before then. The shell runner separately selects the execution environment for built-in shell commands and may reject unsupported configurations.
 
+### get_context_snapshot
+
+Get what the latest model request included, grouped by source. `data` is `null` before the first request, or when `requestId` names a snapshot the session no longer keeps (the last five requests are kept). The response matches the `ContextSnapshot` returned by the SDK's `session.getContextSnapshot()`.
+
+```json
+{"type": "get_context_snapshot"}
+{"type": "get_context_snapshot", "requestId": "3", "includeContent": true}
+```
+
+The snapshot is metadata only unless `includeContent` is `true`, which adds a `content` string to every item. It is read from the context the request already assembled: no source is loaded again and no model request is sent.
+
+Response:
+
+```json
+{
+  "type": "response",
+  "command": "get_context_snapshot",
+  "success": true,
+  "data": {
+    "requestId": "3",
+    "createdAt": 1731350000000,
+    "modelId": "faux-1",
+    "estimator": "chars/4",
+    "totalEstTokens": 1500,
+    "items": [
+      { "index": 0, "kind": "instructions", "sourceId": "section:preamble", "label": "section:preamble", "role": "system", "attributed": true, "estTokens": 1000 },
+      { "index": 1, "kind": "instructions", "sourceId": "/proj/AGENTS.md", "label": "/proj/AGENTS.md", "role": "system", "attributed": true, "estTokens": 100 },
+      { "index": 2, "kind": "extension", "sourceId": "section:mcp_servers", "label": "section:mcp_servers", "role": "system", "attributed": false, "estTokens": 50 }
+    ],
+    "groups": [
+      { "kind": "instructions", "itemCount": 2, "estTokens": 1100 },
+      { "kind": "extension", "itemCount": 1, "estTokens": 50 }
+    ],
+    "omitted": [
+      { "kind": "conversation", "reason": "compacted", "count": 12, "estTokens": 3400 }
+    ],
+    "transforms": [
+      { "extensionPath": "/ext/notes.ts", "event": "context", "added": 1, "removed": 0 }
+    ]
+  }
+}
+```
+
+- `kind` is one of `instructions`, `tools`, `compaction`, `extension`, `bus`, or `conversation`. `items` are in the order the request carries them.
+- `sourceId` is the exact origin when known: a context file path, `section:<name>`, a tool name, a session entry id, a message `customType`, or the path of the extension that added the message. `attributed: false` means the harness cannot name the exact origin (for example, a prompt section written by an extension). It is never guessed.
+- `estTokens` is an estimate, not a provider token count. `truncated` appears on items whose output was cut, with a `reason`.
+- `omitted[].reason` is one of `compacted`, `context_edit`, `excluded_from_context`, or `skill_hidden_from_model`.
+- `transforms` lists the extension handlers (`context` and `context_with_system`) that added or removed messages in this request.
+
 ### get_team_inbox
 
 Read automatic public Bus inbox dispatch for this session. This does not call the model. `available` is false when the public Bus delivery loop is not running. `paused` is the user's persisted choice. `pending` counts recorded deliveries that are not acknowledged. `active` is true while a peer batch's turn is still in flight.
@@ -558,7 +607,7 @@ Response:
 }
 ```
 
-If output was truncated, includes `fullOutputPath`:
+If output was truncated, includes `fullOutputPath`, or `fullOutputError` with the reason when the full output could not be saved (for example a full temp directory):
 ```json
 {
   "type": "response",
@@ -697,12 +746,45 @@ Response. `diagnostics` lists every excluded or changed value:
 }
 ```
 
+### inspect_import_jsonl
+
+Compare a portable session file with the agent's models, tools, and extension renderers. Writes nothing, switches nothing, and runs no extension code. The file must pass the same validation as `import_jsonl`.
+
+```json
+{"type": "inspect_import_jsonl", "inputPath": "/tmp/portable.jsonl"}
+```
+
+Response:
+```json
+{
+  "type": "response",
+  "command": "inspect_import_jsonl",
+  "success": true,
+  "data": {
+    "sessionId": "01a1cad4-69aa-7227-95fd-657fa6101364",
+    "requirement": {"provider": "anthropic", "modelId": "claude-sonnet-5-5", "status": "missing", "count": 4},
+    "historicalModels": [],
+    "historicalTools": [{"name": "ext_lookup", "status": "missing", "count": 2}],
+    "customMessages": [{"name": "review-note", "status": "missing", "count": 1}],
+    "blocking": true
+  }
+}
+```
+
+`requirement` is the model the next turn uses. Statuses are `available`, `missing`, `no_auth` (the model exists but has no credentials), and `unknown`. Only `requirement` can set `blocking`. Historical models, tool names, and custom message types never block. See [Compatibility report](session-format.md#compatibility-report).
+
 ### import_jsonl
 
 Import a portable session file as a new session in the current cwd and switch to it. Only files with the portable header marker are accepted; use `switch_session` for native session files. Can be canceled by a `session_before_switch` extension event handler.
 
 ```json
 {"type": "import_jsonl", "inputPath": "/tmp/portable.jsonl"}
+```
+
+When the file's next-turn model is not available, pass `model` to use another one. The model must be registered with credentials in the agent. It is recorded as a model change in the new session.
+
+```json
+{"type": "import_jsonl", "inputPath": "/tmp/portable.jsonl", "model": {"provider": "anthropic", "modelId": "claude-sonnet-5-5"}}
 ```
 
 Response:
@@ -713,6 +795,11 @@ Response:
 Invalid files, native files, and session id conflicts fail without writing anything. The error names the line and JSON path:
 ```json
 {"type": "response", "command": "import_jsonl", "success": false, "error": "Invalid portable session /tmp/portable.jsonl (line 4, $.message.errorMessage): unexpected field"}
+```
+
+A blocked import without `model` also fails without writing anything. Use `inspect_import_jsonl` to see why:
+```json
+{"type": "response", "command": "import_jsonl", "success": false, "error": "Import of session 01a1cad4-69aa-7227-95fd-657fa6101364 needs a replacement model. Nothing was written."}
 ```
 
 ### switch_session
@@ -872,7 +959,7 @@ Response:
 
 ### get_last_assistant_text
 
-Get the text content of the last assistant message.
+Get the text content of the last assistant message. Messages without text from an aborted or failed turn, or that only call tools, are skipped.
 
 ```json
 {"type": "get_last_assistant_text"}

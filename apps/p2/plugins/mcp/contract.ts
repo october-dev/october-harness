@@ -4,7 +4,18 @@
 
 import type { CallToolResult, ToolAnnotations } from "@earendil-works/pi-mcp";
 import { arr, int, nul, obj, oneOf, opt, type Static, str, union, unknown } from "@earendil-works/pi-schema";
-import { LocationSchema, literal, local, method, record, remote, serverHost, unsafe } from "@p2/app/v1";
+import {
+	grantable,
+	LocationSchema,
+	literal,
+	local,
+	method,
+	type RefWith,
+	record,
+	remote,
+	serverHost,
+	unsafe,
+} from "@p2/app/v1";
 
 /** An MCP tool as its server lists it (`tools/list`). */
 const ToolSchema = obj({
@@ -38,8 +49,15 @@ export const InstanceSchema = obj({
 	error: opt(str()),
 	/** Kept while it reconnects. */
 	tools: arr(ToolSchema),
+	/** The server's instructions from `initialize`, if it sent any; kept while it reconnects. */
+	instructions: opt(str()),
+	/** What the server offers, in a sentence, as its configuration's `description` says (absent: not configured). */
+	description: opt(str()),
 });
-/** One instance as the manager lists it: its server, where it runs, its status, error and tools. */
+/**
+ * One instance as the manager lists it: its server, where it runs, its status, error, tools, instructions and
+ * configured description.
+ */
 export type Instance = Static<typeof InstanceSchema>;
 
 /**
@@ -104,7 +122,8 @@ const Caller = { session: str(), generation: int(), incarnation: str() };
  * moves the session to any configured environment.
  */
 export const McpManager = local("p2.mcp.manager", {
-	version: 2,
+	// 3: an instance's `instructions`; 4: its configured `description`.
+	version: 4,
 	params: {},
 	members: {
 		instances: arr(InstanceSchema),
@@ -154,57 +173,72 @@ export const McpManager = local("p2.mcp.manager", {
 	},
 });
 
+/** One of a session's leases as its worker sees it: the location and the instances it uses, one per server. */
+const SessionLeaseSchema = obj({ location: LocationSchema, instances: arr(str()) });
+/** A lease of the worker's session: where, and the IDs of the instances it uses (one per server). */
+export type SessionLease = Static<typeof SessionLeaseSchema>;
+
 /**
  * MCP servers as a principal sees them: a session worker sets its locations and calls tools (its session, generation
- * and incarnation from the link), the owner sees every instance with its errors and sign-ins, restarts them and signs in
- * and out of HTTP servers. Nobody else gets one.
+ * and incarnation from the link; `MCP_WORKER`), the owner sees every instance with its errors and sign-ins, restarts
+ * them and signs in and out of HTTP servers (`MCP_OWNER`). Nobody else gets one. 3: an instance's `instructions` (the
+ * server's own, from `initialize`); 4: its configured `description`, and the worker's `leases` (which instances each
+ * location uses: a project override decides per lease, also for instances serving every location). 5: a new base
+ * (grantable members replaced variants; older versions are refused, their pages reload).
  */
 export const Mcp = remote("p2.mcp", {
-	version: 2,
+	version: 5,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		worker: {
-			state: {
-				/** The instances the session's leases use, shared ones included; `error` is the owner's only. */
-				servers: arr(InstanceSchema),
-				/** Why the session's leases refused entries of its projects' `mcp.json` (or a location). */
-				errors: arr(str()),
-			},
-			methods: {
-				/**
-				 * Where the session's conversations work now, with the project files there: its servers are leased there,
-				 * and only there.
-				 */
-				setLocations: method(obj(Locations)),
-				call: method(
-					obj({ location: LocationSchema, server: str(), tool: str(), args: ArgsSchema }),
-					CallResultSchema,
-				),
-			},
-		},
-		owner: {
-			/** `errors`: the owner's `mcp.json`'s, then every lease's (by session). */
-			state: { instances: arr(InstanceSchema), errors: arr(str()), signIns: arr(SignInSchema) },
-			methods: {
-				restart: method(obj({ instance: str() })),
-				/**
-				 * Begins a sign-in returning to a loopback callback on the p2 host (pasting its final URL works from anywhere).
-				 * Browsers open `/mcp/sign-in/<server>` instead, which also finds out where the browser runs.
-				 */
-				signIn: method(obj({ server: str() }), SignInStartSchema),
-				paste: method(PasteSchema),
-				cancelSignIn: method(obj({ id: str() })),
-				signOut: method(obj({ server: str() })),
-			},
-		},
+	state: {
+		/**
+		 * A worker's: why the session's leases refused entries of its projects' `mcp.json` (or a location). The owner's:
+		 * its `mcp.json`'s, then every lease's (by session).
+		 */
+		errors: arr(str()),
+		/** The worker's: the instances the session's leases use, shared ones included; `error` is the owner's only. */
+		servers: grantable(arr(InstanceSchema)),
+		/** The worker's: which instances each of its session's leases uses. */
+		leases: grantable(arr(SessionLeaseSchema)),
+		/** The owner's from here on. */
+		instances: grantable(arr(InstanceSchema)),
+		signIns: grantable(arr(SignInSchema)),
+	},
+	methods: {
+		/**
+		 * The worker's: where the session's conversations work now, with the project files there: its servers are leased
+		 * there, and only there.
+		 */
+		setLocations: grantable(method(obj(Locations))),
+		call: grantable(
+			method(obj({ location: LocationSchema, server: str(), tool: str(), args: ArgsSchema }), CallResultSchema),
+		),
+		/** The owner's from here on. */
+		restart: grantable(method(obj({ instance: str() }))),
+		/**
+		 * Begins a sign-in returning to a loopback callback on the p2 host (pasting its final URL works from anywhere).
+		 * Browsers open `/mcp/sign-in/<server>` instead, which also finds out where the browser runs.
+		 */
+		signIn: grantable(method(obj({ server: str() }), SignInStartSchema)),
+		paste: grantable(method(PasteSchema)),
+		cancelSignIn: grantable(method(obj({ id: str() }))),
+		signOut: grantable(method(obj({ server: str() }))),
 	},
 });
+
+/** What a session's worker is granted on `Mcp`. */
+export const MCP_WORKER = ["servers", "leases", "setLocations", "call"] as const;
+
+/** What the owner is granted on `Mcp`. */
+export const MCP_OWNER = ["instances", "signIns", "restart", "signIn", "paste", "cancelSignIn", "signOut"] as const;
+
+/** The owner's view of the MCP servers. */
+export type McpOwnerView = RefWith<typeof Mcp, (typeof MCP_OWNER)[number]>;
+
+/** A session worker's view of its MCP servers. */
+export type McpWorkerView = RefWith<typeof Mcp, (typeof MCP_WORKER)[number]>;
 
 /** The p2 page that signs the owner in to HTTP server `server` (relative: it opens on the origin the viewer uses). */
 export function signInLink(server: string): string {
 	return `/mcp/sign-in/${encodeURIComponent(server)}`;
 }
-
-/** The worker's Durable extension of MCP tools. */
-export const MCP_EXTENSION = "mcp";

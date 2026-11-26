@@ -1,19 +1,5 @@
-import {
-	arr,
-	bytes,
-	int,
-	lit,
-	map,
-	nul,
-	num,
-	obj,
-	opt,
-	type Static,
-	str,
-	union,
-	unknown,
-} from "@earendil-works/pi-schema";
-import { AttachmentSchema, local, MAX_ATTACHMENTS, method, param, remote, serverHost, sessionHost } from "@p2/app/v1";
+import { arr, bytes, int, lit, nul, num, obj, opt, type Static, str, union } from "@earendil-works/pi-schema";
+import { AttachmentSchema, local, MAX_ATTACHMENTS, method, param, remote, sessionHost } from "@p2/app/v1";
 
 export { type Attachment, AttachmentSchema, MAX_ATTACHMENTS } from "@p2/app/v1";
 
@@ -67,75 +53,27 @@ export const DownloadStore = local("p2.downloads", {
  * view; the worker owns the bytes.
  */
 export const SessionFiles = remote("p2.session-files", {
-	version: 1,
+	version: 2,
 	params: { session: param.str() },
 	hostAddress: sessionHost,
-	variants: {
-		server: {
-			methods: {
-				/** Starts a file `name` of `space` written by `source` (`owner`, `guest:<id>`, `server`): its ID and upload. */
-				begin: method(
-					obj({ space: union([lit("uploads"), lit("downloads")]), name: str(), source: str() }),
-					obj({ id: str(), upload: str() }),
-				),
-				/** Appends a chunk (at most 1 MiB) at `offset`, the bytes stored so far. */
-				append: method(obj({ upload: str(), offset: int({ minimum: 0 }), bytes: bytes() })),
-				/** Ends the file: its ID, name, size and image type. */
-				finish: method(str(), UploadedSchema),
-				/** Drops the file under way (its client went away or sent too much). */
-				cancel: method(str()),
-				/** The download snapshot `id` (a version of the session's files and its name), or null. */
-				download: method(str({ maxLength: 64 }), union([obj({ file: str(), name: str(), size: num() }), nul()])),
-				/** `length` bytes (at most 1 MiB) of the session's download snapshot version `file` from `offset`. */
-				read: method(
-					obj({ file: str(), offset: int({ minimum: 0 }), length: int({ minimum: 0, maximum: 1024 * 1024 }) }),
-					bytes(),
-				),
-			},
-		},
+	methods: {
+		/** Starts a file `name` of `space` written by `source` (`owner`, `guest:<id>`, `server`): its ID and upload. */
+		begin: method(
+			obj({ space: union([lit("uploads"), lit("downloads")]), name: str(), source: str() }),
+			obj({ id: str(), upload: str() }),
+		),
+		/** Appends a chunk (at most 1 MiB) at `offset`, the bytes stored so far. */
+		append: method(obj({ upload: str(), offset: int({ minimum: 0 }), bytes: bytes() })),
+		/** Ends the file: its ID, name, size and image type. */
+		finish: method(str(), UploadedSchema),
+		/** Drops the file under way (its client went away or sent too much). */
+		cancel: method(str()),
+		/** The download snapshot `id` (a version of the session's files and its name), or null. */
+		download: method(str({ maxLength: 64 }), union([obj({ file: str(), name: str(), size: num() }), nul()])),
+		/** `length` bytes (at most 1 MiB) of the session's download snapshot version `file` from `offset`. */
+		read: method(
+			obj({ file: str(), offset: int({ minimum: 0 }), length: int({ minimum: 0, maximum: 1024 * 1024 }) }),
+			bytes(),
+		),
 	},
-});
-
-/** A space summary of a session's files as the server mirrors it (the kit's `SpaceSummary`). */
-export const SpaceSummarySchema = obj({
-	files: num(),
-	versions: num(),
-	bytes: num(),
-	newest: arr(
-		obj({
-			id: str(),
-			space: str(),
-			path: str(),
-			version: num(),
-			size: num(),
-			mime: str(),
-			source: str(),
-			ref: opt(str()),
-			key: opt(str()),
-			created: num(),
-			meta: opt(unknown()),
-		}),
-	),
-});
-
-/**
- * The server's mirror of every session's file summaries, by session and space (server): a session's worker pushes a
- * space's summary inside the method that changed it (`push`, its own session only), so a list of a session's files
- * shows without starting its worker (the owner's `of`).
- */
-export const FileSummaries = remote("p2.file-summaries", {
-	version: 1,
-	params: {},
-	hostAddress: serverHost,
-	variants: {
-		worker: { methods: { push: method(obj({ space: str(), summary: SpaceSummarySchema })) } },
-		owner: { methods: { of: method(obj({ session: str() }), map(SpaceSummarySchema)) } },
-	},
-});
-
-/** Pushes a space's summary of this session's files to the server's mirror (worker, host-internal). */
-export const FilesMirror = local("p2.files-mirror", {
-	version: 1,
-	params: {},
-	members: { push: method(str()) },
 });

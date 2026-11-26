@@ -21,11 +21,11 @@ import type { ModelRuntime } from "./model-runtime.ts";
 export const defaultModelPerProvider: Partial<Record<KnownProvider | typeof OCTOBER_PROVIDER_ID, string>> = {
 	[OCTOBER_PROVIDER_ID]: OCTOBER_DEFAULT_MODEL_ID,
 	"amazon-bedrock": "us.anthropic.claude-opus-5-5",
-	"ant-ling": "Ring-2.6-1T",
+	"ant-ling": "Ling-3.1-flash",
 	anthropic: "claude-opus-5-5",
-	openai: "gpt-6.1-sol",
-	azure: "gpt-6.1-sol",
-	"openai-codex": "gpt-6.1-sol",
+	openai: "gpt-6.2-sol",
+	azure: "gpt-6.2-sol",
+	"openai-codex": "gpt-6.2-sol",
 	radius: "balanced",
 	nvidia: "nvidia/nemotron-3-ultra-550b-a55b",
 	deepseek: "deepseek-v4-pro",
@@ -39,7 +39,7 @@ export const defaultModelPerProvider: Partial<Record<KnownProvider | typeof OCTO
 	cerebras: "gpt-oss-120b",
 	zai: "glm-5.3",
 	"zai-coding-cn": "glm-5.3",
-	mistral: "devstral-medium-latest",
+	mistral: "mistral-medium-latest",
 	minimax: "MiniMax-M3",
 	"minimax-cn": "MiniMax-M3",
 	moonshotai: "kimi-k2.7-code",
@@ -52,8 +52,8 @@ export const defaultModelPerProvider: Partial<Record<KnownProvider | typeof OCTO
 	"opencode-go": "kimi-k3.1-pro",
 	"kimi-coding": "kimi-for-coding",
 	meta: "muse-spark-1.3",
-	"cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.7-code",
-	"cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.7-code",
+	"cloudflare-workers-ai": "@cf/zai-org/glm-5.3",
+	"cloudflare-ai-gateway": "workers-ai/@cf/zai-org/glm-5.3",
 	"qwen-token-plan": "qwen3.8-max",
 	"qwen-token-plan-cn": "qwen3.8-max",
 	"qwen-token-plan-individual": "qwen3.8-max",
@@ -414,18 +414,6 @@ export async function resolveModelScopeWithDiagnostics(
 	options?: AuthOperationOptions,
 ): Promise<ResolveModelScopeResult> {
 	return resolveModelScopeFromModels(patterns, await modelRuntime.getAvailable(undefined, options));
-}
-
-export async function resolveModelScope(
-	patterns: string[],
-	modelRuntime: ModelRuntime,
-	options?: AuthOperationOptions,
-): Promise<ScopedModel[]> {
-	const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, modelRuntime, options);
-	for (const diagnostic of diagnostics) {
-		console.warn(chalk.yellow(`Warning: ${diagnostic.message}`));
-	}
-	return scopedModels;
 }
 
 export interface ResolveCliModelResult {

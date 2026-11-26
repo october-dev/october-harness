@@ -1,39 +1,32 @@
-// Pages, TUIs and plugins built before a deploy keep working: the providers of `Sessions`, `SessionTree` and `Catalog`
-// still bind the versions released before `/tree` and its branch labels, through their `accepts`, and map the current
-// state and results back. The old contracts below are copied verbatim from the releases that bundled them
-// (`Sessions` v3 and `Catalog` v2 from 0a730c8a7, `Sessions` v4, `Catalog` v3 and `SessionTree` v1 from e88525506,
-// `Sessions` v5 from 9ff0ebfd0, `Envs` v1 from 2a32a605a and v2 from d07548004), so their fingerprints are the ones
-// old bundles send.
+// Contracts built before a deploy. `Catalog` (local, server plugins) keeps its released versions through its `accepts`:
+// a server plugin not reloaded yet binds them and gets the current rows mapped back. Remote contracts restarted as new
+// bases when grantable members replaced variants (Chord slice 15): a consumer of a version released before that (a
+// page, a TUI or a worker loaded before the deploy) is refused with `contract_mismatch` and reloads. The old `Catalog`
+// contracts below are copied verbatim from the releases that bundled them (v2 from 0a730c8a7, v3 from e88525506, v4
+// from 0a180b049), so their fingerprints are the ones old bundles send.
 
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { arr, bool, int, nul, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import {
 	BACKGROUND_CONTEXT,
-	DirectoryListingSchema,
 	evolve,
-	literal,
 	local,
 	ModelRefSchema,
 	method,
-	param,
 	propertiesOf,
 	remote,
 	serverHost,
-	sessionHost,
 	ThinkingLevelSchema,
 } from "@p2/app/v1";
-import { Chat } from "../../plugins/chat/contract.ts";
-import { Envs, EnvTestSchema, SandboxStatusSchema } from "../../plugins/envs/contract.ts";
-import { SandboxMountSchema, SshEnvConfigSchema } from "../../plugins/envs/schema.ts";
-import { CreateSchema, MAX_TITLE, type Session, Sessions } from "../../plugins/sessions/contract.ts";
+import { CHAT_PARTICIPANT, Chat } from "../../plugins/chat/contract.ts";
+import { SESSIONS_OWNER, type Session, SessionSchema, Sessions } from "../../plugins/sessions/contract.ts";
 import { SessionStatus } from "../../plugins/status/contract.ts";
 import { SessionTree } from "../../plugins/tree/contract.ts";
 import type { Host } from "../../src/runtime/chord.ts";
-import { bound, boundIn, type Fixture, holdIn, startFixture, until } from "./helpers.ts";
+import { bound, type Fixture, failureOf, holdWith, startFixture, until } from "./helpers.ts";
 
 const Id = obj({ id: str() });
-const Title = str({ minLength: 1, maxLength: MAX_TITLE });
 
 /** 0a730c8a7's `SessionSchema`. */
 const SessionSchemaV3 = obj({
@@ -66,110 +59,9 @@ const SessionSchemaV4 = obj({
 	branches: arr(BranchSchemaV4),
 });
 
-/** `Sessions` as 0a730c8a7 declared it. */
-const SessionsV3 = remote("p2.sessions", {
-	version: 3,
-	params: {},
-	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: { sessions: arr(SessionSchemaV3), defaultCwd: str(), defaultEnv: union([str(), nul()]) },
-			methods: {
-				create: method(CreateSchema, SessionSchemaV3),
-				relocate: method(obj({ id: str(), cwd: str({ minLength: 1 }), env: union([str(), nul()]) })),
-				rename: method(obj({ id: str(), title: Title })),
-				pin: method(obj({ id: str(), pinned: bool() })),
-				archive: method(Id),
-				restore: method(Id),
-				clone: method(Id, SessionSchemaV3),
-				fork: method(
-					obj({ id: str(), conversation: int({ minimum: 1 }), before: int({ minimum: 1 }) }),
-					SessionSchemaV3,
-				),
-			},
-		},
-		guest: { state: { sessions: arr(SessionSchemaV3) } },
-		worker: {
-			state: { session: union([SessionSchemaV3, nul()]) },
-			methods: {
-				renameSelf: method(obj({ title: Title }), obj({ previous: str() })),
-				configureSelf: method(obj({ model: opt(ModelRefSchema), thinkingLevel: opt(ThinkingLevelSchema) })),
-			},
-		},
-	},
-});
-
-/** `Sessions` as e88525506 declared it. */
-const SessionsV4 = remote("p2.sessions", {
-	version: 4,
-	params: {},
-	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: { sessions: arr(SessionSchemaV4), defaultCwd: str(), defaultEnv: union([str(), nul()]) },
-			methods: {
-				create: method(CreateSchema, SessionSchemaV4),
-				relocate: method(obj({ id: str(), cwd: str({ minLength: 1 }), env: union([str(), nul()]) })),
-				rename: method(obj({ id: str(), title: Title })),
-				pin: method(obj({ id: str(), pinned: bool() })),
-				archive: method(Id),
-				restore: method(Id),
-				clone: method(Id, SessionSchemaV4),
-				fork: method(
-					obj({ id: str(), conversation: int({ minimum: 1 }), before: int({ minimum: 1 }) }),
-					SessionSchemaV4,
-				),
-			},
-		},
-		guest: { state: { sessions: arr(SessionSchemaV4) } },
-		worker: {
-			state: { session: union([SessionSchemaV4, nul()]) },
-			methods: {
-				renameSelf: method(obj({ title: Title }), obj({ previous: str() })),
-				configureSelf: method(obj({ model: opt(ModelRefSchema), thinkingLevel: opt(ThinkingLevelSchema) })),
-				treeSelf: method(obj({ main: int({ minimum: 1 }), branches: arr(BranchSchemaV4) })),
-			},
-		},
-	},
-});
-
 /** 9ff0ebfd0's `BranchSchema` and `SessionSchema`: a branch label may be null. */
 const BranchSchemaV5 = obj({ conversation: int({ minimum: 1 }), label: union([str(), nul()]) });
 const SessionSchemaV5 = obj({ ...propertiesOf(SessionSchemaV4), branches: arr(BranchSchemaV5) });
-
-/** `Sessions` as 9ff0ebfd0 declared it (before client-chosen IDs and lifecycle operations). */
-const SessionsV5 = remote("p2.sessions", {
-	version: 5,
-	params: {},
-	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: { sessions: arr(SessionSchemaV5), defaultCwd: str(), defaultEnv: union([str(), nul()]) },
-			methods: {
-				create: method(CreateSchema, SessionSchemaV5),
-				relocate: method(obj({ id: str(), cwd: str({ minLength: 1 }), env: union([str(), nul()]) })),
-				rename: method(obj({ id: str(), title: Title })),
-				pin: method(obj({ id: str(), pinned: bool() })),
-				archive: method(Id),
-				restore: method(Id),
-				clone: method(Id, SessionSchemaV5),
-				fork: method(
-					obj({ id: str(), conversation: int({ minimum: 1 }), before: int({ minimum: 1 }) }),
-					SessionSchemaV5,
-				),
-			},
-		},
-		guest: { state: { sessions: arr(SessionSchemaV5) } },
-		worker: {
-			state: { session: union([SessionSchemaV5, nul()]) },
-			methods: {
-				renameSelf: method(obj({ title: Title }), obj({ previous: str() })),
-				configureSelf: method(obj({ model: opt(ModelRefSchema), thinkingLevel: opt(ThinkingLevelSchema) })),
-				treeSelf: method(obj({ main: int({ minimum: 1 }), branches: arr(BranchSchemaV5) })),
-			},
-		},
-	},
-});
 
 /** `Catalog` as 0a730c8a7 declared it. */
 const CatalogV2 = local("p2.catalog", {
@@ -245,114 +137,37 @@ const CatalogV3 = local("p2.catalog", {
 	},
 });
 
-/** `SessionTree` as e88525506 declared it. */
-const SessionTreeV1 = remote("p2.tree", {
-	version: 1,
-	params: { session: param.str() },
-	hostAddress: sessionHost,
-	variants: {
-		owner: {
-			methods: {
-				tree: method(
-					undefined,
-					obj({
-						nodes: arr(
-							obj({
-								entry: int({ minimum: 1 }),
-								parent: union([int({ minimum: 1 }), nul()]),
-								role: union([literal("user"), literal("assistant")]),
-								text: str(),
-							}),
-						),
-						main: int({ minimum: 1 }),
-						current: union([int({ minimum: 1 }), nul()]),
-					}),
-				),
-				navigate: method(
-					obj({ entry: int({ minimum: 1 }) }),
-					obj({ conversation: int({ minimum: 1 }), text: union([str(), nul()]) }),
-				),
-				select: method(obj({ conversation: int({ minimum: 1 }) })),
-			},
-		},
-	},
-});
+/** `Catalog` as 0a180b049 declared it: a branch's label may be null. */
+const CatalogV4 = evolve(CatalogV3, (e) =>
+	e
+		.state("sessions", arr(SessionSchemaV5))
+		.result("get", SessionSchemaV5)
+		.result("create", SessionSchemaV5)
+		.method(
+			"update",
+			obj({
+				id: str(),
+				cwd: opt(str()),
+				env: opt(union([str(), nul()])),
+				title: opt(str()),
+				pinned: opt(bool()),
+				archived: opt(bool()),
+				model: opt(ModelRefSchema),
+				thinkingLevel: opt(ThinkingLevelSchema),
+				main: opt(int({ minimum: 1 })),
+				branches: opt(arr(BranchSchemaV5)),
+			}),
+			SessionSchemaV5,
+		),
+);
 
-/** The environment configuration of `Envs` v1 and v2: sandboxes without `diskGb` (the SSH schema is unchanged). */
-const EnvConfigSchemaV2 = union([
-	SshEnvConfigSchema,
-	obj({
-		type: literal("gondolin"),
-		host: str({ minLength: 1, maxLength: 32 }),
-		image: opt(str({ minLength: 1, maxLength: 255 })),
-		mounts: opt(arr(SandboxMountSchema, { maxItems: 16 })),
-		allowHosts: opt(arr(str({ minLength: 1, maxLength: 255 }), { maxItems: 256 })),
-		cpus: opt(int({ minimum: 1, maximum: 64 })),
-		memoryMb: opt(int({ minimum: 256, maximum: 262144 })),
-	}),
-]);
-
-/** 2a32a605a's `Envs` (version 1): rows without `users`, `delete` without `force`. */
-const EnvName = obj({ name: str() });
-const EnvKey = obj({ publicKey: str(), identityFile: str() });
-const EnvSummarySchemaV1 = obj({ name: str(), config: EnvConfigSchemaV2, sessions: num(), test: opt(EnvTestSchema) });
-const EnvsV1 = remote("p2.envs", {
-	version: 1,
+/** `Sessions` 7, the last version released with variants (declared flat here: no current server binds it). */
+const SessionsV7 = remote("p2.sessions", {
+	version: 7,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: { envs: arr(EnvSummarySchemaV1), failure: union([str(), nul()]) },
-			methods: {
-				list: method(undefined, arr(EnvSummarySchemaV1)),
-				warm: method(),
-				save: method(obj({ name: str(), config: EnvConfigSchemaV2 })),
-				delete: method(EnvName),
-				test: method(EnvName, EnvTestSchema),
-				acceptHostKey: method(obj({ name: str(), lines: arr(str()) })),
-				forgetHostKey: method(EnvName),
-				generateKey: method(EnvName, EnvKey),
-				uploadKey: method(obj({ name: str(), key: str({ maxLength: 16384 }) }), EnvKey),
-				publicKey: method(EnvName, union([str(), nul()])),
-				listDirectory: method(obj({ env: opt(str()), path: str() }), DirectoryListingSchema),
-				sandboxStatus: method(EnvName, SandboxStatusSchema),
-				sandboxStart: method(EnvName, SandboxStatusSchema),
-				sandboxStop: method(EnvName, SandboxStatusSchema),
-			},
-		},
-	},
+	state: { sessions: arr(SessionSchema) },
 });
-
-/** d07548004's `Envs` (version 2): rows with `users`, `delete` with `force`, sandboxes without `diskGb`. */
-const EnvsV2 = evolve(EnvsV1, (e) =>
-	e
-		.state(
-			"owner",
-			"envs",
-			arr(
-				obj({
-					name: str(),
-					config: EnvConfigSchemaV2,
-					sessions: num(),
-					users: opt(arr(obj({ id: str(), title: str(), main: num(), archived: bool() }))),
-					test: opt(EnvTestSchema),
-				}),
-			),
-		)
-		.result(
-			"list",
-			arr(
-				obj({
-					name: str(),
-					config: EnvConfigSchemaV2,
-					sessions: num(),
-					users: opt(arr(obj({ id: str(), title: str(), main: num(), archived: bool() }))),
-					test: opt(EnvTestSchema),
-				}),
-			),
-		)
-		.args("delete", obj({ name: str(), force: opt(bool()) })),
-);
 
 describe("older contract versions against the current server (fake provider)", () => {
 	let fixture: Fixture;
@@ -363,17 +178,17 @@ describe("older contract versions against the current server (fake provider)", (
 	before(async () => {
 		fixture = await startFixture();
 		owner = fixture.browser();
-		const sessions = await holdIn(owner, Sessions, {}, "owner");
+		const sessions = await holdWith(owner, Sessions, {}, ...SESSIONS_OWNER);
 		session = await sessions.create({ cwd: fixture.workspace, title: "Versions" }, BACKGROUND_CONTEXT);
-		const chat = await holdIn(owner, Chat, { session: session.id, conversation: 1 }, "participant");
+		const chat = await holdWith(owner, Chat, { session: session.id, conversation: 1 }, ...CHAT_PARTICIPANT);
 		await chat.send({ text: "hello", requestId: "hello" }, BACKGROUND_CONTEXT);
 		await until(chat.view, (view) => JSON.stringify(view?.entries ?? []).includes("Echo: hello"));
 		chat.release();
-		const status = await holdIn(owner, SessionStatus, {}, "reader");
+		const status = await holdWith(owner, SessionStatus, {}, "statuses");
 		await until(status.statuses, (value) => value?.[session.id]?.tasks === 0);
 		status.release();
 		// Editing the first message: a new branch labelled "hello"; conversation 1 keeps null (the session title).
-		const tree = await holdIn(owner, SessionTree, { session: session.id }, "owner");
+		const tree = await holdWith(owner, SessionTree, { session: session.id });
 		const first = (await tree.tree(BACKGROUND_CONTEXT)).nodes.find((node) => node.role === "user")!;
 		branch = (await tree.navigate({ entry: first.entry }, BACKGROUND_CONTEXT)).conversation;
 		await until(sessions.sessions, (rows) => rows.some((row) => row.id === session.id && row.branches.length === 2));
@@ -384,75 +199,12 @@ describe("older contract versions against the current server (fake provider)", (
 		await fixture?.close();
 	});
 
-	it("binds Sessions v5: rows as they are, create answered with its row", async () => {
-		const ref = await boundIn(owner, SessionsV5, {}, "owner");
-		const rows = await until(ref.sessions, (list) => list.some((row) => row.id === session.id));
-		assert.equal(rows.find((each) => each.id === session.id)?.main, branch);
-		const created = await ref.create({ cwd: fixture.workspace, title: "From a v5 tab" }, BACKGROUND_CONTEXT);
-		assert.equal(created.title, "From a v5 tab");
+	it("refuses a consumer of a version released with variants: contract_mismatch, and it waits (the page reloads)", async () => {
+		const ref = owner.hold(SessionsV7, {}, BACKGROUND_CONTEXT);
+		const error = await failureOf(ref);
+		assert.equal(error.code, "contract_mismatch");
+		assert.equal(ref.state.value.kind === "failed" && ref.state.value.cause.kind, "waiting");
 		ref.release();
-	});
-
-	it("binds Sessions v4: a null branch label reads as the session title", async () => {
-		const ref = await boundIn(owner, SessionsV4, {}, "owner");
-		const rows = await until(ref.sessions, (list) => list.some((row) => row.id === session.id));
-		const row = rows.find((each) => each.id === session.id)!;
-		assert.equal(row.main, branch);
-		assert.deepEqual(row.branches, [
-			{ conversation: branch, label: "hello" },
-			{ conversation: 1, label: "Versions" },
-		]);
-		ref.release();
-	});
-
-	it("binds Sessions v3: rows without main and branches, also in method results", async () => {
-		const ref = await boundIn(owner, SessionsV3, {}, "owner");
-		const rows = await until(ref.sessions, (list) => list.some((row) => row.id === session.id));
-		const row = rows.find((each) => each.id === session.id)!;
-		assert.equal(row.title, "Versions");
-		assert.equal("main" in row || "branches" in row, false);
-		const created = await ref.create({ cwd: fixture.workspace, title: "From an old tab" }, BACKGROUND_CONTEXT);
-		assert.equal(created.title, "From an old tab");
-		assert.equal("main" in created || "branches" in created, false);
-		ref.release();
-	});
-
-	it("binds SessionTree v1: the tree without labels", async () => {
-		const ref = await boundIn(owner, SessionTreeV1, { session: session.id }, "owner");
-		const tree = await ref.tree(BACKGROUND_CONTEXT);
-		assert.deepEqual(Object.keys(tree).sort(), ["current", "main", "nodes"]);
-		assert.equal(tree.main, branch);
-		assert.equal(tree.nodes.length, 2, "conversation 1's message and answer");
-		for (const node of tree.nodes) assert.deepEqual(Object.keys(node).sort(), ["entry", "parent", "role", "text"]);
-		ref.release();
-	});
-
-	it("binds Envs v1: rows without users; its delete is never forced", async () => {
-		const current = await holdIn(owner, Envs, {}, "owner");
-		await current.save({ name: "old-tab", config: { type: "ssh", host: "old.example" } }, BACKGROUND_CONTEXT);
-		const ref = await boundIn(owner, EnvsV1, {}, "owner");
-		const rows = await until(ref.envs, (list) => list.some((row) => row.name === "old-tab"));
-		assert.deepEqual(Object.keys(rows.find((row) => row.name === "old-tab")!).sort(), ["config", "name", "sessions"]);
-		await ref.delete({ name: "old-tab" }, BACKGROUND_CONTEXT);
-		await until(ref.envs, (list) => !list.some((row) => row.name === "old-tab"));
-		ref.release();
-		current.release();
-	});
-
-	it("binds Envs v2: rows with users, sandboxes without a disk size", async () => {
-		const current = await holdIn(owner, Envs, {}, "owner");
-		await current.save({ name: "v2-host", config: { type: "ssh", host: "v2.example" } }, BACKGROUND_CONTEXT);
-		await current.save(
-			{ name: "v2-box", config: { type: "gondolin", host: "v2-host", diskGb: 8 } },
-			BACKGROUND_CONTEXT,
-		);
-		const ref = await boundIn(owner, EnvsV2, {}, "owner");
-		const rows = await until(ref.envs, (list) => list.some((row) => row.name === "v2-box"));
-		assert.deepEqual(rows.find((row) => row.name === "v2-box")?.config, { type: "gondolin", host: "v2-host" });
-		assert(Array.isArray(rows.find((row) => row.name === "v2-box")?.users));
-		await current.delete({ name: "v2-box" }, BACKGROUND_CONTEXT).catch(() => {});
-		ref.release();
-		current.release();
 	});
 
 	it("binds Catalog v2 and v3 on the server", async () => {
@@ -465,5 +217,41 @@ describe("older contract versions against the current server (fake provider)", (
 			label: "Versions",
 		});
 		v3.release();
+	});
+
+	it("binds Catalog v4: branches without the conversation they were forked from", async () => {
+		// A fork of the edited branch after its first answer (two exchanges: the answer is not the branch's end): its row
+		// names the branch as its parent.
+		const chat = await holdWith(owner, Chat, { session: session.id, conversation: branch }, ...CHAT_PARTICIPANT);
+		for (const text of ["first on the branch", "second on the branch"]) {
+			await chat.send({ text, requestId: text }, BACKGROUND_CONTEXT);
+			await until(chat.view, (view) => JSON.stringify(view?.entries ?? []).includes(`Echo: ${text}`));
+		}
+		chat.release();
+		const tree = await holdWith(owner, SessionTree, { session: session.id });
+		const answer = (await tree.tree(BACKGROUND_CONTEXT)).nodes.find(
+			(node) => node.conversation === branch && node.role === "assistant",
+		)!;
+		const fork = (await tree.navigate({ entry: answer.entry }, BACKGROUND_CONTEXT)).conversation;
+		tree.release();
+		const current = await holdWith(owner, Sessions, {}, ...SESSIONS_OWNER);
+		const rows = await until(current.sessions, (list) =>
+			Boolean(list?.find((row) => row.id === session.id)?.branches.some((each) => each.conversation === fork)),
+		);
+		const branches = rows.find((row) => row.id === session.id)!.branches;
+		assert.deepEqual(
+			branches.map((each) => [each.conversation, each.parent]),
+			[
+				[fork, branch],
+				// Edited before the first message: a new conversation, forked from none.
+				[branch, undefined],
+				[1, undefined],
+			],
+		);
+		current.release();
+		const withoutParents = branches.map(({ conversation, label }) => ({ conversation, label }));
+		const v4 = await bound(fixture.server.host.hold(CatalogV4, {}, BACKGROUND_CONTEXT));
+		assert.deepEqual((await v4.get({ id: session.id }, BACKGROUND_CONTEXT)).branches, withoutParents);
+		v4.release();
 	});
 });

@@ -9,7 +9,7 @@ import type { Host } from "../../host/index.ts";
 import type { ScriptSet } from "../../surfaces/index.ts";
 import type { HttpResponse } from "../http/index.ts";
 import type { BaseInputs, Built, Plugins, RolloutStep } from "../plugins/index.ts";
-import { type BaseBundle, type BasePlatform, buildBase } from "./bundle.ts";
+import { type BaseBundle, type BasePlatform, type BaseResolution, buildBase } from "./bundle.ts";
 import { publishTo, type SurfaceName } from "./current.ts";
 import { PublishedScripts } from "./published.ts";
 import { served } from "./served.ts";
@@ -19,11 +19,11 @@ export type SurfaceBuilt =
 	| { readonly kind: "built"; readonly base: string; readonly inputs: BaseInputs }
 	| { readonly kind: "failed"; readonly error: unknown };
 
-/** What a surface builds: its kind, entry, conditions, the plugins component. */
+/** What a surface builds: its kind, entry, how its base resolves, the plugins component. */
 export type SurfaceBuildOptions = {
 	readonly kind: string;
 	readonly entry: string;
-	readonly conditions: readonly string[] | undefined;
+	readonly resolution: BaseResolution;
 	readonly plugins: Plugins;
 };
 
@@ -104,7 +104,7 @@ export class SurfaceBuild<P extends Principal> {
 			kinds: [this.#options.kind],
 			reload: async (built: Built, context: Context) => {
 				const outcome = await awaitWithContext(this.#ready(), context);
-				if (outcome.kind === "failed") return { hosts: [{ host: name, error: outcome.error }] };
+				if (outcome.kind === "failed") return { hosts: [{ kind: "failed", host: name, error: outcome.error }] };
 				return outcome.published.step(name).reload(built, context);
 			},
 		};
@@ -121,9 +121,12 @@ export class SurfaceBuild<P extends Principal> {
 
 	/** Builds the base bundle, takes the kind's current set as the first and publishes it. */
 	async #run(context: Context): Promise<Outcome<P>> {
-		const { kind, entry, conditions, plugins } = this.#options;
+		const { kind, entry, resolution, plugins } = this.#options;
 		try {
-			const base = await buildBase(entry, this.#platform, this.#prefix, conditions);
+			// The kind's plugins build here while the base builds in its own process; `start` below takes the same set
+			// (and its failure, if any).
+			plugins.scripts(kind, context).catch(() => {});
+			const base = await buildBase(entry, this.#platform, this.#prefix, resolution);
 			const published = new PublishedScripts(this.#surface, kind, this.#prefix, base.hash, plugins, this.#server);
 			await published.start(context);
 			this.#published = published;

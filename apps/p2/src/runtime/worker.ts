@@ -14,11 +14,13 @@ import {
 	type DocumentReader,
 	type Conversation as DurableConversation,
 	Harness as DurableHarness,
+	type HarnessOptions,
 	type HarnessSettings,
 	ROOT_CONVERSATION_ID,
 } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import type { ImageProcessor } from "@earendil-works/pi-durable/tools";
 import { Connection, LocalExecutionEnv, localDaemon, RemoteExecutionEnv } from "@earendil-works/pi-env";
 import {
 	type Ctx,
@@ -31,6 +33,7 @@ import {
 	serveKeyed,
 } from "./chord.ts";
 import { durableContext, durableRegistry, ExtensionSwitches, Extensions } from "./durable.ts";
+import { harnessModels } from "./harness-models.ts";
 import { hostFiles, sessionDirectory } from "./host-dirs.ts";
 import { isRooted, type Location, type LocationInput, sameLocation } from "./location.ts";
 import { topLevelConversations } from "./main-conversation.ts";
@@ -47,6 +50,8 @@ export type WorkerInit = {
 	readonly app: string;
 	readonly dataDir: string;
 	readonly fake: boolean;
+	/** Whether the worker records telemetry and sends it to the server (settings.json's `telemetry`, read at its start). */
+	readonly telemetry: boolean;
 	readonly generation: number;
 	readonly values: { readonly session: SessionInit } & Readonly<Record<string, JsonValue>>;
 };
@@ -114,8 +119,8 @@ export class SessionLocation {
 }
 
 /**
- * Whether `env` runs on this machine (not an SSH environment): p2's private data directory is denied there. Decided
- * from the environment, not from `SessionLocation.value`, which lags behind the environments during a move.
+ * Whether `env` runs on this machine (not an SSH environment; attachments need no copy there). Decided from the
+ * environment, not from `SessionLocation.value`, which lags behind the environments during a move.
  */
 export const isLocalEnvironment = (env: ExecutionEnv): boolean => !(env instanceof RemoteExecutionEnv);
 
@@ -295,7 +300,42 @@ export type WorkerParts = {
 	 * `session`, which must not exist yet: a fork, whose worker waits while it copies. The session goes on meanwhile.
 	 */
 	readonly copyFilesTo: (session: string, context: Context) => Promise<void>;
+	/**
+	 * Fits images to a model's limits (Photon in a worker thread that exits when idle): one per process, for `read`, the
+	 * `fit-images` extension and attachments.
+	 */
+	readonly images: ImageProcessor;
+	/**
+	 * The session's Chord store (one writer: this worker), for its backup (`plugins/backup`). Never close it. Absent in
+	 * test hosts without a store.
+	 */
+	readonly store?: Store;
 };
+
+/** The worker's plugin load as diagnostics describe it: still loading, or loaded with the plugins that failed. */
+export class PluginLoad {
+	#state:
+		| { readonly kind: "loading"; readonly since: number }
+		| { readonly kind: "loaded"; readonly at: number; readonly failed: readonly string[] } = {
+		kind: "loading",
+		since: Date.now(),
+	};
+
+	/** The load finished; `failed` names the plugins left out. */
+	loaded(failed: readonly string[]): void {
+		this.#state = { kind: "loaded", at: Date.now(), failed };
+	}
+
+	/** One phrase for a log line: `plugins loading for 3 s`, or `plugins loaded 2 s ago (failed: mail)`. */
+	describe(): string {
+		const state = this.#state;
+		if (state.kind === "loading") return `plugins loading for ${seconds(Date.now() - state.since)}`;
+		const failed = state.failed.length === 0 ? "none failed" : `failed: ${state.failed.join(", ")}`;
+		return `plugins loaded ${seconds(Date.now() - state.at)} ago (${failed})`;
+	}
+}
+
+const seconds = (ms: number): string => `${Math.round(ms / 100) / 10} s`;
 
 /**
  * The worker process's natives, contributed by the core facet from the start: `self.registry(WorkerProcess).value`
@@ -400,6 +440,11 @@ export function workerCore(
 	location: SessionLocation,
 	store: Store,
 	root: WorkerParts["root"],
+	images: ImageProcessor,
+	/** The worker's plugin load, which the worker entry marks loaded (diagnostics name its state). */
+	load: PluginLoad,
+	/** The worker host's telemetry adapter, the Harness's too (its `pi.durable.*` and pi-ai's spans); none in tests. */
+	telemetry: HarnessOptions["telemetry"],
 ): Facet {
 	return defineFacet((host, self) => {
 		serveWorkerRegistries(host);
@@ -407,10 +452,10 @@ export function workerCore(
 		const own = sessionDirectory(init.dataDir, init.values.session.id);
 		const copyFilesTo = (session: string, context: Context) =>
 			copyFiles({ store, files: hostFiles(own) }, sessionDirectory(init.dataDir, session), context);
-		self.contribute(WorkerProcess, { init, liveness, location, root, copyFilesTo });
+		self.contribute(WorkerProcess, { init, liveness, location, root, copyFilesTo, images, store });
 		host.serve(HarnessNative, { compose: (table) => table[0]?.value });
 		host.serve(HarnessHost, (_params, self) => {
-			self.contribute(HarnessNative, openHarness(self, init, location, store));
+			self.contribute(HarnessNative, openHarness(self, init, location, store, load, telemetry));
 			return {};
 		});
 		host.serve(WorkerBoundary, (_params, principal, self) => {
@@ -418,45 +463,42 @@ export function workerCore(
 			const harness = harnessOf(self);
 			const checks = self.registry(RelocationChecks);
 			return {
-				variant: "server",
-				members: {
-					prepare: async (input, ctx) => {
-						const frozen = liveness.freeze();
-						try {
-							const inspection = await harness().durable.inspect(ctx);
-							const busy = [
-								...new Set(
-									inspection.tasks
-										.filter((task) => !task.record.background)
-										.map((task) => task.record.conversationId),
-								),
-							].sort((a, b) => a - b);
-							const tasks = inspection.tasks.length + inspection.submissions.length;
-							let refusal: string | undefined;
-							// Under the fence: nothing can change what the checks read (no task runs, nothing is admitted).
-							if (frozen && tasks === 0 && input !== null)
-								for (const check of checks.value.values()) {
-									refusal = await check(harness().durable, location.value, input.to, ctx);
-									if (refusal !== undefined) break;
-								}
-							const accepted = frozen && tasks === 0 && refusal === undefined;
-							if (!accepted && frozen) liveness.unfreeze();
-							return { accepted, tasks, busy, ...(refusal === undefined ? {} : { refusal }) };
-						} catch (error) {
-							if (frozen) liveness.unfreeze();
-							throw error;
-						}
-					},
-					cancel: async () => {
-						liveness.unfreeze();
-						return null;
-					},
-					relocate: async (next, ctx) => {
-						if (!liveness.relocating) throw new Error("Relocation was not prepared");
-						await harness().relocate(next, ctx);
-						liveness.unfreeze();
-						return null;
-					},
+				prepare: async (input, ctx) => {
+					const frozen = liveness.freeze();
+					try {
+						const inspection = await harness().durable.inspect(ctx);
+						const busy = [
+							...new Set(
+								inspection.tasks
+									.filter((task) => !task.record.background)
+									.map((task) => task.record.conversationId),
+							),
+						].sort((a, b) => a - b);
+						const tasks = inspection.tasks.length + inspection.submissions.length;
+						let refusal: string | undefined;
+						// Under the fence: nothing can change what the checks read (no task runs, nothing is admitted).
+						if (frozen && tasks === 0 && input !== null)
+							for (const check of checks.value.values()) {
+								refusal = await check(harness().durable, location.value, input.to, ctx);
+								if (refusal !== undefined) break;
+							}
+						const accepted = frozen && tasks === 0 && refusal === undefined;
+						if (!accepted && frozen) liveness.unfreeze();
+						return { accepted, tasks, busy, ...(refusal === undefined ? {} : { refusal }) };
+					} catch (error) {
+						if (frozen) liveness.unfreeze();
+						throw error;
+					}
+				},
+				cancel: async () => {
+					liveness.unfreeze();
+					return null;
+				},
+				relocate: async (next, ctx) => {
+					if (!liveness.relocating) throw new Error("Relocation was not prepared");
+					await harness().relocate(next, ctx);
+					liveness.unfreeze();
+					return null;
 				},
 			};
 		});
@@ -667,7 +709,14 @@ async function followSession(
  * with the root conversation created from the session's model and cwd. Scheduling starts with `resume()` once the
  * worker's plugins are loaded (the worker entry). Returns the contribution: the natives, read at each use.
  */
-function openHarness(self: Self, init: WorkerInit, location: SessionLocation, store: Store): HarnessParts {
+function openHarness(
+	self: Self,
+	init: WorkerInit,
+	location: SessionLocation,
+	store: Store,
+	load: PluginLoad,
+	telemetry: HarnessOptions["telemetry"],
+): HarnessParts {
 	const { values } = init;
 	const session = values.session;
 	const config = self.registry(HarnessConfig);
@@ -675,21 +724,18 @@ function openHarness(self: Self, init: WorkerInit, location: SessionLocation, st
 	const placements = self.registry(ConversationLocations);
 	const extensions = self.registry(Extensions);
 	const switches = self.registry(ExtensionSwitches);
-	const configured = (): HarnessConfigEntry => {
-		const entry = config.value.get("default");
-		if (entry === undefined) throw new Error("No model configuration installed (models plugin)");
-		return entry;
-	};
-	// Model access is looked up at each use: the models plugin may reload or replace its configuration. Every generation
-	// request passes through `streamSimple` here, after Durable and the Harness's identity wrapper completed it.
+	// Model access is looked up at each use: the models plugin may reload or replace its configuration, and while it
+	// restarts its configuration is withdrawn: model calls wait for it (`harnessModels`). Every generation request
+	// passes through `streamSimple` here, after Durable and the Harness's identity wrapper completed it.
+	const access = harnessModels({
+		current: () => config.value.get("default")?.models(),
+		present: async (signal) => (await whenPresent(config, "default", signal)).models(),
+		diagnose: () =>
+			`HarnessConfig has ${config.value.size === 0 ? "no entries" : `only ${[...config.value.keys()].join(", ")}`}; ${load.describe()}`,
+	});
 	const requests = new WeakMap<AssistantMessage, ModelRequest>();
 	const models = new Proxy({} as Models, {
-		get: (_target, key) => {
-			const current = configured().models();
-			if (key === "streamSimple") return remembering(current, requests);
-			const value: unknown = Reflect.get(current, key, current);
-			return typeof value === "function" ? value.bind(current) : value;
-		},
+		get: (_target, key) => (key === "streamSimple" ? remembering(access, requests) : Reflect.get(access, key)),
 	});
 	const settings = new Proxy({} as HarnessSettings, {
 		get: (_target, key) => {
@@ -737,6 +783,7 @@ function openHarness(self: Self, init: WorkerInit, location: SessionLocation, st
 				storage,
 				{
 					models,
+					...(telemetry === undefined ? {} : { telemetry }),
 					registry: durableRegistry(extensions, switches, durableContext(observing.signal)),
 					settings,
 					// The conversation's location, not its agent cwd alone: a subagent's own may be on another machine.
@@ -866,7 +913,9 @@ export async function resolveDirectory(
 	target: LocationInput,
 	from: Location,
 	context: Context,
-): Promise<Location | { error: string }> {
+): Promise<
+	{ readonly kind: "directory"; readonly location: Location } | { readonly kind: "invalid"; readonly error: string }
+> {
 	const same = target.env === from.env;
 	const typed = target.path.trim();
 	const path = !typed ? (same ? from.cwd : "~") : same || isRooted(typed) ? typed : `~/${typed}`;
@@ -875,9 +924,10 @@ export async function resolveDirectory(
 		const absolute = await env.absolutePath(path, context);
 		const canonical = absolute.ok ? await env.canonicalPath(absolute.value, context) : undefined;
 		const info = canonical?.ok ? await env.fileInfo(canonical.value, context) : undefined;
-		if (!absolute.ok || !info?.ok || info.value.kind !== "directory") return { error: "not an existing directory" };
-		return { env: target.env, cwd: absolute.value };
+		if (!absolute.ok || !info?.ok || info.value.kind !== "directory")
+			return { kind: "invalid", error: "not an existing directory" };
+		return { kind: "directory", location: { env: target.env, cwd: absolute.value } };
 	} catch (error) {
-		return { error: error instanceof Error ? error.message : String(error) };
+		return { kind: "invalid", error: error instanceof Error ? error.message : String(error) };
 	}
 }

@@ -13,26 +13,33 @@ import {
 	bool,
 	bytes,
 	type Contract,
+	type EventSource,
+	event,
+	evolve,
+	grantable,
 	hostKind,
 	int,
 	local,
 	method,
+	num,
 	obj,
 	opt,
 	type ParamsOf,
 	remote,
 	str,
 } from "../src/contracts/index.ts";
-import { currentVariants, variantNames, variantOrder } from "../src/contracts/internal.ts";
+import { currentVersion, grantedMembers, grantIndexes, memberOrder } from "../src/contracts/internal.ts";
 import { ChordError, isChordError, PluginError, type Principal } from "../src/data/index.ts";
 import { PROTOCOL_VERSION } from "../src/data/internal.ts";
 import type { Op } from "../src/delta/index.ts";
 import { defineState } from "../src/documents/index.ts";
 import type { Attempt } from "../src/host/attempt.ts";
 import {
+	allow,
 	type Ctx,
 	createHost,
 	defineFacet,
+	deny,
 	type FacetHost,
 	type FacetSelf,
 	type Host,
@@ -40,6 +47,7 @@ import {
 	type PluginFailure,
 	type RefState,
 	type RouteHandle,
+	type RouteOptions,
 	type Self,
 	type StoreSelf,
 } from "../src/host/index.ts";
@@ -59,11 +67,11 @@ import {
 } from "../src/link/internal.ts";
 import { nodeCompression } from "../src/node/compression.ts";
 import { NodeSqliteDatabase, openNodeSqliteDatabase } from "../src/sqlite/node.ts";
+import { constant, type Writable } from "../src/state/index.ts";
 import type { ArchivePart } from "../src/store/archive.ts";
 import { sqliteBackend } from "../src/store/backend.ts";
 import { changeDocument, createDocument, retireDocument } from "../src/store/engine.ts";
 import { json } from "../src/store/json-column.ts";
-import { LiveQueries } from "../src/store/live-query.ts";
 import type { StagedWrite } from "../src/store/step.ts";
 import { type ChordStore, openStore, type Store } from "../src/store/store.ts";
 import { defineTable, type TableDefinition } from "../src/store/table.ts";
@@ -272,7 +280,7 @@ export async function loadedPlugins(
 /** A store on a fresh SQLite `:memory:` database, as Chord's layers see it. */
 export async function memoryStore(options?: { readonly outbox?: boolean }): Promise<ChordStore> {
 	const db = await openNodeSqliteDatabase(":memory:");
-	return (await openStore(sqliteBackend(db), BACKGROUND_CONTEXT, options)) as ChordStore;
+	return await openStore(sqliteBackend(db), BACKGROUND_CONTEXT, options);
 }
 
 /** A statement of the Node facade's transactions a test can make fail. */
@@ -303,7 +311,7 @@ export async function faultyStore(options?: {
 	readonly outbox?: boolean;
 }): Promise<{ readonly store: ChordStore; fail(statement: TransactionStatement): void }> {
 	const { db, fail } = faultyDatabase();
-	return { store: (await openStore(sqliteBackend(db), BACKGROUND_CONTEXT, options)) as ChordStore, fail };
+	return { store: await openStore(sqliteBackend(db), BACKGROUND_CONTEXT, options), fail };
 }
 
 /**
@@ -334,7 +342,6 @@ export function tableOwner(failures: ChordError[] = []): TableOwner & { readonly
 	return {
 		label: "app.store",
 		scope: {},
-		queries: new LiveQueries(),
 		assertLive: () => {},
 		fail: (error) => void failures.push(error),
 		failures,
@@ -448,7 +455,8 @@ export class RawPeer {
 		link: Link,
 		options: {
 			readonly hello?: boolean;
-			readonly calls?: number;
+			/** The call window its `hello` announces: 256 by default, `null` for none (a trusted link's). */
+			readonly calls?: number | null;
 			readonly ack?: boolean;
 			readonly codec?: Codec;
 		} = {},
@@ -466,7 +474,13 @@ export class RawPeer {
 			for (const wake of this.#waiters.splice(0)) wake();
 		});
 		if (options.hello !== false) {
-			this.send({ kind: "hello", protocol: PROTOCOL_VERSION, incarnation: RAW_PEER, calls: options.calls ?? 256 });
+			const calls = options.calls === undefined ? 256 : options.calls;
+			this.send({
+				kind: "hello",
+				protocol: PROTOCOL_VERSION,
+				incarnation: RAW_PEER,
+				...(calls === null ? {} : { calls }),
+			});
 		}
 	}
 
@@ -532,14 +546,19 @@ export function forEachCodec(suite: () => void): void {
 	}
 }
 
-/** The wire's indexes of a remote contract's variant (2b): the variant's, and its state members' and methods' by name. */
-export function wireNames(Type: Contract, variant: string) {
-	const names = variantNames(currentVariants(Type).get(variant)!);
+/**
+ * The wire's indexes of a remote contract's binding granted `granted` (2b, slice 15 §1.4): the granted names', and its
+ * state members', methods' and event members' by name.
+ */
+export function wireNames(Type: Contract, granted: readonly string[] = []) {
+	const version = currentVersion(Type);
+	const names = memberOrder(grantedMembers(version, new Set(granted)));
 	const indexes = (list: readonly string[]) => Object.fromEntries(list.map((name, index) => [name, index]));
 	return {
-		variant: variantOrder(Type).indexOf(variant),
+		granted: grantIndexes(version, new Set(granted)),
 		state: indexes(names.state),
 		methods: indexes(names.methods),
+		events: indexes(names.events),
 		/** A message's members by index as an object by name, their parts parsed. */
 		named: (members: readonly { readonly member: number; readonly ops?: Part; readonly value?: Part }[]) =>
 			Object.fromEntries(members.map(({ member, ops, value }) => [names.state[member], partValue((ops ?? value)!)])),
@@ -560,12 +579,20 @@ export async function rawLinked(
 		readonly telemetry?: TelemetryContext;
 		/** Whether the host trusts the raw peer's link (its messages are not checked; `call.old` is honoured). */
 		readonly trusted?: boolean;
+		/** The host's `callWindow`. */
+		readonly callWindow?: number;
+		/** The host's `eventWindow`. */
+		readonly eventWindow?: number;
+		/** Whether the raw peer acknowledges `bound` and `state` by itself (by default). */
+		readonly ack?: boolean;
 	} = {},
 ): Promise<{ readonly server: Host<TestPrincipal>; readonly peer: RawPeer; readonly errors: HostError[] }> {
 	const errors: HostError[] = [];
 	const server = createHost<TestPrincipal>({
 		address: Server(),
 		principal: { kind: "server" },
+		callWindow: options.callWindow,
+		eventWindow: options.eventWindow,
 		readyTimeout: options.readyTimeout,
 		compression: options.compression,
 		telemetry: options.telemetry,
@@ -577,7 +604,7 @@ export async function rawLinked(
 	const link = { principal: child, codec: testCodec(), limits: options.limits, trusted: options.trusted };
 	if (options.role === "parent") server.connect(a, link, BACKGROUND_CONTEXT);
 	else server.accept(a, link, BACKGROUND_CONTEXT);
-	return { server, peer: new RawPeer(b, { hello: options.hello }), errors };
+	return { server, peer: new RawPeer(b, { hello: options.hello, ack: options.ack }), errors };
 }
 
 /** Waits until messages and closes in flight on memory links (one task per hop) have arrived. */
@@ -585,19 +612,33 @@ export async function transported(): Promise<void> {
 	for (let hop = 0; hop < 6; hop++) await flushed();
 }
 
-/** The variants of the notes types: an editor variant for owners, a reader one for guests. */
-const NOTES_VARIANTS = {
-	editor: {
-		state: { notes: arr(obj({ text: str() })), count: int() },
-		methods: {
-			add: method(obj({ text: str() }), int()),
-			fail: method(obj({ how: str() })),
-			wait: method(),
-			echo: method(obj({ data: bytes() }), bytes()),
-		},
+/** `Notes`' members: owners are granted `add`, `fail` and `echo` (`serveNotes`), guests read and wait. */
+const NOTES_MEMBERS = {
+	state: { notes: arr(obj({ text: str() })), count: int() },
+	methods: {
+		add: grantable(method(obj({ text: str() }), int())),
+		fail: grantable(method(obj({ how: str() }))),
+		wait: method(),
+		echo: grantable(method(obj({ data: bytes() }), bytes())),
 	},
-	reader: { state: { notes: arr(obj({ text: str() })), count: int() }, methods: { wait: method() } },
 };
+
+/** What `serveNotes` grants an owner. */
+export const NOTES_EDITOR: ("add" | "echo" | "fail")[] = ["add", "echo", "fail"];
+
+/** The names a reference was granted, sorted (slice 15 §1.4). */
+export function grantOf(ref: { readonly granted: ReadonlySet<string> }): string[] {
+	return [...ref.granted].sort();
+}
+
+/** Asserts that `ref` was granted `names`: its members of those names are then there (slice 15 §1.4). */
+export function assertGranted<R extends { readonly granted: ReadonlySet<string> }, const K extends keyof R & string>(
+	ref: R,
+	names: readonly K[],
+): asserts ref is R & { readonly [N in K]-?: NonNullable<R[N]> } {
+	const missing = names.filter((name) => !ref.granted.has(name));
+	if (missing.length > 0) throw new Error(`not granted: ${missing.join(", ")} (granted: ${grantOf(ref).join(", ")})`);
+}
 
 /** The host kind of the test servers, where every test type but `PlacedNotes` lives. */
 export const Server = hostKind("server");
@@ -605,12 +646,12 @@ export const Server = hostKind("server");
 /** `Server()` as a hold names it on the wire: the address of every test type served on the server. */
 export const SERVER_ADDRESS = { kind: "server", params: {} };
 
-/** The remote type of the link tests: notes per session, an editor variant for owners, a reader one for guests. */
+/** The remote type of the link tests: notes per session; owners may edit them, guests only read. */
 export const Notes = remote("app.notes", {
 	version: 1,
 	params: { session: str() },
 	hostAddress: () => Server(),
-	variants: NOTES_VARIANTS,
+	...NOTES_MEMBERS,
 });
 
 /** The kind of the relay tests' workers: one per session. */
@@ -621,7 +662,7 @@ export const PlacedNotes = remote("app.placed-notes", {
 	version: 1,
 	params: { session: str() },
 	hostAddress: ({ session }) => Session({ id: session }),
-	variants: NOTES_VARIANTS,
+	...NOTES_MEMBERS,
 });
 
 const NotesDoc = defineState("notes", {
@@ -641,8 +682,8 @@ export const NoteStore = local("app.note-store", {
 export type NotesProbe = { readonly waits: Ctx<TestPrincipal>[]; readonly factories: string[] };
 
 /**
- * Serves `NoteStore` and `Notes` over it: `notes` and `count` are derives over the store's list; guests get the reader
- * variant. `wait` resolves when its context is aborted; `fail` throws a ChordError (`chord`), a PluginError (`plugin`)
+ * Serves `NoteStore` and `Notes` over it: `notes` and `count` are derives over the store's list; guests are granted
+ * nothing (they read and wait), everyone else `NOTES_EDITOR`. `wait` resolves when its context is aborted; `fail` throws a ChordError (`chord`), a PluginError (`plugin`)
  * or a plain Error.
  */
 export function serveNotes(
@@ -661,20 +702,19 @@ export function serveNotes(
 		};
 	});
 	// The two types differ in their name and host address only.
-	host.serve(Type as typeof Notes, ({ session }, principal, self) => {
-		probe.factories.push(`${session} ${principal.kind}`);
-		const store = self.get(NoteStore, { session });
-		const notes = self.derive([store.list], ([list]) => list);
-		const count = self.derive([store.list], ([list]) => list.length);
-		const wait = async (ctx: Ctx<TestPrincipal>) => {
-			probe.waits.push(ctx);
-			await new Promise((resolve) => ctx.abortSignal?.addEventListener("abort", resolve));
-			return null;
-		};
-		if (principal.kind === "guest") return { variant: "reader", members: { notes, count, wait } };
-		return {
-			variant: "editor",
-			members: {
+	host.serve(
+		Type as typeof Notes,
+		({ session }, principal, _admitted, self) => {
+			probe.factories.push(`${session} ${principal.kind}`);
+			const store = self.get(NoteStore, { session });
+			const notes = self.derive([store.list], ([list]) => list);
+			const count = self.derive([store.list], ([list]) => list.length);
+			const wait = async (ctx: Ctx<TestPrincipal>) => {
+				probe.waits.push(ctx);
+				await new Promise((resolve) => ctx.abortSignal?.addEventListener("abort", resolve));
+				return null;
+			};
+			return {
 				notes,
 				count,
 				wait,
@@ -685,10 +725,150 @@ export function serveNotes(
 					throw new Error("plain");
 				},
 				echo: async ({ data }) => data,
+			};
+		},
+		{ admit: (_params, principal) => constant(allow({ granted: principal.kind === "guest" ? [] : NOTES_EDITOR })) },
+	);
+	return probe;
+}
+
+/** An event's value in the tests: a paddle's position. */
+export const Sample = obj({ y: num() });
+
+export type Sample = { y: number };
+
+/**
+ * A server type with events (decision "Events: fire-and-forget members"): a player is granted two event members
+ * (`ball`, `paddle`) and a method; a watcher (a guest) has the score only. The score is a derive over a writable, so a
+ * test commits synchronously.
+ */
+export const Match = remote("app.match", {
+	version: 1,
+	params: { id: int() },
+	hostAddress: () => Server(),
+	state: { score: int() },
+	events: { paddle: grantable(Sample), ball: grantable(Sample) },
+	methods: { bump: grantable(method()) },
+});
+
+/** What `serveMatch` grants a player. */
+export const MATCH_PLAYER: ("ball" | "bump" | "paddle")[] = ["ball", "bump", "paddle"];
+
+/** `Match` with the paddle's values carrying a sample time: an older consumer gets them mapped. */
+export const MatchV2 = evolve(Match, (e) => e.event("paddle", obj({ y: num(), t: num() })));
+
+/** What a test reaches of each match attempt: its paddle source, its score's writable and its `self`. */
+export type MatchProbe = {
+	readonly paddles: EventSource<Sample>[];
+	readonly scores: Writable<number>[];
+	readonly selves: Self[];
+};
+
+/** Serves `Match`; guests are granted nothing (the watchers), everyone else `MATCH_PLAYER`. */
+export function serveMatch(h: FacetHost<TestPrincipal>, probe: MatchProbe): void {
+	h.serve(
+		Match,
+		(_, _principal, _admitted, self) => {
+			const paddle = self.events<Sample>();
+			const ball = self.events<Sample>();
+			const writable = self.writable(0);
+			probe.paddles.push(paddle);
+			probe.scores.push(writable);
+			probe.selves.push(self);
+			const score = self.derive([writable], ([s]) => s);
+			return { score, paddle: () => paddle, ball: () => ball, bump: async () => null };
+		},
+		{ admit: (_params, principal) => constant(allow({ granted: principal.kind === "guest" ? [] : MATCH_PLAYER })) },
+	);
+}
+
+/** Event tickers on one host (decision "Events: fire-and-forget members"). */
+const TickerCounter = defineState("ticker-counter", {
+	schema: obj({ n: int() }),
+	version: 1,
+	initial: () => ({ n: 0 }),
+});
+
+/** A host-lifetime ticker: an event member, a count, and a method emitting inside a transaction that fails. */
+export const Ticker = local("app.ticker", {
+	version: 1,
+	params: {},
+	members: { ticks: event(Sample), count: int(), failing: method(Sample) },
+});
+
+/** A ticker per name (lives while referenced): what a test makes and drops references to. */
+export const NamedTicker = local("app.named-ticker", {
+	version: 1,
+	params: { name: str() },
+	members: { ticks: event(Sample) },
+});
+
+/** Re-exposes the ticker's member (a view of it). */
+export const TickerView = local("app.ticker-view", {
+	version: 1,
+	params: { name: str() },
+	members: { ticks: event(Sample) },
+});
+
+/** What a test reaches of its objects: each attempt's sources and `self`. */
+export type TickerProbe = {
+	readonly sources: EventSource<Sample>[];
+	readonly selves: Self[];
+	readonly named: EventSource<Sample>[];
+	readonly namedSelves: Self[];
+};
+
+/** Serves the ticker (its sources and selves recorded in `probe`), named tickers and their views. */
+export function serveTickers(h: FacetHost, probe: TickerProbe): void {
+	h.serve(Ticker, (_, self) => {
+		const ticks = self.events<Sample>();
+		const counter = self.state(TickerCounter);
+		probe.sources.push(ticks);
+		probe.selves.push(self);
+		return {
+			ticks,
+			count: self.derive([counter], ([c]) => c.n),
+			failing: async (value, ctx) => {
+				await self.tx(async (tx) => {
+					(await tx.draft(counter)).n++;
+					ticks.emit(value);
+					throw new Error("refused");
+				}, ctx);
+				return null;
 			},
 		};
 	});
-	return probe;
+	h.serve(NamedTicker, (_, self) => {
+		const ticks = self.events<Sample>();
+		probe.named.push(ticks);
+		probe.namedSelves.push(self);
+		return { ticks };
+	});
+	h.serve(TickerView, ({ name }, self) => ({ ticks: self.get(NamedTicker, { name }).ticks }));
+}
+
+/** A loaded host serving the ticker, with its probe and the ticker's current source. */
+export async function ticking(options: { readonly telemetry?: InMemoryTelemetryContext } = {}) {
+	const probe: TickerProbe = { sources: [], selves: [], named: [], namedSelves: [] };
+	const made = await loaded((h) => serveTickers(h, probe), options);
+	const source = (): EventSource<Sample> => probe.sources.at(-1)!;
+	return { ...made, probe, source };
+}
+
+/** A listener recording `y` of every event it gets, in `seen`. */
+export function recorder(seen: unknown[], tag?: string) {
+	return ({ value }: { readonly value: Sample }) => void seen.push(tag === undefined ? value.y : `${tag}${value.y}`);
+}
+
+/** Waits (a few turns at most) until `check` holds. */
+export async function until(check: () => boolean): Promise<void> {
+	for (let tries = 0; tries < 50 && !check(); tries++) await flushed();
+	expect(check()).toBe(true);
+}
+
+/** Waits until `ref` is live. */
+export function waitLive(ref: { readonly state: { readonly value: { readonly kind: string } } }): Promise<void> {
+	return until(() => ref.state.value.kind === "live");
 }
 
 /** Adds a note to the session's store from the server itself; the reference it takes keeps the store. */
@@ -741,23 +921,23 @@ export function statesOf(watch: NativeWatchHandle<RefState>): string[] {
 	return states;
 }
 
-/** The wire's indexes of `Notes`'s editor variant. */
-export const EDITOR = wireNames(Notes, "editor");
+/** The wire's indexes of `Notes` granted to an owner. */
+export const EDITOR = wireNames(Notes, NOTES_EDITOR);
 
-/** Answers the next hold with `bound`: the editor variant with `notes` and `count`. */
+/** Answers the next hold with `bound`: granted `NOTES_EDITOR`, with `notes` and `count`. */
 export async function bindNext(peer: RawPeer, notes: { text: string }[] = []) {
 	const { hold } = await peer.next("hold");
 	bindHold(peer, hold, notes);
 	return hold;
 }
 
-/** Sends `bound` for `hold`: the editor variant with `notes` and `count`. */
+/** Sends `bound` for `hold`: granted `NOTES_EDITOR`, with `notes` and `count`. */
 export function bindHold(peer: RawPeer, hold: number, notes: { text: string }[] = []): void {
 	const members = [
 		{ member: EDITOR.state.notes!, value: jsonPart(notes) },
 		{ member: EDITOR.state.count!, value: jsonPart(notes.length) },
 	];
-	peer.send({ kind: "bound", holds: [{ hold, variant: EDITOR.variant, members, failed: [] }] });
+	peer.send({ kind: "bound", holds: [{ hold, granted: EDITOR.granted, members, failed: [] }] });
 }
 
 /**
@@ -814,6 +994,8 @@ export async function relayed(
 	options: {
 		readonly tab?: TestPrincipal;
 		readonly authorize?: (principal: TestPrincipal, address: { readonly key: string }) => boolean;
+		/** The route's admission (slice 14 §2.3). */
+		readonly admit?: RouteOptions<TestPrincipal, typeof Session>["admit"];
 		readonly trusted?: boolean;
 		readonly codecs?: { readonly tab?: Codec; readonly route?: Codec };
 		readonly server?: (host: FacetHost<TestPrincipal>) => void;
@@ -836,6 +1018,8 @@ export async function relayed(
 		};
 		/** The limits of the tab's link at the server. */
 		readonly limits?: PartLimits;
+		/** The workers' `callWindow` (announced on their route links unless `trusted`). */
+		readonly workerCallWindow?: number;
 		/** The telemetry adapter of each host: tab, server, workers. */
 		readonly telemetry?: {
 			readonly tab?: TelemetryContext;
@@ -869,6 +1053,7 @@ export async function relayed(
 			revokedBy,
 			compression: compression.worker,
 			telemetry: telemetry.worker,
+			callWindow: options.workerCallWindow,
 			onError: (error) => errors.worker.push(error),
 		});
 		host.connect(b, { principal: { kind: "server" }, trusted: options.trusted, codec }, context);
@@ -887,6 +1072,7 @@ export async function relayed(
 		{
 			authorize: options.authorize ?? (() => true),
 			resolve: (address, routing) => resolve(address, () => worker(address), routing),
+			...(options.admit === undefined ? {} : { admit: options.admit }),
 		},
 		context,
 	);
@@ -915,7 +1101,7 @@ export async function relayed(
 export function rawWorkers(
 	peers: RawPeer[],
 	options: {
-		readonly calls?: number;
+		readonly calls?: number | null;
 		readonly ack?: boolean;
 		readonly trusted?: boolean;
 		readonly limits?: PartLimits;
@@ -1063,4 +1249,59 @@ export async function exported(store: Store): Promise<ArchivePart[]> {
 	const parts: ArchivePart[] = [];
 	for await (const part of store.export(BACKGROUND_CONTEXT)) parts.push(part);
 	return parts;
+}
+
+/** A desk its caller reads, or edits when granted `write` by its admitted mode (the UI bindings' tests). */
+export const Desk = remote("test.desk", {
+	version: 1,
+	params: {},
+	hostAddress: () => Server(),
+	state: { text: str() },
+	methods: { write: grantable(method(str())) },
+});
+
+/** The mode `Desk`'s admission reads. */
+const DeskMode = local("test.desk.mode", { version: 1, params: {}, members: { mode: str(), set: method(str()) } });
+
+/**
+ * A server serving `Desk` and a client connected to it (`linked`), which is admitted as the desk's mode says: `reader`
+ * at first; `admit(mode)` changes it (`none`: denied).
+ */
+export async function desk(): Promise<{
+	readonly server: Host<TestPrincipal>;
+	readonly client: Host<TestPrincipal>;
+	admit(mode: "reader" | "editor" | "none"): Promise<void>;
+}> {
+	const { server, client } = await linked((h) => {
+		h.serve(DeskMode, (_params, self) => {
+			const mode = self.writable("reader");
+			return {
+				mode: self.derive([mode], ([value]) => value),
+				set: async (next) => {
+					mode.set(next);
+					return null;
+				},
+			};
+		});
+		h.serve(
+			Desk,
+			(_params, _principal, _admitted, self) => {
+				const text = self.writable("a desk");
+				const shown = self.derive([text], ([value]) => value);
+				const write = async (next: string) => {
+					text.set(next);
+					return null;
+				};
+				return { text: shown, write };
+			},
+			{
+				admit: (_params, _principal, self) =>
+					self.derive([self.get(DeskMode, {}).mode], ([mode]) =>
+						mode === "reader" ? allow({}) : mode === "editor" ? allow({ granted: ["write"] }) : deny("no access"),
+					),
+			},
+		);
+	});
+	const mode = await server.get(DeskMode, {}, BACKGROUND_CONTEXT);
+	return { server, client, admit: (next) => mode.set(next, BACKGROUND_CONTEXT).then(() => {}) };
 }

@@ -214,6 +214,8 @@ export class TranscriptScroll {
 	/** React rendered `range` (a layout effect): place the spacers and keep the reader's place. */
 	committed(range: RowRange): void {
 		this.#rendered = range;
+		// A hidden transcript (a phone showing another pane) is left as it is until it shows again (`#measured`).
+		if (this.#hidden()) return;
 		// The spacers are already right (rendered with the rows, `spacers`); placed again before any measurement reads
 		// the layout, in case a width change re-estimated rows since.
 		this.#setSpacers();
@@ -224,8 +226,12 @@ export class TranscriptScroll {
 		}
 		this.#applyHold();
 		const appended = this.#appended();
+		const before = this.#scroller?.scrollTop ?? 0;
 		this.#sync();
-		if (appended > 0) this.#glide(appended);
+		// The glide shows how far the new rows pushed the transcript up: none while it fits the viewport, and none when
+		// they took space another row gave up (an answer taking the place of its wheel's thought, ThoughtSlot.tsx).
+		const pushed = Math.min(appended, (this.#scroller?.scrollTop ?? 0) - before);
+		if (pushed > 0) this.#glide(pushed);
 	}
 
 	/**
@@ -648,7 +654,7 @@ export class TranscriptScroll {
 	/** After any layout change: place the spacers, then keep the anchor where it was (or the end, when pinned). */
 	#sync(): void {
 		const scroller = this.#scroller;
-		if (!scroller) return;
+		if (!scroller || this.#hidden()) return;
 		this.#viewport = scroller.clientHeight;
 		const width = this.#list?.clientWidth ?? this.#width;
 		if (width !== this.#width) {
@@ -688,6 +694,7 @@ export class TranscriptScroll {
 	}
 
 	#measured(entries: ResizeObserverEntry[]): void {
+		if (this.#hidden()) return;
 		for (const entry of entries) {
 			const element = entry.target as HTMLElement;
 			const key = element.dataset.row;
@@ -701,6 +708,16 @@ export class TranscriptScroll {
 	/** The rows' width, for estimates (before the list is laid out, a guess that is never measured against). */
 	#rowWidth(): number {
 		return this.#width || this.#list?.clientWidth || 600;
+	}
+
+	/**
+	 * Whether the transcript is not laid out (in a pane hidden with `display: none`): its rows measure 0 there, and
+	 * each render's measurement would let a viewport more of rows in, until React stops the loop (error #185) or every
+	 * loaded row is rendered with a cached height of 0. Showing it again resizes the scroller and its rows, and the
+	 * observer measures them then.
+	 */
+	#hidden(): boolean {
+		return this.#scroller !== null && this.#scroller.getClientRects().length === 0;
 	}
 
 	/** Records a row's height; a row measured for the first time teaches the estimates. */
@@ -718,8 +735,12 @@ export class TranscriptScroll {
 		this.#gesture.scrolled();
 		const top = scroller.scrollTop;
 		const down = top > this.#lastScrollTop;
+		// The browser moving the position up by a pixel without the reader is a clamp (the content's end came up by a
+		// rounding difference, as when a glide ends), not the reader leaving the bottom: by the time its event arrives,
+		// content may have grown again (a thought streaming in), so it would read as a move away from the bottom.
+		const clamped = !down && !this.#gesture.active && this.#lastScrollTop - top < 2;
 		this.#lastScrollTop = top;
-		const bottom = isBottom(scroller);
+		const bottom = isBottom(scroller) || clamped;
 		// Pi Mobile's rule: reaching the bottom while scrolling down follows the answer; anything else stops.
 		if (!this.#target && !this.#following) this.pinned = bottom ? this.pinned || down : this.pinned && down;
 		// A held correction pushes its amount of content past an edge, out of reach: a reader scrolling into that

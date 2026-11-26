@@ -3,7 +3,7 @@ import { BACKGROUND_CONTEXT as context } from "../../src/context/index.ts";
 import { ChordError } from "../../src/data/index.ts";
 import { Replica } from "../../src/remote/replica.ts";
 import { Batch, Derive } from "../../src/state/internal.ts";
-import { changesOf, delivered, framesOf } from "../support.ts";
+import { changesOf, delivered, framesOf, settledHeap } from "../support.ts";
 
 /** A replica of `{ n }` on a fresh batch, with a derive over it attached. */
 function replica() {
@@ -85,5 +85,73 @@ describe("replicas", () => {
 		source.end(new ChordError({ code: "released", message: "app.notes: ended" }));
 		expect(await watch.closed).toEqual({ kind: "ended" });
 		expect(() => source.value).toThrow("app.notes: ended");
+	});
+
+	it("counts the values it takes: a snapshot's value, each adoption and recovery; failures and vanishings count none", () => {
+		const batch = new Batch(() => {}, undefined);
+		const failed = new Replica(batch, { kind: "failed", error: new Error("x") });
+		expect(failed.generation).toBe(0);
+		const { batch: own, source } = replica();
+		expect(source.generation).toBe(1);
+		own.commit(() => source.adopt({ n: 2 }, [["s", ["n"], 2]], false), context);
+		own.commit(() => source.fail(new Error("down")), context);
+		own.commit(() => source.vanish(new ChordError({ code: "invalid", reason: "member", message: "gone" })), context);
+		expect(source.generation).toBe(2);
+		own.commit(() => source.reset({ kind: "value", value: { n: 3 } }), context);
+		own.commit(() => source.retireAlone(), context);
+		expect(source.generation).toBe(4);
+		expect(batch).toBeDefined();
+	});
+
+	it("forks with its state, last good value and count, on another batch, with a fresh decoder", async () => {
+		const { batch, source } = replica();
+		batch.commit(() => source.adopt({ n: 2 }, [["s", ["n"], 2]], false), context);
+		batch.commit(() => source.fail(new Error("down")), context);
+		const other = new Batch(() => {}, undefined);
+		const fork = source.fork(other);
+		expect([fork.generation, fork.start()]).toEqual([
+			2,
+			{ kind: "failed", error: new Error("down"), last: { n: 2 } },
+		]);
+		// A failed member recovers with a root replacement; the fork's decoder knows nothing of the original's ops.
+		const { value } = fork.decode([["r", { n: 5 }]]);
+		other.commit(() => fork.adopt(value, [["r", value]], false), context);
+		await delivered();
+		expect([fork.value, fork.generation, source.generation]).toEqual([{ n: 5 }, 3, 2]);
+	});
+});
+
+describe("a replica's decoder", () => {
+	it("is made by its first change and anew after a snapshot: ids of an earlier stream mean nothing after a reset", async () => {
+		const { batch, source } = replica();
+		const first = source.decode([
+			["#", 0, ["n"]],
+			["s", 0, 2],
+		]);
+		batch.commit(() => source.adopt(first.value, first.ops, false), context);
+		batch.commit(() => source.reset({ kind: "value", value: { n: 1 } }), context);
+		// The interned path 0 belonged to the stream before the snapshot.
+		expect(() => source.decode([["s", 0, 3]])).toThrow();
+		expect(
+			source.decode([
+				["#", 0, ["n"]],
+				["s", 0, 4],
+			]).value,
+		).toEqual({ n: 4 });
+	});
+
+	it("is not kept by a replica that never changes (a constant member): 0.3 KiB less per replica", async () => {
+		const batch = new Batch(() => {}, undefined);
+		const kept: Replica[] = [];
+		const make = (count: number) => {
+			for (let index = 0; index < count; index++) kept.push(new Replica(batch, { kind: "value", value: index }));
+		};
+		make(2_000);
+		const before = await settledHeap();
+		make(10_000);
+		const per = ((await settledHeap()) - before) / 10_000;
+		// About 200 B without a decoder, 510 B with one.
+		expect(per).toBeLessThan(350);
+		expect(kept).toHaveLength(12_000);
 	});
 });

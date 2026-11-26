@@ -29,6 +29,9 @@ const DIRTY: DeriveState = { kind: "dirty" };
 
 const NO_OPS: readonly Op[] = [];
 
+/** No sources: before a derive is attached and once it is detached. */
+const NO_SOURCES: readonly DeriveInput[] = [];
+
 /** What a failed derive's watches had: no value, so its next value frame replaces the value whole. */
 const NO_VALUE: unique symbol = Symbol("no value");
 
@@ -41,9 +44,12 @@ export class Derive extends Source implements Dependent {
 	readonly #compute: (values: readonly unknown[]) => JsonValue;
 	/** The sources as declared, until `attach` resolves them. */
 	#declared: readonly unknown[] | undefined;
-	#sources: readonly DeriveInput[] = [];
-	#state: DeriveState = { kind: "dirty" };
-	/** The value this derive's watches have, kept from its marking to its frame in the batch. */
+	#sources: readonly DeriveInput[] = NO_SOURCES;
+	#state: DeriveState = DIRTY;
+	/**
+	 * The value this derive's watches have, kept from its first marking in a batch to that batch's frame; `undefined`:
+	 * not listed in the batch.
+	 */
 	#framed: JsonValue | typeof NO_VALUE | undefined;
 	/** Whether a source's document was retired in the current batch while this derive is watched (rule 21). */
 	#retired = false;
@@ -95,7 +101,7 @@ export class Derive extends Source implements Dependent {
 		for (const source of this.#sources) {
 			if (source instanceof Source || source instanceof NativeSource) source.dependents.delete(this);
 		}
-		this.#sources = [];
+		this.#sources = NO_SOURCES;
 		this.#declared = undefined;
 		this.#state = { kind: "detached", error };
 		this.#framed = undefined;
@@ -105,14 +111,20 @@ export class Derive extends Source implements Dependent {
 	/**
 	 * A source changed: mark this derive and its dependents dirty, flags only; a failed one too, which recomputes on its
 	 * next read and heals when its sources give a value it can compute. An already dirty derive has dirty dependents
-	 * (every read recomputes its sources first), so marking stops there.
+	 * (every read recomputes its sources first), so marking stops there. A watched derive is listed for the batch's
+	 * frame by its first marking in the batch only, which keeps what its watches have: one read between two changes
+	 * of a batch (clean again, then marked again) is not listed twice (two frames of one member in one commit, which
+	 * a link refuses) and its frame still diffs from the value before the batch.
 	 */
 	invalidate(): void {
 		const state = this.#state;
 		if (state.kind === "dirty" || state.kind === "detached") return;
-		if (this.watched) this.#framed = state.kind === "clean" ? state.value : NO_VALUE;
+		if (this.watched && this.#framed === undefined) {
+			this.#framed = state.kind === "clean" ? state.value : NO_VALUE;
+			this.batch.changed(this);
+		}
 		this.#state = DIRTY;
-		this.changed();
+		this.dependents.invalidate();
 	}
 
 	/**
@@ -124,11 +136,12 @@ export class Derive extends Source implements Dependent {
 		if (visited.has(this)) return;
 		visited.add(this);
 		if (this.watched) this.#retired = true;
-		for (const derive of this.dependents) derive.sourceRetired(visited);
+		this.dependents.sourceRetired(visited);
 	}
 
 	/**
-	 * Delivers the frame: the diff from the watches' value, a retirement even without ops (rule 21). A compute that
+	 * Delivers the batch's one frame: the diff from the value its watches had before the batch, a retirement even
+	 * without ops (rule 21). A compute that
 	 * throws gives one failure call when the watches had a value (one per failure episode), the watches stay open; a
 	 * retirement waits for the next value.
 	 */

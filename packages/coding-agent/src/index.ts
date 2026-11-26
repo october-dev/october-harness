@@ -50,6 +50,18 @@ export {
 	serializeConversation,
 	shouldCompact,
 } from "./core/compaction/index.ts";
+export {
+	type ContextGroup,
+	type ContextItem,
+	type ContextOmission,
+	type ContextOmissionReason,
+	type ContextSnapshot,
+	type ContextSnapshotOptions,
+	type ContextSourceKind,
+	type ContextTransform,
+	type ContextTruncationReason,
+	formatContextSnapshot,
+} from "./core/context-snapshot.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 // Extension system
 export type {
@@ -336,10 +348,19 @@ export {
 export {
 	commitPortableImport,
 	exportPortableSession,
+	formatPortableCompatibilityReport,
 	formatPortableSessionDiagnostics,
 	importPortableSession,
+	inspectPortableImport,
 	PORTABLE_SESSION_MARKER,
+	type PortableCapabilities,
+	type PortableCompatibilityReport,
+	type PortableImportChoice,
 	type PortableImportOptions,
+	type PortableModelChoice,
+	type PortableModelReference,
+	type PortableNamedReference,
+	type PortableReferenceStatus,
 	type PortableSessionDiagnostic,
 	PortableSessionError,
 	type PortableSessionErrorCode,
@@ -351,6 +372,7 @@ export {
 	SessionImportError,
 	SessionImportFileNotFoundError,
 	SessionImportIdConflictError,
+	SessionImportSelectionRequiredError,
 	serializePortableSession,
 } from "./core/session-portable.ts";
 export {

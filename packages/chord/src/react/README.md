@@ -9,6 +9,15 @@ peer), non-React apps never load it. No components, no styling.
 - `useWatch(watchable)`: its current value (`undefined` while it has none), re-rendering on change
   (`useSyncExternalStore` over `watchStore`).
 - `useRegistry(R)`: the registry's composed value; `useRefState(ref)`: the reference's state.
+- `useLive(ref)` (slice 15 §1.5): `ref` while it is live, and while it loads again after it last settled live (a rebind, a link
+  drop), `undefined` otherwise (no reference, its first load, failed or denied, ended), re-rendering when that changes
+  and when its `granted` changes: its grantable members (`ref.add`, `ref.history`) come and go in the same render as
+  the grant. `useRefState(ref)` says why there is none. True of the render that read it, not across an `await`.
+  `useWatch(undefined)` and `useEvents(undefined, …)` do nothing, so a component needs no branch per right.
+- `useEvents(member, listener)`: an event member (a reference's, decision "Events: fire-and-forget members")
+  subscribed while the component is mounted (and while `member` stays the same object): each event calls the latest
+  `listener` (a new function per render subscribes nothing again); nothing without a member; events re-render nothing
+  by themselves.
 - `useMessages(t)`: `{ t, locale }`, a plugin's messages bound to the host's language (followed by `startPage`),
   re-rendering when the locale or a translation changes; before a language is followed, the first catalog.
 - `usePageState(key, initial)`: `useState`'s pair, the value kept by the page (its host's life) under `key`
@@ -22,4 +31,4 @@ peer), non-React apps never load it. No components, no styling.
   reloaded plugin is a new function and remounts, its `useState` starting over: what must survive is page state.
 
 Tests: `test/node/react/` (`stores.test.ts` in Node, `hooks.test.ts` in a real browser); the page state alone in
-`test/surfaces/page-state.test.ts`.
+`test/surfaces/page-state.test.ts`, the live reading alone in `test/surfaces/live.test.ts`.

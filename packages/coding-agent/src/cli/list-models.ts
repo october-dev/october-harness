@@ -31,11 +31,6 @@ export async function listModels(
 	searchPattern?: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const loadError = modelRuntime.getError();
-	if (loadError) {
-		console.error(chalk.yellow(`Warning: errors loading models.json:\n${loadError}`));
-	}
-
 	let models: Model<Api>[];
 	try {
 		models = [...(await modelRuntime.getAvailable(undefined, { signal }))];

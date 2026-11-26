@@ -10,11 +10,11 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ConversationView, LiveState } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@p2/app/v1";
-import { Chat } from "../../plugins/chat/contract.ts";
+import { CHAT_PARTICIPANT, Chat } from "../../plugins/chat/contract.ts";
 import { Models } from "../../plugins/models/contract.ts";
-import { Sessions } from "../../plugins/sessions/contract.ts";
+import { SESSIONS_OWNER, Sessions } from "../../plugins/sessions/contract.ts";
 import { Browser, browserTests } from "./browser.ts";
-import { type Fixture, holdIn, startFixture, until } from "./helpers.ts";
+import { type Fixture, holdWith, startFixture, until } from "./helpers.ts";
 
 const live = (view: ConversationView | null | undefined) => view?.docs["pi.live"] as LiveState | undefined;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -32,10 +32,10 @@ describe("phone gestures across a live plugin reload", { skip: !browserTests }, 
 			.setDefault({ provider: "faux", modelId: "faux-1", thinkingLevel: "off" }, BACKGROUND_CONTEXT);
 		session = (
 			await (
-				await holdIn(owner, Sessions, {}, "owner")
+				await holdWith(owner, Sessions, {}, ...SESSIONS_OWNER)
 			).create({ cwd: fixture.workspace, title: "Gestures" }, BACKGROUND_CONTEXT)
 		).id;
-		const chat = await holdIn(owner, Chat, { session, conversation: 1 }, "participant");
+		const chat = await holdWith(owner, Chat, { session, conversation: 1 }, ...CHAT_PARTICIPANT);
 		// Two calls with thinking between them on one wheel: a settled wheel has steps to roll to.
 		await chat.send({ text: "steps", requestId: "steps" }, BACKGROUND_CONTEXT);
 		await until(chat.view, (view) => !live(view)?.run && JSON.stringify(view).includes("Echo: steps"), 30_000);
@@ -115,8 +115,8 @@ describe("phone gestures across a live plugin reload", { skip: !browserTests }, 
 		assert.equal(await browser.evaluate<string>("document.documentElement.dataset.webVersion"), version);
 		await gestures("after the plugin reload");
 
-		// A reload that changed web code: the page's poll sees another bundle version (answered here by CDP) and loads
-		// the new page.
+		// The server's base code changed (answered here by CDP): the page asks the base at its reconnect, finds
+		// another one and loads the new page. Its link drops while the network is off.
 		await browser.evaluate("(window.__before = true)");
 		const changed = (raw: unknown) => {
 			const message = JSON.parse(String(raw)) as { method?: string; params?: { requestId: string } };
@@ -125,12 +125,26 @@ describe("phone gestures across a live plugin reload", { skip: !browserTests }, 
 				requestId: message.params.requestId,
 				responseCode: 200,
 				responseHeaders: [{ name: "Content-Type", value: "application/json" }],
-				body: Buffer.from(JSON.stringify({ version: "changed" })).toString("base64"),
+				body: Buffer.from(JSON.stringify("changed")).toString("base64"),
 			});
 		};
 		browser.socket.on("message", changed);
-		await browser.call("Fetch.enable", { patterns: [{ urlPattern: "*/__p2_web" }] });
+		await browser.call("Fetch.enable", { patterns: [{ urlPattern: "*/_chord/web/base" }] });
 		try {
+			await browser.call("Network.enable");
+			await browser.call("Network.emulateNetworkConditions", {
+				offline: true,
+				latency: 0,
+				downloadThroughput: -1,
+				uploadThroughput: -1,
+			});
+			await browser.wait("document.querySelector('.offline')");
+			await browser.call("Network.emulateNetworkConditions", {
+				offline: false,
+				latency: 0,
+				downloadThroughput: -1,
+				uploadThroughput: -1,
+			});
 			await browser.wait("!window.__before && document.querySelector('.app')");
 		} finally {
 			await browser.call("Fetch.disable");

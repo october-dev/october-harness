@@ -13,6 +13,11 @@ import {
 import type { KeyId } from "@earendil-works/pi-tui";
 import { type Theme, theme } from "../../modes/interactive/theme/theme.ts";
 import type { CacheWarmingAction } from "../cache-warmer.ts";
+import {
+	type ContextTransformRecord,
+	diffContextFingerprints,
+	fingerprintContextMessage,
+} from "../context-snapshot.ts";
 import type { ResourceDiagnostic } from "../diagnostics.ts";
 import type { KeybindingsConfig } from "../keybindings.ts";
 import type { ModelRegistry } from "../model-registry.ts";
@@ -161,7 +166,8 @@ function isUserBashEventResult(value: unknown): value is UserBashEventResult {
 		(resultRecord.exitCode === undefined || typeof resultRecord.exitCode === "number") &&
 		typeof resultRecord.cancelled === "boolean" &&
 		typeof resultRecord.truncated === "boolean" &&
-		(resultRecord.fullOutputPath === undefined || typeof resultRecord.fullOutputPath === "string")
+		(resultRecord.fullOutputPath === undefined || typeof resultRecord.fullOutputPath === "string") &&
+		(resultRecord.fullOutputError === undefined || typeof resultRecord.fullOutputError === "string")
 	);
 }
 
@@ -418,6 +424,7 @@ export class ExtensionRunner {
 	private sessionManager: SessionManager;
 	private modelRegistry: ModelRegistry;
 	private errorListeners: Set<ExtensionErrorListener> = new Set();
+	private contextTransformSink: ((record: ContextTransformRecord) => void) | undefined;
 	private getModel: () => Model<any> | undefined = () => undefined;
 	private getScopedModels: () => readonly ScopedModel[] = () => [];
 	private isIdleFn: () => boolean = () => true;
@@ -457,6 +464,10 @@ export class ExtensionRunner {
 	) {
 		this.extensions = extensions;
 		this.runtime = runtime;
+		// A handler still running when its session is replaced must not report into the replacement's UI.
+		this.runtime.reportError = (error) => {
+			if (!this.staleMessage) this.emitError(error);
+		};
 		this.uiContext = noOpUIContext;
 		this.cwd = cwd;
 		this.sessionManager = sessionManager;
@@ -1373,6 +1384,7 @@ export class ExtensionRunner {
 				try {
 					const visibleMessages = currentMessages.filter((message) => message.role !== "system");
 					const visibleSnapshot = visibleMessages.slice();
+					const before = visibleMessages.map(fingerprintContextMessage);
 					const event: ContextEvent = { type: "context", messages: visibleMessages };
 					const handlerResult = (await handler(event, ctx)) as ContextEventResult | undefined;
 
@@ -1381,6 +1393,7 @@ export class ExtensionRunner {
 						handlerResult?.messages ??
 						(sameMessages(visibleMessages, visibleSnapshot) ? undefined : visibleMessages);
 					if (!returned) continue;
+					this.recordContextTransform(ext.path, "context", before, returned);
 					currentMessages = restoreSystemMessages(currentMessages, visibleSnapshot, returned);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
@@ -1403,9 +1416,13 @@ export class ExtensionRunner {
 			for (const handler of handlers) {
 				try {
 					const hadLeadingSystemMessage = currentMessages[0]?.role === "system";
+					const before = currentMessages
+						.filter((message) => message.role !== "system")
+						.map(fingerprintContextMessage);
 					const event: ContextWithSystemEvent = { type: "context_with_system", messages: currentMessages };
 					const handlerResult = (await handler(event, ctx)) as ContextEventResult | undefined;
 					currentMessages = handlerResult?.messages ?? currentMessages;
+					this.recordContextTransform(ext.path, "context_with_system", before, currentMessages);
 					// Providers read the prompt and initial tools from the leading system message.
 					// Losing it is never intended; report it but honor the handler's output.
 					if (hadLeadingSystemMessage && currentMessages[0]?.role !== "system") {
@@ -1429,6 +1446,24 @@ export class ExtensionRunner {
 		}
 
 		return currentMessages;
+	}
+
+	private recordContextTransform(
+		extensionPath: string,
+		event: ContextTransformRecord["event"],
+		before: string[],
+		after: AgentMessage[],
+	): void {
+		const { added, removed } = diffContextFingerprints(
+			before,
+			after.filter((message) => message.role !== "system").map(fingerprintContextMessage),
+		);
+		if (added.length > 0 || removed > 0) this.contextTransformSink?.({ extensionPath, event, added, removed });
+	}
+
+	/** Receive what each `context` and `context_with_system` handler adds or removes, for the context inspector. */
+	onContextTransform(sink: (record: ContextTransformRecord) => void): void {
+		this.contextTransformSink = sink;
 	}
 
 	async emitBeforeProviderRequest(payload: unknown): Promise<unknown> {

@@ -5,7 +5,7 @@
 // The record is Durable: a worker that stops first applies it after its next start.
 import { setTimeout as sleep } from "node:timers/promises";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { type Ctx, contribute, defineFacet, expectVariant, sameLocation, signalOf } from "@p2/app/v1";
+import { type Ctx, contribute, defineFacet, sameLocation, signalOf } from "@p2/app/v1";
 import { durableContext } from "@p2/app/v1/node";
 import { CommitSignal, Extensions, HarnessNative, harnessOf, locateConversation, workerOf } from "@p2/app/v1/worker";
 import { AgentLocations } from "./contract.ts";
@@ -15,7 +15,7 @@ import { createLocationExtension } from "./tool.ts";
 /** How long to wait before trying a refused move again when no commit comes. */
 const RETRY_MS = 2000;
 
-const server = (ctx: Ctx) => ctx.get(AgentLocations, {}).then((ref) => expectVariant(ref, "worker"));
+const server = (ctx: Ctx) => ctx.get(AgentLocations, {});
 
 export default defineFacet((host) => {
 	contribute(host, "p2.location-tools", (self) => {
@@ -23,13 +23,9 @@ export default defineFacet((host) => {
 		const harness = self.registry(HarnessNative);
 		const extension = createLocationExtension({
 			server: {
-				envs: (context) =>
-					worker().root(async (ctx) => (await (await server(ctx)).envs({ origin: "owner" }, ctx)).envs, context),
+				envs: (context) => worker().root(async (ctx) => (await (await server(ctx)).envs(ctx)).envs, context),
 				directories: (env, path, context) =>
-					worker().root(
-						async (ctx) => (await server(ctx)).directories({ origin: "owner", env, path }, ctx),
-						context,
-					),
+					worker().root(async (ctx) => (await server(ctx)).directories({ env, path }, ctx), context),
 			},
 			locate: (id, read, context) => locateConversation(harness, id, context, read),
 		});
@@ -75,7 +71,7 @@ export default defineFacet((host) => {
 					}
 					let failure: string | undefined;
 					try {
-						const { refused } = await (await server(ctx)).move({ origin: "owner", ...pending }, ctx);
+						const { refused } = await (await server(ctx)).move(pending, ctx);
 						if (refused !== null) {
 							// Work started meanwhile: once it ends.
 							await Promise.race([

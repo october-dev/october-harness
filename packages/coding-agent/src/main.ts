@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Api, type ImageContent, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
-import { setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { setCapabilityOverrides, takeProgramResumeToken } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, isValidThinkingLevel, type Mode, normalizeSessionName, parseArgs, printHelp } from "./cli/args.ts";
 import {
@@ -33,12 +33,13 @@ import { runAuthLogout } from "./cli/auth-logout.ts";
 import { createProcessLoginTerminal } from "./cli/auth-terminal.ts";
 import { createCapabilityPreflightHost } from "./cli/capability-preflight.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
-import { runDoctorCommand } from "./cli/doctor.ts";
+import { ReadOnlySettingsStorage, runDoctorCommand } from "./cli/doctor.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { loadLocalModelsCommand } from "./cli/local-models.lazy.ts";
 import { handleOctoberLoginCommand } from "./cli/october-login.ts";
+import { importPortableForCli, inspectPortableFileForCli } from "./cli/portable-import.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
@@ -57,6 +58,7 @@ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dis
 import { resolveCliModel, resolveModelScopeWithDiagnostics, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
+import type { ProgressEvent } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -68,8 +70,9 @@ import {
 import { assertValidSessionId, getDefaultSessionDirPath, SessionManager } from "./core/session-manager.ts";
 import {
 	exportPortableSession,
+	formatPortableCompatibilityReport,
 	formatPortableSessionDiagnostics,
-	importPortableSession,
+	SessionImportSelectionRequiredError,
 } from "./core/session-portable.ts";
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
@@ -79,12 +82,14 @@ import { formatTraceTimeline, readTrace } from "./core/trace/format.ts";
 import { TraceRecorder } from "./core/trace/recorder.ts";
 import { replayTrace } from "./core/trace/replay.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { getBranchSelection } from "./core/virtual-models.ts";
 import { createBuiltInExtensions } from "./extensions/index.ts";
 import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
 import { OCTOBER_PROVIDER_ID } from "./extensions/october/auth.ts";
 import { seedOctoberDefaultPackages } from "./extensions/october/default-packages.ts";
 import { octoberCatalogIsLive } from "./extensions/october/provider.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { writeDiagnosticsToStderr } from "./modes/diagnostics-stderr.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-schema.ts";
@@ -408,6 +413,14 @@ function validateForkFlags(parsed: Args): void {
  * because a hard exit can drop pending writes when stdout/stderr are non-blocking pipes.
  */
 function validateImportFlags(parsed: Args): boolean {
+	if (parsed.importModel !== undefined && parsed.import === undefined) {
+		console.error(chalk.red("Error: --import-model requires --import"));
+		return false;
+	}
+	if (parsed.importReport !== undefined && parsed.import !== undefined) {
+		console.error(chalk.red("Error: --import-report cannot be combined with --import"));
+		return false;
+	}
 	if (parsed.import === undefined) return true;
 
 	const conflictingFlags = [
@@ -485,6 +498,15 @@ function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string,
 	}
 }
 
+function resolveSessionDirectory(parsed: Args, settings: SettingsManager): string | undefined {
+	const envSessionDir = process.env[ENV_SESSION_DIR];
+	return (
+		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
+		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
+		settings.getSessionDir()
+	);
+}
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -496,13 +518,20 @@ export async function createSessionManager(
 	}
 
 	if (parsed.import) {
-		// A path only: commitPortableImport() creates the directory after validation succeeds.
-		// Errors propagate to main(), which reports them and ends with process.exitCode.
-		const importedPath = importPortableSession(parsed.import, {
+		// Validation, the model check, and any model choice run before the file is written. Errors propagate
+		// to main(), which reports them and ends with process.exitCode.
+		const imported = await importPortableForCli(parsed.import, {
 			cwd,
 			sessionDir: sessionDir ?? getDefaultSessionDirPath(cwd),
+			flags: parsed,
+			interactive: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY) === "interactive",
+			settingsManager,
 		});
-		return SessionManager.open(importedPath, sessionDir);
+		if (!imported) {
+			console.log(chalk.dim("Import cancelled."));
+			process.exit(0);
+		}
+		return imported;
 	}
 
 	if (parsed.fork) {
@@ -806,6 +835,8 @@ async function runTraceReplay(parsed: Args): Promise<number> {
 		parsed.trace !== undefined ? "--trace" : undefined,
 		parsed.export !== undefined ? "--export" : undefined,
 		parsed.import !== undefined ? "--import" : undefined,
+		parsed.importReport !== undefined ? "--import-report" : undefined,
+		parsed.importModel !== undefined ? "--import-model" : undefined,
 		parsed.messages.length > 0 || parsed.fileArgs.length > 0 ? "prompt messages" : undefined,
 	].filter((flag): flag is string => flag !== undefined);
 	if (conflictingFlags.length > 0) {
@@ -841,6 +872,10 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	// Taken in every mode, before anything starts a child process: pi reports its own resume command, and
+	// shells, editors and extension processes it starts must not replace it or register commands that later
+	// run with the user's rights (OSC 7577).
+	const programResumeToken = takeProgramResumeToken();
 	// Trace flags are validated before any settings, extension, or auth bootstrap, and replay reads
 	// only the trace file, so a rejected or replay invocation has no startup side effects.
 	const optionArgs = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
@@ -857,12 +892,16 @@ export async function main(args: string[], options?: MainOptions) {
 			process.exitCode = await runTraceReplay(parsed);
 			return;
 		}
-		if (parsed.trace !== undefined && (parsed.export !== undefined || parsed.import !== undefined)) {
-			console.error(
-				chalk.red(
-					`Error: --trace cannot be combined with ${parsed.export !== undefined ? "--export" : "--import"}`,
-				),
-			);
+		const importOrExport =
+			parsed.export !== undefined
+				? "--export"
+				: parsed.import !== undefined
+					? "--import"
+					: parsed.importReport !== undefined
+						? "--import-report"
+						: undefined;
+		if (parsed.trace !== undefined && importOrExport) {
+			console.error(chalk.red(`Error: --trace cannot be combined with ${importOrExport}`));
 			process.exitCode = 1;
 			return;
 		}
@@ -889,11 +928,6 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	if (process.platform === "win32") {
-		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
-	}
-	cleanupManagedInstall();
-
 	let cwd: string;
 	try {
 		cwd = process.cwd();
@@ -906,6 +940,35 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		process.exit(1);
 	}
+	const parsed = parseArgs(args);
+	if (parsed.importReport !== undefined) {
+		if (parsed.diagnostics.some((d) => d.type === "error")) {
+			reportDiagnostics(parsed.diagnostics, "text");
+			process.exitCode = 1;
+			return;
+		}
+		if (!validateImportFlags(parsed)) {
+			process.exitCode = 1;
+			return;
+		}
+		// Writes nothing. Exit 1 when the import would be blocked, so scripts can gate on it.
+		try {
+			const settings = SettingsManager.fromStorage(new ReadOnlySettingsStorage(cwd, getAgentDir()));
+			const reportSessionDir = resolveSessionDirectory(parsed, settings) ?? getDefaultSessionDirPath(cwd);
+			const report = await inspectPortableFileForCli(parsed.importReport, cwd, reportSessionDir, parsed);
+			for (const line of formatPortableCompatibilityReport(report)) console.log(line);
+			process.exitCode = report.blocking ? 1 : 0;
+		} catch (error: unknown) {
+			console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+			process.exitCode = 1;
+		}
+		return;
+	}
+	if (process.platform === "win32") {
+		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
+	}
+	cleanupManagedInstall();
+
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const bootstrapExtensionFactories = [
@@ -944,7 +1007,6 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		reportDiagnostics(parsed.diagnostics, parsed.mode === "json" ? "json" : "text");
 		if (parsed.diagnostics.some((d) => d.type === "error")) {
@@ -1042,7 +1104,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
 	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager);
 
-	// Experimental first-time setup: theme choice and analytics opt-in.
+	// Experimental first-time setup: analytics opt-in.
 	// Runs before any runtime services are created so the chosen settings apply everywhere.
 	if (appMode === "interactive" && !parsed.help && parsed.listModels === undefined && shouldRunFirstTimeSetup()) {
 		await showFirstTimeSetup(startupSettingsManager);
@@ -1074,11 +1136,7 @@ export async function main(args: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
-	const envSessionDir = process.env[ENV_SESSION_DIR];
-	const sessionDir =
-		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
-		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
-		startupSettingsManager.getSessionDir();
+	const sessionDir = resolveSessionDirectory(parsed, startupSettingsManager);
 	let sessionManager: SessionManager;
 	try {
 		sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
@@ -1086,6 +1144,9 @@ export async function main(args: string[], options?: MainOptions) {
 		// Only --import failures are reported here; other errors keep their existing handling.
 		if (!parsed.import) throw error;
 		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+		if (error instanceof SessionImportSelectionRequiredError) {
+			for (const line of formatPortableCompatibilityReport(error.report)) console.error(chalk.dim(line));
+		}
 		process.exitCode = 1;
 		return;
 	}
@@ -1146,12 +1207,23 @@ export async function main(args: string[], options?: MainOptions) {
 	// Resolved once per process from global settings; every runtime reuses it, so an edit to the
 	// settings file during the process cannot change where shell commands run.
 	const shellRunner = await resolveShellRunner(startupSettingsManager.getShellRunnerSettings(), sessionCwd);
+	// Interactive mode installs and refreshes packages again on /reload, /new, /resume and /fork while the TUI
+	// draws on the terminal, where git and npm output would corrupt its screen (#11264). Their output is
+	// captured, and until the TUI starts each install is announced on stderr instead.
+	const packageCommandOutput = appMode === "interactive" ? "capture" : "inherit";
+	let announcePackageInstalls = packageCommandOutput === "capture";
+	const onPackageProgress = (event: ProgressEvent) => {
+		if (announcePackageInstalls && event.type === "start" && event.message) {
+			console.error(chalk.dim(event.message));
+		}
+	};
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
 		sessionManager,
 		sessionStartEvent,
 		projectTrustContext,
+		model: importedModel,
 	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
@@ -1200,6 +1272,8 @@ export async function main(args: string[], options?: MainOptions) {
 					}
 				: undefined,
 			resourceLoaderOptions: {
+				packageCommandOutput,
+				onPackageProgress,
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
@@ -1233,14 +1307,15 @@ export async function main(args: string[], options?: MainOptions) {
 		];
 
 		const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
-		let scopedModels: ScopedModel[] = [];
-		if (modelPatterns && modelPatterns.length > 0) {
-			const scope = await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime, {
-				signal: AbortSignal.timeout(15_000),
-			});
-			scopedModels = scope.scopedModels;
-			diagnostics.push(...scope.diagnostics);
-		}
+		const { scopedModels, diagnostics: modelScopeDiagnostics } =
+			modelPatterns && modelPatterns.length > 0
+				? await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime, {
+						signal: AbortSignal.timeout(15_000),
+					})
+				: { scopedModels: [], diagnostics: [] };
+		// Returned as diagnostics instead of printed: this factory runs again on /new, /resume and /fork,
+		// while the interactive TUI draws on the terminal (#11264).
+		diagnostics.push(...modelScopeDiagnostics);
 		const octoberModel =
 			!offlineMode && appMode !== "interactive" ? await resolveOctoberCliModel(parsed, modelRuntime) : undefined;
 		const {
@@ -1257,14 +1332,24 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
 
+		const restoredImport =
+			isInitialRuntime && parsed.import
+				? getBranchSelection(sessionManager.getBranch(), (provider, id) => modelRuntime.getModel(provider, id))
+				: undefined;
+		const importSelection =
+			importedModel ?? (restoredImport && modelRuntime.getModel(restoredImport.provider, restoredImport.modelId));
+		const keyProvider = parsed.model
+			? sessionOptions.model?.provider
+			: (importSelection?.provider ?? sessionOptions.model?.provider);
+		if (importSelection) sessionOptions.model = importSelection;
 		if (parsed.apiKey) {
-			if (!sessionOptions.model) {
+			if (!keyProvider) {
 				diagnostics.push({
 					type: "error",
 					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 				});
 			} else {
-				await modelRuntime.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
+				await modelRuntime.setRuntimeApiKey(keyProvider, parsed.apiKey);
 			}
 		}
 
@@ -1296,6 +1381,12 @@ export async function main(args: string[], options?: MainOptions) {
 				);
 			}
 		}
+		// "Could not restore model x/y. Using a/b." is set again on /resume and /fork. As a diagnostic, every
+		// mode reports it at startup and after each replacement. Without any model, the message is login
+		// guidance instead: interactive mode shows it at startup, the other modes exit with it below.
+		if (created.modelFallbackMessage && created.session.model) {
+			diagnostics.push({ type: "warning", message: created.modelFallbackMessage });
+		}
 
 		return {
 			...created,
@@ -1316,11 +1407,15 @@ export async function main(args: string[], options?: MainOptions) {
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 
-	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	// Taking them marks them reported, so the modes do not report them again after a session replacement.
+	const startupDiagnostics = deduplicateDiagnostics([
+		...startupSettingsDiagnostics,
+		...runtime.takeUnreportedDiagnostics(),
+	]);
 	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
 
 	if (parsed.help) {
-		reportDiagnostics(startupDiagnostics);
+		writeDiagnosticsToStderr(startupDiagnostics);
 		const extensionFlags = resourceLoader
 			.getExtensions()
 			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
@@ -1329,7 +1424,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (parsed.listModels !== undefined) {
-		reportDiagnostics(startupDiagnostics);
+		writeDiagnosticsToStderr(startupDiagnostics);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(LIST_MODELS_AVAILABILITY_TIMEOUT_MS));
 		process.exit(0);
@@ -1401,11 +1496,13 @@ export async function main(args: string[], options?: MainOptions) {
 		await runRpcMode(runtime);
 		finishTrace();
 	} else if (appMode === "interactive") {
+		announcePackageInstalls = false;
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
 			shellRunnerNotice,
-			modelFallbackMessage,
+			// A fallback to another model is already in startupDiagnostics.
+			modelFallbackMessage: session.model ? undefined : modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			capabilityPreflightHost,
 			initialMessage,
@@ -1414,6 +1511,7 @@ export async function main(args: string[], options?: MainOptions) {
 			verbose: parsed.verbose,
 			tuiMode: parsed.tuiMode,
 			initialThemeSetting: parsed.useTheme,
+			programResumeToken,
 		});
 		if (startupBenchmark) {
 			await interactiveMode.init();

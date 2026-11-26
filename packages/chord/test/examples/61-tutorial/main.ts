@@ -36,7 +36,7 @@ const { base, dataDir, root } = await todoDirectories();
 
 // 1. Start the app: the kit makes the data directory, the server's store and host, HTTP and the owner link. Nobody is
 //    signed in yet, so the page answers 401. The owner opens the link: its page posts the token from the URL's fragment
-//    and gets a session cookie.
+//    and gets a sign-in cookie.
 const telemetry = await openTelemetry(telemetryFile(dataDir));
 const app = await startTodo(dataDir, root, telemetry, context);
 const link = new URL(app.ownerLink());
@@ -63,7 +63,7 @@ await app.host.root(
 		await todos.add("eggs", ctx);
 		await todos.tick({ id: 1, done: true }, ctx);
 		await until(() => todos.items.value[0]?.done === true);
-		console.log("2. as the owner:", todos.variant, "|", show(todos.items.value));
+		console.log("2. as the owner: granted", [...todos.granted], "|", show(todos.items.value));
 	},
 	context,
 	{ principal: OWNER },
@@ -72,7 +72,7 @@ await app.host.root(async (ctx) => {
 	const todos = await ctx.get(Todos, { list: "groceries" });
 	await todos.add("bread", ctx);
 	await until(() => todos.items.value.length === 3);
-	console.log("   as the server:", todos.variant, "|", show(todos.items.value.slice(-1)));
+	console.log("   as the server: granted", [...todos.granted], "|", show(todos.items.value.slice(-1)));
 }, context);
 const workers = join(dataDir, "workers", "list");
 const [groceriesDir] = await readdir(workers);
@@ -130,6 +130,10 @@ if (sandboxAvailable()) {
 	for (const line of screen(frames).trim().split("\r\n")) console.log(`   ${line}`);
 } else console.log("5. (the terminal client needs Node 26.5.1 or later for its sandbox)");
 
+// After the start, the app watches the files its bases were built from. On macOS, adding a watch briefly drops file
+// events for every watch of the process, so the new plugin directory below could go unnoticed: wait for it to finish.
+await app.baseWatched;
+
 // 6. A theme plugin added while the app runs: a new directory in the plugins root marks the set changed, and applying
 //    the changes builds it and rolls it out. Pages and terminals restyle in place.
 await cp(fileURLToPath(new URL("./later/harbor/", import.meta.url)), join(root, "harbor"), { recursive: true });
@@ -166,12 +170,12 @@ const socket = new WebSocket(`${url.replace(/^http/, "ws")}/chord`, { headers: {
 ada.connect(webSocketLink(socket as unknown as WebSocketLike), { principal: { kind: "server" } }, context);
 const adas = await ada.get(Todos, { list: "groceries" }, context);
 await adas.add("coffee", context);
-console.log("   ada's variant:", adas.variant);
-if (adas.variant === "member") {
-	// @ts-expect-error `clear` is the owner's: TypeScript refuses it, and so does the worker.
-	const clearing: Promise<null> = adas.clear(context);
-	await clearing.catch((error: ChordError) => console.log("   ada's clear:", `${error.code}/${error.reason}`));
-}
+console.log("   ada is granted:", [...adas.granted], "| her clear:", adas.clear);
+// `clear` is grantable: TypeScript makes a caller check for it, and a forged call is refused `forbidden` by the worker.
+const unchecked = () =>
+	// @ts-expect-error `clear` may not be granted
+	adas.clear(context);
+void unchecked;
 await until(() => groceries.items.value.some(({ by }) => by === "ada"));
 console.log("   the server's reference sees:", show(groceries.items.value.slice(-1)));
 
@@ -195,7 +199,7 @@ adasChoice.release();
 await app.host.root(
 	async (ctx) => {
 		const todos = await ctx.get(Todos, { list: "groceries" });
-		if (todos.variant === "owner") await todos.clear(ctx);
+		await todos.clear?.(ctx);
 	},
 	context,
 	{ principal: OWNER },
@@ -223,7 +227,7 @@ await until(() => app.plugins.state.value.dirty.includes("@todo/lists"));
 const applied = await app.applyChanges(context);
 console.log("9. lists changed, rolled out to:", applied.steps.map(({ name }) => name).join(", "));
 for (const host of applied.steps.find(({ name }) => name === "list")!.hosts) {
-	const fates = "report" in host ? host.report.objects.map(({ object, kind }) => `${object} ${kind}`) : [];
+	const fates = host.kind === "reloaded" ? host.report.objects.map(({ object, kind }) => `${object} ${kind}`) : [];
 	console.log(`   on ${host.host}:`, [...new Set(fates)].join(", "));
 }
 await adas.add("  tea  ", context);

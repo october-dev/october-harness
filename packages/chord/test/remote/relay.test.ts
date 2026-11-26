@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT as context, withCancel } from "../../src/context/index.ts";
-import { local, str } from "../../src/contracts/index.ts";
-import { createHost, defineFacet } from "../../src/host/index.ts";
+import { type EventSource, int, local, method, remote, str } from "../../src/contracts/index.ts";
+import { createHost, defineFacet, untilAborted } from "../../src/host/index.ts";
 import { type Compression, type Link, memoryLinkPair } from "../../src/link/index.ts";
 import { binaryCodec, jsonPart, type Message, textCodec } from "../../src/link/internal.ts";
 import type * as Values from "../../src/link/values.ts";
@@ -9,21 +9,29 @@ import { nodeCompression } from "../../src/node/compression.ts";
 import { RelayedHold } from "../../src/remote/relay.ts";
 import {
 	addNote,
+	assertGranted,
 	countInflated,
 	EDITOR,
 	expectCollected,
 	fakeTimers,
 	forEachCodec,
+	grantOf,
 	instancesOf,
+	Match,
+	type MatchProbe,
+	NOTES_EDITOR,
 	Notes,
 	PlacedNotes,
+	partValue,
 	RawPeer,
 	rawWorkers,
 	rejection,
 	relayed,
+	Sample,
 	SERVER_ADDRESS,
 	Server,
 	Session,
+	serveMatch,
 	serveNotes,
 	type TestPrincipal,
 	testCodec,
@@ -52,7 +60,7 @@ vi.mock("../../src/link/values.ts", async (importOriginal) => {
 /** Every relayed hold started in this file, weakly. */
 const relayedHolds = instancesOf(RelayedHold, "start");
 
-const READER = wireNames(PlacedNotes, "reader");
+const READER = wireNames(PlacedNotes);
 
 const { wait, add } = EDITOR.methods as { wait: number; add: number };
 
@@ -64,15 +72,39 @@ async function rawRelay(options: { readonly principal?: TestPrincipal; readonly 
 	return { ...relay, workers, raw: tab };
 }
 
-/** A raw tab on a new link the server accepts as `principal` (owner by default), trusted when `trusted`. */
+/**
+ * A raw tab on a new link the server accepts as `principal` (owner by default), trusted when `trusted`; it acknowledges
+ * `bound` and `state` by itself unless `ack` is false.
+ */
 function rawTab(
 	server: Awaited<ReturnType<typeof relayed>>["server"],
 	principal?: TestPrincipal,
 	trusted = false,
+	ack = true,
 ): RawPeer {
 	const [a, b] = memoryLinkPair();
 	server.accept(a, { principal: principal ?? { kind: "owner" }, codec: testCodec(), trusted }, context);
-	return new RawPeer(b);
+	return new RawPeer(b, { ack });
+}
+
+/** The ids of the calls a raw peer received, in order. */
+function callsOf(peer: RawPeer): number[] {
+	return peer.received.flatMap((message) => (message.kind === "call" ? [message.call] : []));
+}
+
+/** The ids of the calls a raw tab got an answer for (`result` or `error`), with the error's message, in order. */
+function answersOf(peer: RawPeer): (readonly [number, string])[] {
+	return peer.received.flatMap((message) => {
+		if (message.kind === "result") return [[message.call, "ok"] as const];
+		if (message.kind !== "error") return [];
+		const { error } = message.error as { readonly error: { readonly message: string } };
+		return [[message.call, error.message] as const];
+	});
+}
+
+/** A chord error on the wire. */
+function wireChord(code: string, message: string) {
+	return { kind: "chord" as const, error: { code, message } };
 }
 
 /** Sends a hold of `PlacedNotes` for `session` with id `hold`, naming its address. */
@@ -102,16 +134,16 @@ function originOf({ origin }: Held): { origin?: number } {
 	return origin === undefined ? {} : { origin };
 }
 
-/** Binds `held` on a raw worker with `PlacedNotes`'s editor (or reader) variant and `count`. */
-function bindPlaced(peer: RawPeer, held: Held, count = 0, variant = EDITOR): void {
+/** Binds `held` on a raw worker with `PlacedNotes` granted as an owner's (or a guest's) and `count`. */
+function bindPlaced(peer: RawPeer, held: Held, count = 0, grant = EDITOR): void {
 	const members = [
-		{ member: variant.state.notes!, value: "[]" },
-		{ member: variant.state.count!, value: jsonPart(count) },
+		{ member: grant.state.notes!, value: "[]" },
+		{ member: grant.state.count!, value: jsonPart(count) },
 	];
 	peer.send({
 		kind: "bound",
 		...originOf(held),
-		holds: [{ hold: held.hold, variant: variant.variant, members, failed: [] }],
+		holds: [{ hold: held.hold, granted: grant.granted, members, failed: [] }],
 	});
 }
 
@@ -141,7 +173,7 @@ forEachCodec(() => {
 			bindPlaced(worker, held, 3);
 			const bound = await raw.next("bound");
 			expect(bound.origin).toBeUndefined();
-			expect(bound.holds[0]).toMatchObject({ hold: 7, variant: EDITOR.variant });
+			expect(bound.holds[0]).toMatchObject({ hold: 7, granted: EDITOR.granted });
 			raw.send({ kind: "call", call: 5, hold: 7, method: add, args: jsonPart({ text: "x" }) });
 			// Calls are forwarded at once, with the same id.
 			expect(await worker.next("call")).toMatchObject({ origin: 1, call: 5, hold: 7, method: add });
@@ -400,17 +432,208 @@ forEachCodec(() => {
 		});
 	});
 
+	describe('relayed calls in the upstream window (decision "Call windows only for untrusted links")', () => {
+		/** A raw tab holding `PlacedNotes` S1 bound through the relay at a raw worker announcing 2 calls; `ack` as `rawTab`. */
+		async function bound(options: { readonly trusted?: boolean; readonly ack?: boolean } = {}) {
+			const workers: RawPeer[] = [];
+			const relay = await relayed({ resolve: rawWorkers(workers, { calls: 2 }) });
+			const raw = rawTab(relay.server, undefined, options.trusted, options.ack);
+			holdPlaced(raw, 0);
+			const worker = await workerAt(workers);
+			const held = await worker.next("hold");
+			bindPlaced(worker, held);
+			await raw.next("bound");
+			if (options.ack === false) raw.ack();
+			return { ...relay, raw, workers, worker, held };
+		}
+
+		/** Sends calls `ids` of hold `hold` from the raw tab. */
+		function callFrom(raw: RawPeer, ids: readonly number[], hold = 0): void {
+			for (const call of ids) raw.send({ kind: "call", call, hold, method: wait });
+		}
+
+		it("wait per upstream window: the worker's 2 of five calls, the rest in order as answers free slots", async () => {
+			const { raw, worker, held } = await bound();
+			callFrom(raw, [0, 1, 2, 3, 4]);
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1]);
+			worker.send({ kind: "result", ...originOf(held), call: 0 });
+			worker.send({ kind: "error", ...originOf(held), call: 1, error: wireChord("unavailable", "no") });
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1, 2, 3]);
+			expect(answersOf(raw)).toEqual([
+				[0, "ok"],
+				[1, "no"],
+			]);
+			expect(raw.closed).toBe(false);
+		});
+
+		it("wait per upstream window from a trusted downstream link too: none announced to the tab, 2 upstream", async () => {
+			const { raw, worker } = await bound({ trusted: true });
+			expect(raw.received.find(({ kind }) => kind === "hello")).not.toHaveProperty("calls");
+			callFrom(
+				raw,
+				Array.from({ length: 20 }, (_, call) => call),
+			);
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1]);
+			expect(raw.closed).toBe(false);
+		});
+
+		it("abort: a waiting call leaves the queue unsent; a forwarded one is aborted upstream and frees its slot", async () => {
+			const { raw, worker, held } = await bound();
+			callFrom(raw, [0, 1, 2, 3]);
+			await transported();
+			raw.send({ kind: "abort", call: 2 });
+			raw.send({ kind: "abort", call: 0 });
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1, 3]);
+			expect(worker.received.filter(({ kind }) => kind === "abort")).toEqual([
+				{ kind: "abort", ...originOf(held), call: 0 },
+			]);
+		});
+
+		it("release: the hold's waiting calls go unsent, its forwarded ones free their slots for the origin's others", async () => {
+			const { raw, worker, held } = await bound();
+			holdPlaced(raw, 1);
+			const other = await worker.next("hold");
+			bindPlaced(worker, other);
+			await raw.next("bound");
+			callFrom(raw, [0, 1]);
+			callFrom(raw, [2], 1);
+			callFrom(raw, [3]);
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1]);
+			raw.send({ kind: "release", hold: 0 });
+			await transported();
+			expect(worker.received.filter(({ kind }) => kind === "release")).toEqual([
+				{ kind: "release", ...originOf(held), hold: 0 },
+			]);
+			expect(callsOf(worker)).toEqual([0, 1, 2]);
+			// The release first: the upstream counts the released hold's forwarded calls until it arrives.
+			const order = worker.received.flatMap((message) =>
+				message.kind === "release" ? ["release"] : message.kind === "call" ? [`call ${message.call}`] : [],
+			);
+			expect(order).toEqual(["call 0", "call 1", "release", "call 2"]);
+		});
+
+		it("a downstream close: waiting calls never go, the worker gets one closed", async () => {
+			const { raw, worker, held } = await bound();
+			callFrom(raw, [0, 1, 2]);
+			await transported();
+			raw.close();
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1]);
+			const ends = worker.received.filter(({ kind }) => ["release", "abort", "closed"].includes(kind));
+			expect(ends).toEqual([{ kind: "closed", origin: held.origin }]);
+		});
+
+		it("an upstream drop: forwarded and waiting calls fail unavailable, none sent on the next link", async () => {
+			const { raw, workers, worker } = await bound();
+			callFrom(raw, [0, 1, 2, 3]);
+			await transported();
+			worker.close();
+			await transported();
+			expect(answersOf(raw).map(([call]) => call)).toEqual([0, 1, 2, 3]);
+			expect(raw.received.filter(({ kind }) => kind === "loading")).toHaveLength(1);
+			const next = await workerAt(workers, 1);
+			bindPlaced(next, await next.next("hold"));
+			await raw.next("bound");
+			await transported();
+			expect(callsOf(next)).toEqual([]);
+		});
+
+		it("loading: the waiting calls are rejected unavailable, the forwarded ones kept; a bound of another grant gets none of them", async () => {
+			const { raw, worker, held } = await bound();
+			callFrom(raw, [0, 1, 2, 3]);
+			await transported();
+			worker.send({ kind: "loading", ...originOf(held), hold: held.hold });
+			await transported();
+			expect(answersOf(raw)).toEqual([
+				[2, "hold 0: rebinding"],
+				[3, "hold 0: rebinding"],
+			]);
+			expect(raw.received.filter(({ kind }) => kind === "loading")).toHaveLength(1);
+			bindPlaced(worker, held, 0, READER);
+			worker.send({ kind: "result", ...originOf(held), call: 0 });
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1]);
+			expect(answersOf(raw).at(-1)).toEqual([0, "ok"]);
+		});
+
+		it("a call crossing the loading notice, still waiting when the new bound's ack passes: rejected before the ack goes up", async () => {
+			const { raw, worker, held } = await bound({ ack: false });
+			callFrom(raw, [0, 1]);
+			await transported();
+			worker.send({ kind: "loading", ...originOf(held), hold: held.hold });
+			await transported();
+			// The tab had not learnt of the loading when it called: the old indexes.
+			callFrom(raw, [2]);
+			await transported();
+			bindPlaced(worker, held, 0, READER);
+			await raw.next("bound");
+			await transported();
+			expect(answersOf(raw)).toEqual([]);
+			const acks = worker.received.filter(({ kind }) => kind === "ack").length;
+			raw.ack();
+			await transported();
+			expect(answersOf(raw)).toEqual([[2, "hold 0: rebound"]]);
+			expect(worker.received.filter(({ kind }) => kind === "ack")).toHaveLength(acks + 1);
+			// Made with the new binding: it waits and goes as a slot frees.
+			callFrom(raw, [3]);
+			worker.send({ kind: "result", ...originOf(held), call: 0 });
+			await transported();
+			expect(callsOf(worker)).toEqual([0, 1, 3]);
+		});
+
+		it("failed and gone: the waiting calls are rejected with their cause", async () => {
+			const { raw, worker, held } = await bound();
+			holdPlaced(raw, 1);
+			const other = await worker.next("hold");
+			bindPlaced(worker, other);
+			await raw.next("bound");
+			callFrom(raw, [0, 1]);
+			callFrom(raw, [2]);
+			callFrom(raw, [3], 1);
+			await transported();
+			const cause = { kind: "waiting" as const, error: wireChord("unavailable", "parked") };
+			worker.send({ kind: "failed", ...originOf(held), hold: held.hold, cause });
+			worker.send({ kind: "gone", ...originOf(other), hold: other.hold, error: wireChord("unavailable", "ended") });
+			await transported();
+			expect(answersOf(raw)).toEqual([
+				[2, "parked"],
+				[3, "ended"],
+			]);
+			expect(callsOf(worker)).toEqual([0, 1]);
+		});
+
+		it("failed { denied }: the waiting calls are rejected forbidden/revoked, as calls in flight are (slice 14 §2.3)", async () => {
+			const { raw, worker, held } = await bound();
+			callFrom(raw, [0, 1, 2]);
+			await transported();
+			const cause = { kind: "denied" as const, error: wireChord("forbidden", "no access") };
+			worker.send({ kind: "failed", ...originOf(held), hold: held.hold, cause });
+			await transported();
+			// Call 2 waited for the worker's window: access was withdrawn under it too.
+			const answer = raw.received.find((message) => message.kind === "error" && message.call === 2);
+			expect(answer).toMatchObject({
+				error: { error: { code: "forbidden", reason: "revoked", message: "hold 0: no access" } },
+			});
+			expect(callsOf(worker)).toEqual([0, 1]);
+		});
+	});
+
 	describe("an upstream drop", () => {
 		fakeTimers();
 
-		it("sends loading downstream, fails relayed calls unavailable, holds again with the same id and forwards the new bound, another variant allowed (race 12)", async () => {
+		it("sends loading downstream, fails relayed calls unavailable, holds again with the same id and forwards the new bound, another grant allowed (race 12)", async () => {
 			const { tab, workers, errors } = await rawRelay();
 			const got = tab.get(PlacedNotes, { session: "S1" }, context);
 			const first = await workerAt(workers);
 			const held = await first.next("hold");
 			bindPlaced(first, held, 1);
 			const notes = await got;
-			expect(notes.variant).toBe("editor");
+			expect(grantOf(notes)).toEqual(NOTES_EDITOR);
 			const call = notes.wait(context);
 			await first.next("call");
 			first.close();
@@ -424,7 +647,7 @@ forEachCodec(() => {
 			bindPlaced(second, again, 4, READER);
 			await transported();
 			expect(notes.state.value).toEqual({ kind: "live" });
-			expect(notes.variant).toBe("reader");
+			expect(grantOf(notes)).toEqual([]);
 			expect(notes.count.value).toBe(4);
 			expect(errors.tab).toEqual([]);
 		});
@@ -658,7 +881,7 @@ describe("mixed codecs", () => {
 		await addNote(workers.get("session|S1")!, "S1", "é");
 		await transported();
 		expect(notes.notes.value).toEqual([{ text: "é" }]);
-		if (notes.variant !== "editor") throw new Error("expected the editor");
+		assertGranted(notes, NOTES_EDITOR);
 		expect(await notes.add({ text: "b" }, context)).toBe(2);
 		const { context: cancellable, cancel } = withCancel(context);
 		const waiting = notes.wait(cancellable);
@@ -762,7 +985,7 @@ forEachCodec(() => {
 		it("enforce the stamped limit where the part is decoded: the worker refuses the tab's large argument", async () => {
 			const relay = await relayed({ trusted: true, limits: { decoded: 1000 } });
 			const notes = await relay.tab.get(PlacedNotes, { session: "S1" }, context);
-			if (notes.variant !== "editor") throw new Error("bound as the editor");
+			assertGranted(notes, NOTES_EDITOR);
 			// Within the tab link's wire limit, past its decoded limit, which the trusted worker link does not have.
 			expect(await rejection(notes.add({ text: "x".repeat(2000) }, context))).toMatchObject({
 				code: "too_large",
@@ -775,7 +998,7 @@ forEachCodec(() => {
 			const [server, tab] = [countingInflates(), countingInflates()];
 			const relay = await relayed({ compression: { server, worker: nodeCompression, tab } });
 			const notes = await relay.tab.get(PlacedNotes, { session: "S1" }, context);
-			if (notes.variant !== "editor") throw new Error("bound as the editor");
+			assertGranted(notes, NOTES_EDITOR);
 			const text = "lorem ipsum ".repeat(3000);
 			await notes.add({ text }, context);
 			await transported();
@@ -790,7 +1013,7 @@ forEachCodec(() => {
 				const tab = countingInflates();
 				const relay = await relayed({ compression: { worker: nodeCompression, tab } });
 				const notes = await relay.tab.get(PlacedNotes, { session: "S1" }, context);
-				if (notes.variant !== "editor") throw new Error("bound as the editor");
+				assertGranted(notes, NOTES_EDITOR);
 				await notes.add({ text: "lorem ipsum ".repeat(3000) }, context);
 				await transported();
 				expect(tab.inflates).toBe(1);
@@ -808,7 +1031,7 @@ forEachCodec(() => {
 			const held = await worker.next("hold");
 			bindPlaced(worker, held);
 			const notes = await getting;
-			if (notes.variant !== "editor") throw new Error("bound as the editor");
+			assertGranted(notes, NOTES_EDITOR);
 			// A state part and a result past the route link's wire limit reach the tab, whose link has none that small.
 			const ops = jsonPart([["r", 1234567890], ...Array(10).fill(["r", 7])]);
 			worker.send({
@@ -837,7 +1060,7 @@ forEachCodec(() => {
 					{ member: EDITOR.state.notes!, value: jsonPart([{ text: "z".repeat(60) }]) },
 					{ member: EDITOR.state.count!, value: jsonPart(1) },
 				];
-				first.send({ kind: "bound", holds: [{ hold: held.hold, variant: EDITOR.variant, members, failed: [] }] });
+				first.send({ kind: "bound", holds: [{ hold: held.hold, granted: EDITOR.granted, members, failed: [] }] });
 				expect(await first.next("release")).toMatchObject({ hold: held.hold });
 				expect(notes.state.value).toMatchObject({ kind: "failed", cause: { error: { code: "too_large" } } });
 				// The worker's link drops: nothing holds the address, so nothing resolves it again for this reference.
@@ -860,11 +1083,320 @@ forEachCodec(() => {
 		it("let a tab without a compressor inflate the worker's deflated parts asynchronously, in order", async () => {
 			const relay = await relayed({ compression: { worker: nodeCompression, server: nodeCompression } });
 			const notes = await relay.tab.get(PlacedNotes, { session: "S1" }, context);
-			if (notes.variant !== "editor") throw new Error("bound as the editor");
+			assertGranted(notes, NOTES_EDITOR);
 			const text = "lorem ipsum ".repeat(3000);
 			for (let i = 0; i < 3; i++) await notes.add({ text }, context);
 			for (let i = 0; i < 100 && notes.count.value < 3; i++) await new Promise((resolve) => setTimeout(resolve, 5));
 			expect(notes.notes.value).toEqual([{ text }, { text }, { text }]);
 		});
+	});
+});
+
+/** An `event` message from a raw worker for `held` (one entry per value), with its origin there. */
+function workerEvents(held: Held, values: readonly number[], hold = held.hold): Extract<Message, { kind: "event" }> {
+	return {
+		kind: "event",
+		...originOf(held),
+		events: values.map((y) => ({ hold, member: 0, at: 1, value: jsonPart({ y }) })),
+	};
+}
+
+/** The entries of the `event` messages a raw tab received, by hold and value, one list per message. */
+function tabEvents(peer: RawPeer): (readonly [number, unknown])[][] {
+	return peer.received.flatMap((message) =>
+		message.kind === "event"
+			? [message.events.map(({ hold, value }) => [hold, (partValue(value) as { y: unknown }).y] as const)]
+			: [],
+	);
+}
+
+/** The event acks a raw worker received, with their origins. */
+function eventAcksOf(peer: RawPeer): { origin?: number; events: number }[] {
+	return peer.received.flatMap((message) =>
+		message.kind === "ack" && message.events !== undefined
+			? [{ ...(message.origin === undefined ? {} : { origin: message.origin }), events: message.events }]
+			: [],
+	);
+}
+
+forEachCodec(() => {
+	describe('events through a relay (decision "Events: fire-and-forget members")', () => {
+		/** A server serving `Match` itself and routing sessions to raw workers, a raw tab, and the tab's holds bound. */
+		async function eventRelay() {
+			const workers: RawPeer[] = [];
+			const probe: MatchProbe = { paddles: [], scores: [], selves: [] };
+			const relay = await relayed({
+				resolve: rawWorkers(workers),
+				server: (h) => serveMatch(h, probe),
+			});
+			const raw = rawTab(relay.server);
+			return { ...relay, workers, raw, probe };
+		}
+
+		/** Holds `PlacedNotes` of `session` with id `hold` from the raw tab, bound by its raw worker; the worker's view. */
+		async function relayedHold(
+			raw: RawPeer,
+			workers: RawPeer[],
+			hold: number,
+			session: string,
+			index: number,
+		): Promise<{ readonly worker: RawPeer; readonly held: Held }> {
+			holdPlaced(raw, hold, session);
+			const worker = await workerAt(workers, index);
+			const held = await worker.next("hold");
+			bindPlaced(worker, held);
+			await raw.next("bound");
+			return { worker, held };
+		}
+
+		it("forward an upstream event message at once with the tab's origin, never acknowledging it themselves", async () => {
+			const { raw, workers } = await eventRelay();
+			const { worker, held } = await relayedHold(raw, workers, 0, "S1", 0);
+			worker.send(workerEvents(held, [1, 2]));
+			await transported();
+			expect(tabEvents(raw)).toEqual([
+				[
+					[0, 1],
+					[0, 2],
+				],
+			]);
+			const forwarded = raw.received.find(({ kind }) => kind === "event") as Extract<Message, { kind: "event" }>;
+			expect(forwarded.origin).toBeUndefined();
+			expect(eventAcksOf(worker)).toEqual([]);
+			raw.send({ kind: "ack", events: 1 });
+			await transported();
+			expect(eventAcksOf(worker)).toEqual([{ ...originOf(held), events: 1 }]);
+		});
+
+		it("return each ticket to its sender: the relay's own events and two workers' on one tab origin, acks spanning them", async () => {
+			const { raw, workers, server, probe } = await eventRelay();
+			const one = await relayedHold(raw, workers, 0, "S1", 0);
+			const two = await relayedHold(raw, workers, 1, "S2", 1);
+			raw.send({
+				kind: "hold",
+				hold: 2,
+				type: Match.name,
+				version: Match.version,
+				fingerprint: Match.fingerprint,
+				params: jsonPart({ id: 1 }),
+				address: SERVER_ADDRESS,
+			});
+			await raw.next("bound");
+			// Tickets in order: worker one, the relay's own, worker two, worker one.
+			one.worker.send(workerEvents(one.held, [1]));
+			await transported();
+			probe.paddles[0]!.emit({ y: 2 });
+			await transported();
+			two.worker.send(workerEvents(two.held, [3]));
+			await transported();
+			one.worker.send(workerEvents(one.held, [4]));
+			await transported();
+			expect(tabEvents(raw).map((entries) => entries.map(([, y]) => y))).toEqual([[1], [2], [3], [4]]);
+			raw.send({ kind: "ack", events: 3 });
+			await transported();
+			expect(eventAcksOf(one.worker)).toEqual([{ ...originOf(one.held), events: 1 }]);
+			expect(eventAcksOf(two.worker)).toEqual([{ ...originOf(two.held), events: 1 }]);
+			raw.send({ kind: "ack", events: 1 });
+			await transported();
+			expect(eventAcksOf(one.worker)).toEqual([
+				{ ...originOf(one.held), events: 1 },
+				{ ...originOf(one.held), events: 1 },
+			]);
+			expect(server).toBeDefined();
+		});
+
+		it("filter entries of holds not relayed over the link after a release: some, then all, forwarded and never acked by the relay", async () => {
+			const { raw, workers } = await eventRelay();
+			const { worker, held } = await relayedHold(raw, workers, 0, "S1", 0);
+			holdPlaced(raw, 1, "S1");
+			const other = await worker.next("hold");
+			bindPlaced(worker, other);
+			await raw.next("bound");
+			raw.send({ kind: "release", hold: 1 });
+			await worker.next("release");
+			worker.send({
+				...workerEvents(held, [1]),
+				events: [...workerEvents(held, [1]).events, ...workerEvents(held, [2], 1).events],
+			});
+			worker.send(workerEvents(held, [3], 1));
+			await transported();
+			expect(tabEvents(raw)).toEqual([[[0, 1]], []]);
+			expect(eventAcksOf(worker)).toEqual([]);
+			raw.send({ kind: "ack", events: 2 });
+			await transported();
+			expect(eventAcksOf(worker)).toEqual([{ ...originOf(held), events: 2 }]);
+		});
+
+		it("credit two senders behind an upstream relay in order: a filtered second message behind an unconsumed first", async () => {
+			// The raw worker plays a relay with two senders behind it: its acks must arrive in its messages' order.
+			const { raw, workers } = await eventRelay();
+			const { worker, held } = await relayedHold(raw, workers, 0, "S1", 0);
+			holdPlaced(raw, 1, "S1");
+			const other = await worker.next("hold");
+			bindPlaced(worker, other);
+			await raw.next("bound");
+			raw.send({ kind: "release", hold: 1 });
+			await worker.next("release");
+			// The first sender's message, then the second's, all of whose entries the relay filters.
+			worker.send(workerEvents(held, [1]));
+			worker.send(workerEvents(held, [2], 1));
+			await transported();
+			// An early ack of the filtered one would credit the first sender's message, still unconsumed at the tab.
+			expect(eventAcksOf(worker)).toEqual([]);
+			raw.send({ kind: "ack", events: 1 });
+			await transported();
+			expect(eventAcksOf(worker)).toEqual([{ ...originOf(held), events: 1 }]);
+			raw.send({ kind: "ack", events: 1 });
+			await transported();
+			expect(eventAcksOf(worker).map(({ events }) => events)).toEqual([1, 1]);
+		});
+
+		it("consume the tickets of an upstream link that dropped, never crediting its replacement", async () => {
+			const { raw, workers } = await eventRelay();
+			const first = await relayedHold(raw, workers, 0, "S1", 0);
+			first.worker.send(workerEvents(first.held, [1]));
+			await transported();
+			first.worker.close();
+			await transported();
+			const next = await workerAt(workers, 1);
+			const held = await next.next("hold");
+			bindPlaced(next, held);
+			await raw.next("bound");
+			next.send(workerEvents(held, [2]));
+			await transported();
+			raw.send({ kind: "ack", events: 1 });
+			await transported();
+			expect(eventAcksOf(next)).toEqual([]);
+			raw.send({ kind: "ack", events: 1 });
+			await transported();
+			expect(eventAcksOf(next)).toEqual([{ ...originOf(held), events: 1 }]);
+		});
+
+		it("retire the tab's origin only once its tickets drained: closed upstream after the last ack", async () => {
+			const { raw, workers } = await eventRelay();
+			const { worker, held } = await relayedHold(raw, workers, 0, "S1", 0);
+			worker.send(workerEvents(held, [1]));
+			await transported();
+			raw.send({ kind: "release", hold: 0 });
+			await worker.next("release");
+			await transported();
+			expect(worker.received.filter(({ kind }) => kind === "closed")).toEqual([]);
+			raw.send({ kind: "ack", events: 1 });
+			await transported();
+			expect(worker.received.filter(({ kind }) => kind === "closed")).toEqual([
+				{ kind: "closed", origin: held.origin },
+			]);
+		});
+
+		it("drop the tab's tickets when it closes: one closed upstream, later events of the origin ignored", async () => {
+			const { raw, workers, server } = await eventRelay();
+			const { worker, held } = await relayedHold(raw, workers, 0, "S1", 0);
+			worker.send(workerEvents(held, [1]));
+			await transported();
+			raw.close();
+			await transported();
+			expect(worker.received.filter(({ kind }) => kind === "closed")).toEqual([
+				{ kind: "closed", origin: held.origin },
+			]);
+			worker.send(workerEvents(held, [2]));
+			await transported();
+			expect(worker.closed).toBe(false);
+			expect(server).toBeDefined();
+		});
+	});
+});
+
+/** A worker type with an event member (placed by its session), and a server view re-exposing it. */
+const PlacedMatch = remote("app.placed-match", {
+	version: 1,
+	params: { session: str() },
+	hostAddress: ({ session }) => Session({ id: session }),
+	events: { paddle: Sample },
+});
+
+const Lobby = remote("app.lobby", {
+	version: 1,
+	params: { session: str() },
+	hostAddress: () => Server(),
+	events: { paddle: Sample },
+});
+
+describe("events across real hosts", () => {
+	/** A tab, a server and workers serving `PlacedMatch` (their sources in `paddles`), the server serving `Lobby`. */
+	async function hosts() {
+		const paddles: EventSource<Sample>[] = [];
+		const relay = await relayed({
+			worker: (h) =>
+				h.serve(PlacedMatch, (_, _principal, self) => {
+					const paddle = self.events<Sample>();
+					paddles.push(paddle);
+					return { paddle };
+				}),
+			server: (h) =>
+				h.serve(Lobby, ({ session }, _principal, self) => ({ paddle: self.get(PlacedMatch, { session }).paddle })),
+		});
+		return { ...relay, paddles };
+	}
+
+	it("reach a tab from a worker through the relay, and through the server's re-exposure, value and stamp unchanged", async () => {
+		const { tab, paddles } = await hosts();
+		const direct = await tab.get(PlacedMatch, { session: "S1" }, context);
+		const lobby = await tab.get(Lobby, { session: "S1" }, context);
+		const seen: string[] = [];
+		const stamps = new Set<number>();
+		await direct.paddle.on(({ value, at }) => {
+			seen.push(`direct${value.y}`);
+			stamps.add(at);
+		}, context);
+		await lobby.paddle.on(({ value, at }) => {
+			seen.push(`lobby${value.y}`);
+			stamps.add(at);
+		}, context);
+		// The tab's direct hold and the server's hold for the lobby are two holds on the worker's one object.
+		await transported();
+		paddles.at(-1)!.emit({ y: 1 });
+		for (let turn = 0; turn < 4; turn++) await transported();
+		expect(seen.sort()).toEqual(["direct1", "lobby1"]);
+		expect(stamps.size).toBe(1);
+	});
+});
+
+describe("relayed calls in a real worker's finite window", () => {
+	/** A worker type whose `wait` runs until its call is aborted, each run recorded. */
+	const Waiter = remote("app.waiter", {
+		version: 1,
+		params: { session: str(), id: int() },
+		hostAddress: ({ session }) => Session({ id: session }),
+		methods: { wait: method(undefined, int()) },
+	});
+
+	it("never exceed it when a hold with a forwarded call is released: the release goes before the next call", async () => {
+		const runs: number[] = [];
+		const { tab, errors } = await relayed({
+			workerCallWindow: 1,
+			worker: (h) =>
+				h.serve(Waiter, ({ id }, _principal) => ({
+					wait: async (ctx) => {
+						runs.push(id);
+						await untilAborted(ctx);
+						return id;
+					},
+				})),
+		});
+		const a = await tab.get(Waiter, { session: "S1", id: 1 }, context);
+		const b = await tab.get(Waiter, { session: "S1", id: 2 }, context);
+		void a.wait(context).catch(() => {});
+		const second = withCancel(context);
+		void b.wait(second.context).catch(() => {});
+		await transported();
+		// The worker's window of 1: b's call waits at the relay.
+		expect(runs).toEqual([1]);
+		a.release();
+		await transported();
+		expect(runs).toEqual([1, 2]);
+		expect(errors.worker).toEqual([]);
+		expect(errors.server).toEqual([]);
+		expect(b.state.value).toEqual({ kind: "live" });
+		second.cancel();
 	});
 });

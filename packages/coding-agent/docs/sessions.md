@@ -55,6 +55,10 @@ The model receives the active branch, not every branch in the session file. Octo
 
 The footer shows current context usage. When the active context approaches the model's limit, October normally compacts older history automatically. Compaction adds a summary and keeps recent messages. It does not delete the original session entries.
 
+Run `/context` to inspect instructions, tools and messages captured for the latest request. The report uses the selected request model, the configured message converter and the shared provider conversion. Later extension payload rewrites and adapter-specific wire formatting are outside this boundary. Sizes are estimates in characters divided by four. Earlier tool declarations are marked undetermined when tools change through the conversation.
+
+Compacted history, excluded shell messages, provider-filtered content and hidden skills appear under omissions. Truncated shell and tool output still appears among the included items, with a truncation marker. Use `/context reveal <index>` to read one item locally.
+
 Run `/compact` to compact manually. You can add instructions when the summary should preserve a particular topic or decision. Configure automatic compaction and retained history through [Settings](settings.md#compaction).
 
 Compaction can fail if the provider is unavailable or cannot accept the summarization request. Correct the provider problem and run `/compact` again. Disabling automatic compaction does not disable the manual command.

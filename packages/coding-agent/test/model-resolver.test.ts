@@ -14,7 +14,6 @@ import {
 	type ModelReferenceRequest,
 	resolveCliModel,
 	resolveModelReference,
-	resolveModelScope,
 	resolveModelScopeWithDiagnostics,
 } from "../src/core/model-resolver.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -380,23 +379,6 @@ describe("resolveModelScopeWithDiagnostics", () => {
 		}
 	});
 
-	test("resolveModelScope preserves CLI warning output", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		try {
-			const registry = {
-				getAvailable: () => allModels,
-			} as unknown as Parameters<typeof resolveModelScope>[1];
-
-			const scopedModels = await resolveModelScope(["missing"], registry);
-
-			expect(scopedModels).toEqual([]);
-			expect(warn).toHaveBeenCalledOnce();
-			expect(warn.mock.calls[0][0]).toContain('Warning: No models match pattern "missing"');
-		} finally {
-			warn.mockRestore();
-		}
-	});
-
 	test("adds every provider for a pattern matching the same id on several providers, with a warning", async () => {
 		const registry = {
 			getAvailable: () => [
@@ -698,8 +680,8 @@ describe("resolveCliModel", () => {
 
 describe("default model selection", () => {
 	test("openai defaults track current models", () => {
-		expect(defaultModelPerProvider.openai).toBe("gpt-6.1-sol");
-		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-6.1-sol");
+		expect(defaultModelPerProvider.openai).toBe("gpt-6.2-sol");
+		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-6.2-sol");
 	});
 
 	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
@@ -708,7 +690,7 @@ describe("default model selection", () => {
 		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M3");
 		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M3");
 		expect(defaultModelPerProvider.cerebras).toBe("gpt-oss-120b");
-		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
+		expect(defaultModelPerProvider["ant-ling"]).toBe("Ling-3.1-flash");
 	});
 
 	test("built-in chat providers have defaults in their generated catalogs", () => {

@@ -21,7 +21,7 @@ import {
 	ChordError,
 	expectChord,
 	type Followed,
-	holdIn,
+	holdWith,
 	poll,
 	settled,
 	testHost,
@@ -40,7 +40,7 @@ const ALICE = {
 } as const;
 
 describe("testHost", () => {
-	it("runs a worker facet in a bare session host and checks guest variants over memory links", async (t) => {
+	it("runs a worker facet in a bare session host and checks guests' access over memory links", async (t) => {
 		const fixture = await testHost({ address: Session({ id: "sample" }), kind: "worker", facets: [draftsWorker] });
 		t.after(() => fixture.close());
 		await fixture.root(async (ctx) => {
@@ -57,7 +57,7 @@ describe("testHost", () => {
 		});
 		const alice = fixture.client(ALICE).hold(Drafts, { session: "sample", conversation: 1 }, BACKGROUND_CONTEXT);
 		await whenLive(alice);
-		assert.equal(alice.variant, "author");
+		assert.equal(alice.state.value.kind, "live");
 		const drafts = await settled(alice.drafts);
 		assert.deepEqual(
 			drafts.map((draft) => draft.text),
@@ -93,32 +93,33 @@ describe("testHost", () => {
 			],
 		});
 		t.after(() => fixture.close());
-		const owner = await holdIn(fixture.client(OWNER), SessionStatus, {}, "reader");
+		const owner = await holdWith(fixture.client(OWNER), SessionStatus, {}, "statuses");
 		await fixture.root((ctx) =>
 			publish(ctx, { sample: { running: true, generation: 2 }, other: { running: true, generation: 1 } }),
 		);
 		await until(owner.statuses, (value) => value?.sample?.running === true);
-		const worker = await holdIn(
+		const worker = await holdWith(
 			fixture.client({ kind: "worker", session: "sample", generation: 2 }),
 			SessionStatus,
 			{},
-			"reporter",
+			"report",
 		);
-		await worker.report({ tasks: 3, busy: [4, 1] }, BACKGROUND_CONTEXT);
+		const work = { "4": { since: 1, rounds: 2, step: { kind: "tools" as const, names: ["read"] } } };
+		await worker.report({ tasks: 3, busy: [4, 1], work }, BACKGROUND_CONTEXT);
 		await until(owner.statuses, (value) => value?.sample?.tasks === 3);
-		const stale = await holdIn(
+		const stale = await holdWith(
 			fixture.client({ kind: "worker", session: "sample", generation: 1 }),
 			SessionStatus,
 			{},
-			"reporter",
+			"report",
 		);
-		await stale.report({ tasks: 99, busy: [99] }, BACKGROUND_CONTEXT);
-		assert.deepEqual((await settled(owner.statuses)).sample, { running: true, tasks: 3, busy: [1, 4] });
-		const guest = await holdIn(
+		await stale.report({ tasks: 99, busy: [99], work: {} }, BACKGROUND_CONTEXT);
+		assert.deepEqual((await settled(owner.statuses)).sample, { running: true, tasks: 3, busy: [1, 4], work });
+		const guest = await holdWith(
 			fixture.client({ ...ALICE, sessions: { sample: "view" } }),
 			SessionStatus,
 			{},
-			"reader",
+			"statuses",
 		);
 		assert.deepEqual(Object.keys(await settled(guest.statuses)), ["sample"]);
 		const anonymous = fixture.client({ kind: "anonymous" } as never).hold(SessionStatus, {}, BACKGROUND_CONTEXT);
@@ -127,13 +128,13 @@ describe("testHost", () => {
 			publish(ctx, { sample: { running: false, generation: 2 }, other: { running: true, generation: 1 } }),
 		);
 		await until(owner.statuses, (value) => value?.sample?.running === false);
-		assert.deepEqual((await settled(guest.statuses)).sample, { running: false, tasks: 0, busy: [] });
+		assert.deepEqual((await settled(guest.statuses)).sample, { running: false, tasks: 0, busy: [], work: {} });
 		await fixture.root((ctx) =>
 			publish(ctx, { sample: { running: false, generation: 2, error: "worker fixture failure" } }),
 		);
 		await until(owner.statuses, (value) => value?.sample?.error === "worker fixture failure");
 		// Guests learn that it stopped, never the worker's error text (paths, stacks), as in Pi Mobile.
-		assert.deepEqual((await settled(guest.statuses)).sample, { running: false, tasks: 0, busy: [] });
+		assert.deepEqual((await settled(guest.statuses)).sample, { running: false, tasks: 0, busy: [], work: {} });
 		await fixture.root((ctx) => publish(ctx, { sample: { running: true, generation: 3 } }));
 		await until(owner.statuses, (value) => value?.sample?.running === true && value.sample.error === undefined);
 	});

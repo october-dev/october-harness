@@ -1,60 +1,79 @@
 // Adapted members (Q10, §22, slice 7b §7; decision "References are the only indirection" (5)): one object instance's
 // shared mapping for the consumers of one older version its provider accepts. Per state member one derive of the
-// instance's member through `(current) => old` (a changed member), of its variant's whole state through `(state) => old`
-// (a removed member), or the member itself (unchanged), made on first use; per key of a keyed member one derive of the
-// key's document through the member's mapping, shared by the references holding it. One map and one diff per commit
-// per version, whatever the number of old references. Dropped when no reference of the version is left, gone with the
-// instance; references move to a new instance's mappings as to any new instance. A version the provider does not
-// accept, or a refused member, gives no member (`contract_mismatch`): its consumers wait unbound.
+// instance's member through `(current) => old` (a changed member), of the whole state its caller was granted through
+// `(state) => old` (a removed member), or the member itself (unchanged), made on first use; per key of a keyed member
+// one derive of the key's document through the member's mapping, shared by the references holding it; per changed event
+// member one node mapping each value once per emit (decision "Events: fire-and-forget members"). One map and one diff
+// per commit per version, whatever the number of old references. Dropped when no reference of the version is left, gone
+// with the instance; references move to a new instance's mappings as to any new instance. A version the provider does
+// not accept, or a refused member, gives no member (`contract_mismatch`): its consumers wait unbound.
 
 import type { Contract } from "../contracts/index.ts";
-import { currentVariants, LOCAL, variantsAt } from "../contracts/internal.ts";
+import { currentVersion, grantedMembers, versionAt } from "../contracts/internal.ts";
 import { ChordError } from "../data/index.ts";
 import type { JsonValue } from "../json.ts";
 import type { Batch } from "../state/batch.ts";
 import { Derive, type DeriveSource } from "../state/internal.ts";
+import type { ChordMetrics } from "../telemetry.ts";
+import { type EventEntry, type EventFlush, EventNode, type Tap } from "./events.ts";
+import { lacking } from "./members.ts";
 import type { Served } from "./object.ts";
 
 /** A state mapping as an accepts table holds it (checked by `checkAccepts`). */
 type StateMapping = ((current: never) => unknown) | "refuse";
 
-/** One older version's mappings, as `checkAccepts` checked them: remote state by variant, local state flat. */
+/** One older version's mappings, as `checkAccepts` checked them. */
 type VersionMappings = {
-	readonly state?: { readonly [key: string]: StateMapping | { readonly [member: string]: StateMapping } };
+	readonly state?: { readonly [member: string]: StateMapping };
 	readonly keyed?: { readonly [member: string]: StateMapping };
+	readonly events?: { readonly [member: string]: StateMapping };
 };
 
-/** What the mappings of one instance read: its provider, its variant, its own members, its host's batch and reports. */
+/**
+ * What the mappings of one instance read: its provider, what its caller was granted, its own members, its host's batch
+ * and reports.
+ */
 export type AdaptedInstance = {
 	readonly served: Served;
-	readonly variant: string | undefined;
+	readonly granted: ReadonlySet<string>;
 	readonly label: string;
 	readonly batch: Batch;
-	/** The instance's state member `member` (`invalid/member` when its variant has none). */
+	/** The instance's state member `member` (failing when it lacks it). */
 	member(member: string): DeriveSource;
+	/** The instance's event member `member`'s node; `undefined` when it lacks it. */
+	event(member: string): EventNode | undefined;
 	/** Reports a mapping derive's failure (`derive_failed`). */
 	report(member: string, error: unknown): void;
+	/** Reports an event mapping's failure (`event_mapping_failed`), once per failure episode. */
+	reportEvent(member: string, error: unknown): void;
+	/** The host's instruments: an event dropped by its mapping is counted (`chord.events.dropped`). */
+	readonly metrics: ChordMetrics;
 };
 
 /** A key's mapping derive, shared by the references holding the key at this version. */
 type MappedKey = { readonly derive: Derive; holders: number };
 
 /**
- * Why consumers of the older `version` cannot bind to `served`'s `variant`: a version it does not accept, or a member
- * of it the provider refuses (`contract_mismatch`); `undefined` when they can.
+ * Why consumers of an older `version` (none for the current one) cannot bind to an instance of `served`: a version it does not accept, or a member
+ * of it the provider refuses (`contract_mismatch`); `undefined` when they can. Static per provider and version, whatever
+ * a caller was granted (slice 15 §8, (B)): a refused consumer waits for a publication.
  */
-export function refusal(served: Served, version: number, variant: string | undefined): ChordError | undefined {
+export function refusal(served: Served, version: number): ChordError | undefined {
 	const { contract, provider } = served;
+	if (version === contract.version) return undefined;
 	if (!provider.accepted.some((accepted) => accepted.version === version)) {
 		return new ChordError({ code: "contract_mismatch", message: `${contract.name} v${version} is not served here` });
 	}
 	const mappings = mappingsOf(served, version);
-	const old = variantsAt(contract, version).get(variant ?? LOCAL);
-	for (const member of old?.state.keys() ?? []) {
-		if (stateMapping(served, mappings, variant, member) === "refuse") return refused(contract, version, member);
+	const old = versionAt(contract, version).members;
+	for (const member of old.state.keys()) {
+		if (mappings?.state?.[member] === "refuse") return refused(contract, version, member);
 	}
-	for (const member of old?.keyed.keys() ?? []) {
+	for (const member of old.keyed.keys()) {
 		if (mappings?.keyed?.[member] === "refuse") return refused(contract, version, member);
+	}
+	for (const member of old.events.keys()) {
+		if (mappings?.events?.[member] === "refuse") return refused(contract, version, member);
 	}
 	return undefined;
 }
@@ -69,10 +88,18 @@ export class AdaptedMembers {
 	readonly #derives = new Set<Derive>();
 	/** The keys held so far, by the instance's key document. */
 	#keys: Map<string, Map<DeriveSource, MappedKey>> | undefined;
+	/** The event members mapped so far, each tapping the instance's node; made by the first. */
+	#events: Map<string, MappedEvents> | undefined;
+	/**
+	 * Why its provider refuses this version (`refusal`, static per provider and version, so found once); `undefined`
+	 * when it serves it. A refused version gets no member (a restart's old instance, while the successor serving it waits).
+	 */
+	readonly refused: ChordError | undefined;
 
 	constructor(instance: AdaptedInstance, version: number) {
 		this.#instance = instance;
 		this.version = version;
+		this.refused = refusal(instance.served, version);
 	}
 
 	/**
@@ -140,8 +167,33 @@ export class AdaptedMembers {
 		return this.#keyed(member);
 	}
 
+	/**
+	 * Event member `member`'s node as this version's bindings tap it: the instance's own when unchanged since, a mapping
+	 * node (made by the first use) when changed; `undefined` when this version is not accepted, or the instance lacks the
+	 * member (removed since, or not granted: an older consumer receives none of it).
+	 */
+	event(member: string): EventNode | undefined {
+		const instance = this.#instance;
+		if (this.refused !== undefined) return undefined;
+		const node = instance.event(member);
+		if (node === undefined) return undefined;
+		const mapping = this.#mappings?.events?.[member];
+		if (mapping === undefined) return node;
+		// Refused, the version gets no node (`refused` above).
+		if (mapping === "refuse") return undefined;
+		this.#events ??= new Map();
+		let mapped = this.#events.get(member);
+		if (mapped === undefined) {
+			mapped = new MappedEvents(node, mapping, (error) => instance.reportEvent(member, error), instance.metrics);
+			this.#events.set(member, mapped);
+		}
+		return mapped;
+	}
+
 	/** Its instance ended, or the version's last reference left: its derives go (their watches end with `error`). */
 	detach(error: Error): void {
+		for (const mapped of this.#events?.values() ?? []) mapped.detach();
+		this.#events = undefined;
 		for (const derive of this.#derives) derive.detach(error);
 		this.#derives.clear();
 		this.#members.clear();
@@ -153,7 +205,7 @@ export class AdaptedMembers {
 
 	/** The mapping of keyed member `member`, counted; `contract_mismatch` when refused. */
 	#keyed(member: string): ((current: JsonValue) => JsonValue) | undefined {
-		this.#assertAccepted();
+		if (this.refused !== undefined) throw this.refused;
 		const mapping = this.#mappings?.keyed?.[member];
 		if (mapping === undefined) return undefined;
 		if (mapping === "refuse") throw refused(this.#contract, this.version, member);
@@ -167,13 +219,18 @@ export class AdaptedMembers {
 
 	/**
 	 * What `member` is at this version: the instance's member itself (unchanged), or a derive through the mapping, of the
-	 * member when the current variant has it, else of the variant's whole current state (a removed member).
+	 * member when the current version has it, else of the whole current state its caller was granted (a removed member).
 	 */
 	#make(member: string): DeriveSource {
-		this.#assertAccepted();
+		if (this.refused !== undefined) throw this.refused;
 		const instance = this.#instance;
-		const { variant, batch } = instance;
-		const mapping = stateMapping(instance.served, this.#mappings, variant, member);
+		const { granted, batch } = instance;
+		// A member its version marks grantable and its caller was not granted is refused before any mapping sees
+		// anything, also one removed since.
+		const at = versionAt(this.#contract, this.version);
+		if (at.grantable.has(member) && !granted.has(member))
+			throw lacking(instance.label, this.#contract, member, "state member", at);
+		const mapping = this.#mappings?.state?.[member];
 		if (mapping === undefined) return instance.member(member);
 		if (mapping === "refuse") throw refused(this.#contract, this.version, member);
 		const map = (value: unknown): JsonValue => {
@@ -181,8 +238,8 @@ export class AdaptedMembers {
 			// The provider's mapping, typed by its contract; its result is the old member's shape (not validated).
 			return mapping(value as never) as JsonValue;
 		};
-		const current = currentVariants(this.#contract).get(variant ?? LOCAL)!;
-		// The member when the current variant has it, else the variant's whole current state (a removed member).
+		const current = grantedMembers(currentVersion(this.#contract), granted);
+		// The member when the current version has it, else the whole current state granted (a removed member).
 		const kept = current.state.has(member);
 		const names = kept ? [member] : [...current.state.keys()];
 		const sources = names.map((name) => instance.member(name));
@@ -202,16 +259,6 @@ export class AdaptedMembers {
 		return derive;
 	}
 
-	/** Throws `contract_mismatch` unless the provider accepts this version. */
-	#assertAccepted(): void {
-		const { contract, provider } = this.#instance.served;
-		if (provider.accepted.some(({ version }) => version === this.version)) return;
-		throw new ChordError({
-			code: "contract_mismatch",
-			message: `${contract.name} v${this.version} is not served here`,
-		});
-	}
-
 	get #contract(): Contract {
 		return this.#instance.served.contract;
 	}
@@ -229,18 +276,49 @@ function mappingsOf(served: Served, version: number): VersionMappings | undefine
 	return accepts[version];
 }
 
-/** The mapping of state member `member` of `variant` in `mappings`; `undefined` when it is unchanged. */
-function stateMapping(
-	served: Served,
-	mappings: VersionMappings | undefined,
-	variant: string | undefined,
-	member: string,
-): StateMapping | undefined {
-	const state = mappings?.state;
-	if (state === undefined) return undefined;
-	if (served.contract.kind === "local") return state[member] as StateMapping | undefined;
-	const section = state[variant ?? ""] as { readonly [member: string]: StateMapping } | undefined;
-	return section?.[member];
+/**
+ * An older version's event member: a node tapping the instance's (every entry), mapping each value once for all of
+ * this version's bindings, delivered to them with its stamp and counter value. A mapping that throws drops that emit
+ * for this version only (counted), reported once per failure episode, and is tried again at the next emit.
+ */
+class MappedEvents extends EventNode {
+	readonly #source: EventNode;
+	readonly #tap: Tap;
+	#failing = false;
+
+	constructor(
+		source: EventNode,
+		mapping: (current: never) => unknown,
+		report: (error: unknown) => void,
+		metrics: ChordMetrics,
+	) {
+		super();
+		this.#source = source;
+		const deliver = (entry: EventEntry, flush: EventFlush): void => {
+			if (!this.tapped) return;
+			let value: JsonValue;
+			try {
+				// The provider's mapping, typed by its contract; its result is the old shape (not validated).
+				value = mapping(entry.value as never) as JsonValue;
+			} catch (error) {
+				metrics.counter("chord.events.dropped").add(1, { reason: "mapping" });
+				if (!this.#failing) report(error);
+				this.#failing = true;
+				return;
+			}
+			this.#failing = false;
+			this.deliver({ node: this, value, at: entry.at, n: entry.n, part: undefined }, flush);
+		};
+		// Every entry: its own bindings judge them by their counter values.
+		this.#tap = { boundAt: Number.NEGATIVE_INFINITY, deliver };
+		source.tap(this.#tap);
+	}
+
+	/** Its version's last binding left, or its instance ended: it maps nothing more. */
+	detach(): void {
+		this.#source.untap(this.#tap);
+		this.clear();
+	}
 }
 
 /** The `contract_mismatch` of a member of `version` the provider refuses. */

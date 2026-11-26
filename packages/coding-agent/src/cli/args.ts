@@ -42,6 +42,10 @@ export interface Args {
 	import?: string;
 	trace?: string;
 	replayTrace?: string;
+	/** Replacement model for a blocked --import, as provider/id. */
+	importModel?: string;
+	/** Portable session file to inspect for compatibility. Writes nothing. */
+	importReport?: string;
 	noSkills?: boolean;
 	skills?: string[];
 	promptTemplates?: string[];
@@ -211,6 +215,25 @@ export function parseArgs(args: string[]): Args {
 				result.replayTrace = tracePath;
 				i++;
 			}
+		} else if (arg === "--import-model") {
+			const modelChoice = args[i + 1];
+			if (modelChoice === undefined || modelChoice.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: "--import-model requires a provider/id model" });
+			} else {
+				result.importModel = modelChoice;
+				i++;
+			}
+		} else if (arg === "--import-report") {
+			const inputPath = args[i + 1];
+			if (inputPath === undefined || inputPath.startsWith("-")) {
+				result.diagnostics.push({
+					type: "error",
+					message: "--import-report requires a portable session file path",
+				});
+			} else {
+				result.importReport = inputPath;
+				i++;
+			}
 		} else if ((arg === "--extension" || arg === "-e") && i + 1 < args.length) {
 			result.extensions = result.extensions ?? [];
 			result.extensions.push(args[++i]);
@@ -370,6 +393,8 @@ ${chalk.bold("Options:")}
   --import <file>                Import a portable session file as a new session in this project
   --trace <file>                 Record a redacted local trace of agent runs to a new file
   --replay-trace <file>          Validate a trace, print its timeline, replay it offline, and exit
+  --import-model <provider/id>   Replacement model when the imported session's model is unavailable here
+  --import-report <file>         Show a portable session's compatibility with this harness and exit (writes nothing)
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --tui-mode <mode>              TUI mode: fullscreen (default) or regular
@@ -462,6 +487,8 @@ ${chalk.bold("Examples:")}
   # Move a session to another machine or harness mode as a portable session
   ${APP_NAME} --export session.jsonl portable.jsonl
   ${APP_NAME} --import portable.jsonl
+  ${APP_NAME} --import-report portable.jsonl
+  ${APP_NAME} --import portable.jsonl --import-model anthropic/claude-sonnet-5-5
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_AUTH_TOKEN             - Anthropic bearer auth token
@@ -496,8 +523,10 @@ ${chalk.bold("Environment Variables:")}
   CLOUDFLARE_API_KEY               - Cloudflare API token (Workers AI and AI Gateway)
   CLOUDFLARE_ACCOUNT_ID            - Cloudflare account id (required for both)
   CLOUDFLARE_GATEWAY_ID            - Cloudflare AI Gateway slug (required for AI Gateway)
-  QWEN_TOKEN_PLAN_API_KEY          - Qwen Token Plan API key (international region)
-  QWEN_TOKEN_PLAN_CN_API_KEY       - Qwen Token Plan API key (China region)
+  QWEN_TOKEN_PLAN_TEAM_API_KEY     - Qwen Token Plan Team API key (international region)
+  QWEN_TOKEN_PLAN_TEAM_CN_API_KEY  - Qwen Token Plan Team API key (China region)
+  QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY - Qwen Token Plan Individual API key (international region)
+  QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY - Qwen Token Plan Individual API key (China region)
   XIAOMI_API_KEY                   - Xiaomi MiMo API key (api.xiaomimimo.com billing)
   XIAOMI_TOKEN_PLAN_CN_API_KEY     - Xiaomi MiMo Token Plan API key (China region)
   XIAOMI_TOKEN_PLAN_AMS_API_KEY    - Xiaomi MiMo Token Plan API key (Amsterdam region)

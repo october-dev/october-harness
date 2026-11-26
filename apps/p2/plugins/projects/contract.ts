@@ -1,59 +1,135 @@
-// Projects: one codebase's places on several machines (`projects.json`), which sessions belong to which project, and
-// the helpers that find a project's place on a machine and a directory's subpath below a place. Browser-safe: the
-// sessions TUI uses them.
-import { arr, nul, obj, type Static, str, union } from "@earendil-works/pi-schema";
-import { LOCAL, local, method, record, remote, serverHost } from "@p2/app/v1";
+// Projects: the owner's groupings of sessions, each with its places (where its sessions start, the first one by default;
+// `/move` goes to another machine's), in the owner's order; which project each session belongs to; each project's
+// coordinator session; and the helpers that find a project's place on a machine and a directory's subpath below a place.
+// Browser-safe: the sessions TUI uses them.
+import { arr, nul, num, obj, type Static, str, union } from "@earendil-works/pi-schema";
+import { evolve, LOCAL, local, method, record, remote, serverHost } from "@p2/app/v1";
 
 /** Where a project lives on one machine: `env` null is this device; `path` may start with `~` (that machine's home). */
 export const ProjectPlaceSchema = obj({ env: union([str(), nul()]), path: str() });
 export type ProjectPlace = Static<typeof ProjectPlaceSchema>;
 
-/** A project: its name and its places, most preferred first, at most one per environment. */
+/**
+ * A project: its name (unique, how sessions name it) and its places, the default one first, at most one per
+ * environment.
+ */
 export const ProjectSchema = obj({ name: str(), places: arr(ProjectPlaceSchema) });
 export type Project = Static<typeof ProjectSchema>;
 
-/** Session `session` belongs to project `project` from now on. */
-const Assign = obj({ session: str({ maxLength: 64 }), project: str({ maxLength: 64 }) });
+/** An archived project: it and the sessions it had then are in the Archive until it is restored. */
+export const ArchivedProjectSchema = obj({ name: str(), places: arr(ProjectPlaceSchema), archivedAt: num() });
+export type ArchivedProject = Static<typeof ArchivedProjectSchema>;
+
+const Name = str({ minLength: 1, maxLength: 64 });
+const NameOnly = obj({ name: Name });
+const Place = obj({ env: union([str({ maxLength: 32 }), nul()]), path: str({ minLength: 1, maxLength: 4096 }) });
+
+/** Session `session` belongs to project `project` from now on, or (null) to none. */
+const Assign = obj({ session: str({ maxLength: 64 }), project: union([str({ maxLength: 64 }), nul()]) });
+
+/** A new project at one place, after the others. */
+const Create = obj({ name: Name, place: Place });
+
+/** A project's coordinator session, as `open` answers. */
+const Opened = obj({ id: str() });
+
+/** A coordinator session's title when made. */
+export const COORDINATOR_TITLE = "Project coordinator";
+
+/** `WorkerInitValues` key: whether the starting worker's session is a project's coordinator (a boolean). */
+export const COORDINATOR_INIT = "projectCoordinator";
 
 /**
- * `projects.json` as last read validly (in the file's order), why the last read failed, and the sessions' projects by
- * session ID (server, host-internal; persisted in the server's store, never in the session catalog). A session belongs
- * to a project only when it was started from the project's row (`assign`) or copied from such a session (`copy`, the
- * sessions plugin's `SessionCopied`); nothing clears it, so a name may outlive its project in projects.json.
+ * The owner's projects and the sessions' projects (server, host-internal; persisted in the server's store, never in
+ * the session catalog), as released in version 2. A session belongs to a project only when the owner put it there
+ * (`assign`: the new-session screen, the sidebar's Move to and drag and drop) or it was copied from a session that did
+ * (`copy`, the sessions plugin's `SessionCopied`). Names are unique; a rename moves the project's sessions with it.
  */
-export const ProjectService = local("p2.project-service", {
-	version: 1,
+const ProjectServiceV2 = local("p2.project-service", {
+	version: 2,
 	params: {},
 	members: {
+		/** The live projects, in the owner's order. */
 		projects: arr(ProjectSchema),
-		failure: union([str(), nul()]),
+		/** The archived projects, the most recently archived first. */
+		archived: arr(ArchivedProjectSchema),
+		/** Session ID to project name, archived projects' sessions included. */
 		sessions: record(str()),
-		/** Refused for a project projects.json does not name. */
+		/** Refused for a project that is not live; `project` null: the session belongs to none. */
 		assign: method(Assign),
 		/** `copy` belongs to `source`'s project, if it has one. */
 		copy: method(obj({ source: str(), copy: str() })),
+		create: method(Create),
+		/** Renames a project; its sessions follow. */
+		rename: method(obj({ name: Name, to: Name })),
+		/** `place` becomes the project's default place (first), replacing its place on that machine. */
+		locate: method(obj({ name: Name, place: Place })),
+		/** Moves a live project before `before` (null: to the end). */
+		move: method(obj({ name: Name, before: union([Name, nul()]) })),
+		/** Archives a live project and every live session of it. */
+		archive: method(NameOnly),
+		/** Restores an archived project and the sessions archived with it, after the live projects. */
+		restore: method(NameOnly),
+		/** Deletes a project (live or archived): its sessions belong to none; no session is deleted. */
+		remove: method(NameOnly),
 	},
 });
 
 /**
- * The owner's projects, the last read's failure, this device's name in place labels (the server's hostname) and the
- * sessions' projects by session ID; `assign` is the TUI's project rows starting a session.
+ * `ProjectService` 3: each project may have a coordinator, a session of it made by the first `open` that starts and
+ * steers the project's other sessions. `coordinators`: project name to its coordinator's session ID, once the first
+ * `open` chose it. `open`: a live project's coordinator, made on the first call (at the project's default place, with
+ * the default model) or restored when archived. A coordinator stays in its project (`assign` refuses moving it out) and
+ * is archived when its project is deleted. Version 2 is still served (its members are unchanged).
+ */
+export const ProjectService = evolve(ProjectServiceV2, (e) =>
+	e.addState("coordinators", record(str())).addMethod("open", NameOnly, Opened),
+);
+
+/**
+ * The owner's projects, archived ones, this device's name in place labels (the server's hostname) and the sessions'
+ * projects by session ID (`ProjectService`). 2: `create`. 3: projects live in the server's store, managed from the
+ * web (rename, default place, order, archive, restore, delete; `assign` with null leaves a project); no projects.json,
+ * so no `failure`. 4: a new base (grantable members replaced variants; older versions are refused, their pages
+ * reload).
  */
 export const Projects = remote("p2.projects", {
+	version: 4,
+	params: {},
+	hostAddress: serverHost,
+	state: {
+		projects: arr(ProjectSchema),
+		archived: arr(ArchivedProjectSchema),
+		local: str(),
+		sessions: record(str()),
+	},
+	methods: {
+		assign: method(Assign),
+		create: method(Create, nul()),
+		rename: method(obj({ name: Name, to: Name }), nul()),
+		locate: method(obj({ name: Name, place: Place }), nul()),
+		move: method(obj({ name: Name, before: union([Name, nul()]) }), nul()),
+		archive: method(NameOnly, nul()),
+		restore: method(NameOnly, nul()),
+		remove: method(NameOnly, nul()),
+	},
+});
+
+/** The projects' coordinators for the owner: project name to session ID, and `open`, which makes one on first use. */
+export const ProjectCoordinators = remote("p2.project-coordinators", {
 	version: 1,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: {
-				projects: arr(ProjectSchema),
-				failure: union([str(), nul()]),
-				local: str(),
-				sessions: record(str()),
-			},
-			methods: { assign: method(Assign) },
-		},
-	},
+	state: { sessions: record(str()) },
+	methods: { open: method(NameOnly, Opened) },
+});
+
+/** For a session's current worker: the name of the project its session coordinates, or null for none. */
+export const CoordinatedProject = remote("p2.coordinated-project", {
+	version: 1,
+	params: {},
+	hostAddress: serverHost,
+	state: { project: union([str(), nul()]) },
 });
 
 /** How a place's machine reads: its environment's name, or this device's label. */

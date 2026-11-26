@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT } from "../../src/context/index.ts";
-import { canonicalJson, principalKey, samePrincipal } from "../../src/data/internal.ts";
+import { canonicalJson, principalJson, principalKey, samePrincipal } from "../../src/data/internal.ts";
 import { counted, expectCollected, metered } from "../support.ts";
 
 describe("canonicalJson", () => {
@@ -9,6 +9,15 @@ describe("canonicalJson", () => {
 			'{"a":[{"c":null,"d":0}],"b":1}',
 		);
 		expect(canonicalJson("x", BACKGROUND_CONTEXT)).toBe('"x"');
+	});
+
+	it("writes what is no JSON as JSON.stringify does in a list (nothing) and as its text in an object", () => {
+		// Plugin code hands values the types call JSON: the text is what it always was for them.
+		const odd = { list: [1, undefined, null, [undefined]], gone: undefined, nan: Number.NaN } as never;
+		expect(canonicalJson(odd, BACKGROUND_CONTEXT)).toBe('{"gone":undefined,"list":[1,,null,[]],"nan":null}');
+		expect(canonicalJson([], BACKGROUND_CONTEXT)).toBe("[]");
+		expect(canonicalJson({}, BACKGROUND_CONTEXT)).toBe("{}");
+		expect(canonicalJson(null, BACKGROUND_CONTEXT)).toBe("null");
 	});
 
 	it("counts one walk", async () => {
@@ -93,5 +102,36 @@ describe("samePrincipal", () => {
 		expect(counts()["chord.data.walks"]).toBe(2);
 		samePrincipal({ kind: "user", id: "owner" }, owner, context);
 		expect(counts()["chord.data.walks"]).toBe(3);
+	});
+});
+
+describe("principalJson", () => {
+	it("is the principal's own JSON, its fields in insertion order: equal only when they serialize equally", () => {
+		expect(principalJson({ kind: "user", id: "u1" }, BACKGROUND_CONTEXT)).toBe('{"kind":"user","id":"u1"}');
+		expect(principalJson({ id: "u1", kind: "user" }, BACKGROUND_CONTEXT)).not.toBe(
+			principalJson({ kind: "user", id: "u1" }, BACKGROUND_CONTEXT),
+		);
+		expect(principalJson({ kind: "user", id: "u1" }, BACKGROUND_CONTEXT)).toBe(
+			principalJson({ kind: "user", id: "u1" }, BACKGROUND_CONTEXT),
+		);
+	});
+
+	it("caches per principal object: one walk per object (cost guard)", async () => {
+		const { context, counts } = await metered();
+		const principal = { kind: "user", id: "u1" };
+		principalJson(principal, context);
+		principalJson(principal, context);
+		expect(counts()["chord.data.walks"]).toBe(1);
+		principalJson({ kind: "user", id: "u1" }, context);
+		expect(counts()["chord.data.walks"]).toBe(2);
+	});
+
+	it("does not retain dropped principals", async () => {
+		const ref = (() => {
+			const principal = { kind: "user", id: "dropped" };
+			principalJson(principal, BACKGROUND_CONTEXT);
+			return new WeakRef(principal);
+		})();
+		await expectCollected(ref);
 	});
 });

@@ -157,9 +157,9 @@ describe("trace redaction", () => {
 	it("redacts PEM block bodies, including a block cut off before its END line", () => {
 		const begin = "-----BEGIN OPENSSH PRIVATE KEY-----";
 		const end = "-----END OPENSSH PRIVATE KEY-----";
-		expect(redactor().redactString(`cat id_ed25519:\n${begin}\nb3BlbnNzaC1rZXktdjEAAAAA\nQyNTUxOQ\n${end}\ndone`)).toBe(
-			`cat id_ed25519:\n${begin}${REDACTED}${end}\ndone`,
-		);
+		expect(
+			redactor().redactString(`cat id_ed25519:\n${begin}\nb3BlbnNzaC1rZXktdjEAAAAA\nQyNTUxOQ\n${end}\ndone`),
+		).toBe(`cat id_ed25519:\n${begin}${REDACTED}${end}\ndone`);
 		expect(redactor().redactString("head:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA")).toBe(
 			`head:\n-----BEGIN RSA PRIVATE KEY-----${REDACTED}`,
 		);

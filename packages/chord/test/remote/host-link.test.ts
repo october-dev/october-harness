@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BACKGROUND_CONTEXT as context } from "../../src/context/index.ts";
+import { BACKGROUND_CONTEXT as context, withCancel } from "../../src/context/index.ts";
 import { int, local, method, remote, str } from "../../src/contracts/index.ts";
 import { createHost, defineFacet, type FacetHost, type HostError } from "../../src/host/index.ts";
 import { type Compression, memoryLinkPair, type PartLimits } from "../../src/link/index.ts";
@@ -8,12 +8,15 @@ import { nodeCompression } from "../../src/node/compression.ts";
 import { constant } from "../../src/state/index.ts";
 import {
 	addNote,
+	assertGranted,
 	countInflated,
 	delivered,
 	EDITOR,
 	forEachCodec,
 	framesOf,
+	grantOf,
 	incarnationOf,
+	NOTES_EDITOR,
 	Notes,
 	PlacedNotes,
 	partValue,
@@ -38,7 +41,8 @@ const ServerWho = remote("app.server-who", {
 	version: 1,
 	params: {},
 	hostAddress: () => Server(),
-	variants: { v: { state: { who: str() }, methods: { echo: method(str(), str()) } } },
+	state: { who: str() },
+	methods: { echo: method(str(), str()) },
 });
 
 /** A worker type that asks the server, from a handler (`ask`) and from its factory (`who`). */
@@ -46,7 +50,8 @@ const Asker = remote("app.asker", {
 	version: 1,
 	params: { session: str() },
 	hostAddress: ({ session }) => Session({ id: session }),
-	variants: { v: { state: { who: str() }, methods: { ask: method(str(), str()) } } },
+	state: { who: str() },
+	methods: { ask: method(str(), str()) },
 });
 
 /** A worker type that reads another session's notes through the server. */
@@ -54,13 +59,13 @@ const Neighbour = remote("app.neighbour", {
 	version: 1,
 	params: { session: str(), other: str() },
 	hostAddress: ({ session }) => Session({ id: session }),
-	variants: { v: { state: { count: int() } } },
+	state: { count: int() },
 });
 
 function serveWho(h: FacetHost<TestPrincipal>): void {
 	h.serve(ServerWho, (_, principal) => ({
-		variant: "v",
-		members: { who: constant(principal.kind), echo: async (text, ctx) => `${ctx.principal?.kind}:${text}` },
+		who: constant(principal.kind),
+		echo: async (text, ctx) => `${ctx.principal?.kind}:${text}`,
 	}));
 }
 
@@ -68,16 +73,13 @@ function serveAsker(h: FacetHost<TestPrincipal>): void {
 	h.serve(Asker, (_, _principal, self) => {
 		const server = self.get(ServerWho, {});
 		return {
-			variant: "v",
-			members: {
-				who: server.who,
-				ask: async (text, ctx) => (await ctx.get(ServerWho, {})).echo(text, ctx),
-			},
+			who: server.who,
+			ask: async (text, ctx) => (await ctx.get(ServerWho, {})).echo(text, ctx),
 		};
 	});
 	h.serve(Neighbour, ({ other }, _principal, self) => {
 		const notes = self.get(PlacedNotes, { session: other });
-		return { variant: "v", members: { count: notes.count } };
+		return { count: notes.count };
 	});
 }
 
@@ -147,7 +149,8 @@ forEachCodec(() => {
 				version: 1,
 				params: {},
 				hostAddress: () => Server(),
-				variants: { v: { state: { n: int() }, methods: { open: method(str(), int()) } } },
+				state: { n: int() },
+				methods: { open: method(str(), int()) },
 			});
 			// With params: not activated by `load`, which would wait for the raw worker.
 			const View = local("app.view", { version: 1, params: { id: int() }, members: { n: int() } });
@@ -159,12 +162,9 @@ forEachCodec(() => {
 						// `self.get` in a remote object: the object's principal, this host's incarnation.
 						const own = self.get(PlacedNotes, { session: "own" });
 						return {
-							variant: "v",
-							members: {
-								n: own.count,
-								// `ctx.get` in a handler: the caller's principal and incarnation.
-								open: async (session, ctx) => (await ctx.get(PlacedNotes, { session })).count.value,
-							},
+							n: own.count,
+							// `ctx.get` in a handler: the caller's principal and incarnation.
+							open: async (session, ctx) => (await ctx.get(PlacedNotes, { session })).count.value,
 						};
 					});
 					h.serve(View, (_, self) => ({ n: self.get(PlacedNotes, { session: "view" }).count }));
@@ -302,19 +302,76 @@ forEachCodec(() => {
 	describe("trusted links", () => {
 		it("work as untrusted ones do", async () => {
 			const { tab } = await relayed({ trusted: true });
-			expect((await tab.get(PlacedNotes, { session: "S1" }, context)).variant).toBe("editor");
+			expect(grantOf(await tab.get(PlacedNotes, { session: "S1" }, context))).toEqual(NOTES_EDITOR);
+		});
+	});
+
+	describe('call windows by trust (decision "Call windows only for untrusted links")', () => {
+		/** The `hello` a raw peer received. */
+		const hello = (peer: RawPeer) => peer.received.find((message) => message.kind === "hello")!;
+
+		it("announce none on a link given as trusted, the host's callWindow otherwise: accept and connect", async () => {
+			for (const role of ["child", "parent"] as const) {
+				const trusted = await rawLinked(() => {}, { role, trusted: true, callWindow: 8 });
+				expect(hello(trusted.peer)).not.toHaveProperty("calls");
+				const untrusted = await rawLinked(() => {}, { role, callWindow: 8 });
+				expect(hello(untrusted.peer)).toMatchObject({ calls: 8 });
+			}
+		});
+
+		it("announce none on a route's link its resolve gave as trusted, the host's callWindow otherwise", async () => {
+			for (const trusted of [true, false]) {
+				const workers: RawPeer[] = [];
+				const { tab } = await relayed({ resolve: rawWorkers(workers, { trusted }) });
+				void tab.get(PlacedNotes, { session: "S1" }, context).catch(() => {});
+				for (let tries = 0; workers[0] === undefined && tries < 10; tries++) await transported();
+				await workers[0]!.next("hold");
+				const announced = hello(workers[0]!);
+				if (trusted) expect(announced).not.toHaveProperty("calls");
+				else expect(announced).toMatchObject({ calls: 10_000 });
+			}
+		});
+
+		it("asymmetric trust: a client trusting its server keeps within the server's window, the server announcing 2", async () => {
+			const errors: HostError[] = [];
+			let probe: ReturnType<typeof serveNotes> | undefined;
+			const server = createHost<TestPrincipal>({
+				address: Server(),
+				principal: { kind: "server" },
+				callWindow: 2,
+				onError: (error) => errors.push(error),
+			});
+			const facet = defineFacet<TestPrincipal>((h) => {
+				probe = serveNotes(h);
+			});
+			await server.load([{ name: "@test/app", facet }], context);
+			const client = createHost<TestPrincipal>({ onError: (error) => errors.push(error) });
+			await client.load([], context);
+			const [a, b] = memoryLinkPair();
+			server.accept(a, { principal: { kind: "owner" }, codec: testCodec() }, context);
+			client.connect(b, { principal: { kind: "server" }, codec: testCodec(), trusted: true }, context);
+			const notes = await client.get(Notes, { session: "S1" }, context);
+			const first = withCancel(context);
+			void notes.wait(first.context).catch(() => {});
+			for (let call = 0; call < 2; call++) void notes.wait(context).catch(() => {});
+			await transported();
+			expect(probe!.waits).toHaveLength(2);
+			first.cancel(new Error("enough"));
+			await transported();
+			expect(probe!.waits).toHaveLength(3);
+			expect(errors).toEqual([]);
 		});
 	});
 });
 
-/** Binds a hold a raw worker received (its id and origin): `PlacedNotes`'s editor variant, no notes. */
+/** Binds a hold a raw worker received (its id and origin): `PlacedNotes`'s editor grant, no notes. */
 function bindPlaced(peer: RawPeer, { hold, origin }: { readonly hold: number; readonly origin?: number }): void {
 	const members = [
 		{ member: EDITOR.state.notes!, value: "[]" },
 		{ member: EDITOR.state.count!, value: "0" },
 	];
 	const from = origin === undefined ? {} : { origin };
-	peer.send({ kind: "bound", ...from, holds: [{ hold, variant: EDITOR.variant, members, failed: [] }] });
+	peer.send({ kind: "bound", ...from, holds: [{ hold, granted: EDITOR.granted, members, failed: [] }] });
 }
 
 /** A compressor that counts what it does (`nodeCompression` underneath). */
@@ -369,7 +426,7 @@ forEachCodec(() => {
 			const hosts = await compressing({ server, client });
 			await addNote(hosts.server, "S1", LARGE);
 			const notes = await hosts.client.get(Notes, { session: "S1" }, context);
-			if (notes.variant !== "editor") throw new Error("an owner's notes are the editor's");
+			assertGranted(notes, NOTES_EDITOR);
 			expect(notes.notes.value).toEqual([{ text: LARGE }]);
 			expect([server.deflates, client.inflates]).toEqual([1, 1]);
 			// A large argument goes up the client's parent link uncompressed: child links refuse compressed parts.
@@ -428,7 +485,7 @@ forEachCodec(() => {
 			const server = counting();
 			const hosts = await compressing({ server });
 			const notes = await hosts.client.get(Notes, { session: "S1" }, context);
-			if (notes.variant !== "editor") throw new Error("an owner's notes are the editor's");
+			assertGranted(notes, NOTES_EDITOR);
 			await notes.add({ text: LARGE }, context);
 			expect(server.inflates).toBe(0);
 		});

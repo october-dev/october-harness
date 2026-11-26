@@ -26,6 +26,7 @@ import {
 	writeRawStdout,
 } from "../../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { writeDiagnosticsToStderr } from "../diagnostics-stderr.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { toJsonEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -316,10 +317,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 	runtimeHost.setRebindSession(async () => {
 		await rebindSession();
+		// stderr, never stdout: stdout carries the RPC protocol.
+		writeDiagnosticsToStderr(runtimeHost.takeUnreportedDiagnostics());
 	});
 
 	const rebindSession = async (): Promise<void> => {
 		session = runtimeHost.session;
+		// Subscribe before binding so events emitted by session_start handlers (e.g. appended entries) reach the client.
+		unsubscribe?.();
+		unsubscribeBackpressure?.();
+		unsubscribe = session.subscribe((event) => {
+			output(toJsonEvent(event));
+			if (event.type === "agent_settled") {
+				checkShutdownRequested();
+			}
+		});
+		unsubscribeBackpressure = session.agent.subscribe(async () => {
+			await waitForRawStdoutBackpressure();
+		});
 		await session.bindExtensions({
 			uiContext: createExtensionUIContext(),
 			mode: "rpc",
@@ -355,18 +370,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			onError: (err) => {
 				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
 			},
-		});
-
-		unsubscribe?.();
-		unsubscribeBackpressure?.();
-		unsubscribe = session.subscribe((event) => {
-			output(toJsonEvent(event));
-			if (event.type === "agent_settled") {
-				checkShutdownRequested();
-			}
-		});
-		unsubscribeBackpressure = session.agent.subscribe(async () => {
-			await waitForRawStdoutBackpressure();
 		});
 	};
 
@@ -458,9 +461,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "new_session": {
 				const options = command.parentSession ? { parentSession: command.parentSession } : undefined;
 				const result = await runtimeHost.newSession(options);
-				if (!result.cancelled) {
-					await rebindSession();
-				}
 				return success(id, "new_session", result);
 			}
 
@@ -499,6 +499,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return error(id, "set_team_inbox", "paused must be a boolean");
 				}
 				return success(id, "set_team_inbox", session.setTeamInboxDispatch(command.paused));
+			}
+
+			case "get_context_snapshot": {
+				const snapshot = session.getContextSnapshot({
+					requestId: command.requestId,
+					includeContent: command.includeContent,
+				});
+				return success(id, "get_context_snapshot", snapshot ?? null);
 			}
 
 			// =================================================================
@@ -642,24 +650,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "export_jsonl", session.exportToJsonl(command.outputPath));
 			}
 
+			case "inspect_import_jsonl": {
+				return success(id, "inspect_import_jsonl", runtimeHost.inspectPortableImport(command.inputPath));
+			}
+
 			case "import_jsonl": {
-				// The runtime rebinds through setRebindSession() when it replaces the session.
-				return success(id, "import_jsonl", await runtimeHost.importPortable(command.inputPath));
+				// The runtime rebinds through setRebindSession() when it replaces the session. A blocked import
+				// without `model` fails with SessionImportSelectionRequiredError and writes nothing.
+				const result = await runtimeHost.importPortable(command.inputPath, { model: command.model });
+				return success(id, "import_jsonl", result);
 			}
 
 			case "switch_session": {
 				const result = await runtimeHost.switchSession(command.sessionPath);
-				if (!result.cancelled) {
-					await rebindSession();
-				}
 				return success(id, "switch_session", result);
 			}
 
 			case "fork": {
 				const result = await runtimeHost.fork(command.entryId);
-				if (!result.cancelled) {
-					await rebindSession();
-				}
 				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
 			}
 
@@ -669,9 +677,6 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return error(id, "clone", "Cannot clone session: no current entry selected");
 				}
 				const result = await runtimeHost.fork(leafId, { position: "at" });
-				if (!result.cancelled) {
-					await rebindSession();
-				}
 				return success(id, "clone", { cancelled: result.cancelled });
 			}
 
@@ -778,6 +783,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		if (signal !== "SIGTERM") {
 			await flushRawStdout();
 		}
+		// dispose() only starts killing a running `bash` command, which on Windows loses the race with
+		// exit. After the last await, so it also catches a shell spawned after the abort.
+		killTrackedDetachedChildren();
 		process.exit(exitCode);
 	}
 

@@ -1,6 +1,7 @@
 // Failure causes: transient (the object's own effect failed: retry later), broken (its own code, a cycle or authority:
-// retry by hand) or waiting (not its fault: no provider, no fitting version, a dependency that failed; woken by an
-// event). The failing stage decides, never the error code.
+// retry by hand), waiting (not its fault: no provider, no fitting version, a dependency that failed; woken by an
+// event) or denied (an admission refused the caller: woken by the decision). The failing stage decides, never the
+// error code.
 
 import { asChordError, ChordError } from "./errors.ts";
 
@@ -8,7 +9,9 @@ import { asChordError, ChordError } from "./errors.ts";
 export type FailureCause =
 	| { readonly kind: "transient"; readonly error: ChordError }
 	| { readonly kind: "broken"; readonly error: ChordError }
-	| { readonly kind: "waiting"; readonly error: ChordError };
+	| { readonly kind: "waiting"; readonly error: ChordError }
+	/** Its admission, a dependency's or a route's refused the caller (slice 14): no backoff, woken by the decision. */
+	| { readonly kind: "denied"; readonly error: ChordError };
 
 /** Marks an open's failure as broken (bad configuration): `throw broken(error)`. */
 export function broken(cause: unknown): Error {
@@ -76,12 +79,20 @@ function rootMessage(message: string): string {
 	return rest;
 }
 
-/** Whether two failure causes say the same (a wake compares causes by value): kind, code, reason and message. */
+/**
+ * Whether two failure causes say the same (a wake compares causes by value): kind, code, reason, message and details (a
+ * denial's message for the person, slice 15 §2, is one).
+ */
 export function sameCause(a: FailureCause, b: FailureCause): boolean {
 	const { error: left } = a;
 	const { error: right } = b;
 	return (
-		a.kind === b.kind && left.code === right.code && left.reason === right.reason && left.message === right.message
+		a.kind === b.kind &&
+		left.code === right.code &&
+		left.reason === right.reason &&
+		left.message === right.message &&
+		// Details are rare and small (JSON): compared only when there are some.
+		(left.details === right.details || JSON.stringify(left.details) === JSON.stringify(right.details))
 	);
 }
 

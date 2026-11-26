@@ -11,9 +11,8 @@ import { BACKGROUND_CONTEXT as context } from "../../src/context/index.ts";
 import { int, str } from "../../src/contracts/index.ts";
 import { DurableObjectSqliteDatabase } from "../../src/sqlite/cloudflare.ts";
 import { sqliteBackend } from "../../src/store/backend.ts";
-import { LiveQueries } from "../../src/store/live-query.ts";
 import type { StagedWrite } from "../../src/store/step.ts";
-import { type ChordStore, openStore } from "../../src/store/store.ts";
+import { openStore } from "../../src/store/store.ts";
 import { defineTable } from "../../src/store/table.ts";
 import { TableChanges } from "../../src/store/table-changes.ts";
 import { TableHandle } from "../../src/store/table-handle.ts";
@@ -64,7 +63,7 @@ type Env = {
 const Rows = defineTable("rows", { version: 1, columns: { id: str(), n: int(), text: str() }, key: ["id"] });
 const TABLE = "bench.sync:rows";
 const OPEN = { admit: () => true, adopt: () => {} };
-const owner = { label: "bench", scope: {}, queries: new LiveQueries(), assertLive: () => {}, fail: () => {} };
+const owner = { label: "bench", scope: {}, assertLive: () => {}, fail: () => {} };
 /** Where a stored body is split into rows: below the object's 2 MB value limit. */
 const PART = 512 * 1024;
 
@@ -335,13 +334,12 @@ export class Origin extends BenchObject {
 		collect();
 		const store = await openStore(backendOf(this.ctx.storage), context, { outbox: true });
 		try {
-			const chord = store as ChordStore;
-			await prepareTables([{ definition: Rows, table: TABLE }], chord, OPEN, "bench.sync", context);
-			const handle = new TableHandle(Rows, TABLE, chord, owner);
+			await prepareTables([{ definition: Rows, table: TABLE }], store, OPEN, "bench.sync", context);
+			const handle = new TableHandle(Rows, TABLE, store, owner);
 			for (let index = 0; index < count; index++) {
 				const staged: StagedWrite[] = [];
 				new TableChanges(handle, staged).put({ id: `r${index}`, n: index, text: text(size, index) });
-				await chord.commit(staged, OPEN, context);
+				await store.commit(staged, OPEN, context);
 			}
 			return { lastSeq: store.lastSeq };
 		} finally {
