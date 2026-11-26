@@ -550,12 +550,13 @@ describe("a stall of the server (slice 15 §4)", () => {
 		// The reproduction of bench round 1's stale holders: the server blocked past its clients' `close`. Its own
 		// heartbeat counts the stall as no silence and closes nothing; each client's finds the server silent and closes
 		// its link: the holders wait `loading` (never live and old), and the close is reported and counted.
-		const world = await stalled({ ping: 50, close: 100 }, 5, 10);
+		// Give both processes time to connect all 50 references on a busy runner before inducing the stall.
+		const world = await stalled({ ping: 250, close: 1500 }, 5, 10);
 		try {
 			await until(() => world.shown()["live 0"] === 50);
-			world.command({ kind: "stall", stall: 300, value: 1 });
+			world.command({ kind: "stall", stall: 4500, value: 1 });
 			await world.answer();
-			await settle(400);
+			await until(() => world.shown().loading === 50);
 			const shown = world.shown();
 			expect(shown["live 0"]).toBeUndefined();
 			expect(shown).toEqual({ loading: 50 });

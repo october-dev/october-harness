@@ -75,9 +75,11 @@ async function startGateway(catalogue: string[], modelsStatus = 200): Promise<Ga
 	return { baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, chatModels };
 }
 
-async function runOctoberJson(
+const jsonArgs = ["-p", "hi", "--mode", "json", "--provider", "october", "--model", PAID_ID];
+
+async function runOctoberCli(
 	gateway: Gateway,
-	extraArgs: string[] = [],
+	args: string[] = jsonArgs,
 ): Promise<{ stdout: string; stderr: string; code: number | null; records: Record<string, unknown>[] }> {
 	const root = mkdtempSync(join(tmpdir(), "october-json-"));
 	tempDirs.push(root);
@@ -99,7 +101,6 @@ async function runOctoberJson(
 		PI_SKIP_VERSION_CHECK: "1",
 		PI_TELEMETRY: "0",
 	});
-	const args = ["-p", "hi", "--mode", "json", "--provider", "october", "--model", PAID_ID, ...extraArgs];
 	const child = spawn(process.execPath, ["--import", sourceResolverPath, cliPath, ...args], {
 		cwd: projectDir,
 		env,
@@ -122,9 +123,19 @@ async function runOctoberJson(
 }
 
 describe("October --mode json startup", () => {
+	it("discovers gateway OpenRouter routes on a fresh October-only profile before listing models", async () => {
+		const gateway = await startGateway([PAID_ID]);
+		const result = await runOctoberCli(gateway, ["--list-models", PAID_ID]);
+		expect(result.code, result.stderr).toBe(0);
+		expect(result.stdout).toMatch(
+			/^october\s+openrouter\/deepseek\/deepseek-v4\s+.*October account via OpenRouter$/m,
+		);
+		expect(gateway.chatModels).toEqual([]);
+	}, 60_000);
+
 	it("resolves a gateway-served OpenRouter id without a warning and sends it verbatim", async () => {
 		const gateway = await startGateway(["october/Qwen/Qwen3.6-35B-A3B-FP8", NEAR_MISS_ID, PAID_ID]);
-		const result = await runOctoberJson(gateway);
+		const result = await runOctoberCli(gateway);
 
 		expect(result.code, result.stderr).toBe(0);
 		expect(gateway.chatModels).toEqual([PAID_ID]);
@@ -134,7 +145,7 @@ describe("October --mode json startup", () => {
 
 	it("fails with model_not_found instead of substituting a similar id the live catalogue offers", async () => {
 		const gateway = await startGateway(["october/Qwen/Qwen3.6-35B-A3B-FP8", NEAR_MISS_ID]);
-		const result = await runOctoberJson(gateway);
+		const result = await runOctoberCli(gateway);
 
 		expect(result.code).toBe(1);
 		expect(gateway.chatModels).toEqual([]);
@@ -153,7 +164,7 @@ describe("October --mode json startup", () => {
 
 	it("keeps the requested id and reports the warning as a stdout record when the catalogue is unreachable", async () => {
 		const gateway = await startGateway([], 503);
-		const result = await runOctoberJson(gateway);
+		const result = await runOctoberCli(gateway);
 
 		expect(result.code, result.stderr).toBe(0);
 		expect(gateway.chatModels).toEqual([PAID_ID]);
@@ -166,7 +177,11 @@ describe("October --mode json startup", () => {
 
 	it("reports a new --session-id as a stdout record instead of stderr text", async () => {
 		const gateway = await startGateway([PAID_ID]);
-		const result = await runOctoberJson(gateway, ["--session-id", "0199a1b2-c3d4-7e5f-8a6b-9c0d1e2f3a4b"]);
+		const result = await runOctoberCli(gateway, [
+			...jsonArgs,
+			"--session-id",
+			"0199a1b2-c3d4-7e5f-8a6b-9c0d1e2f3a4b",
+		]);
 
 		expect(result.code, result.stderr).toBe(0);
 		expect(result.records).toContainEqual(expect.objectContaining({ type: "diagnostic", code: "session_created" }));

@@ -163,6 +163,35 @@ describe("October default packages", () => {
 		expect(await loadWarnings(pinned, { typebox: "^1.1.38" })).toEqual([]);
 	});
 
+	it("loads the bundled MCP adapter quietly unless the user explicitly requested the competing built-in", async () => {
+		const source = DEFAULT_SOURCES.find((entry) => entry.startsWith("npm:pi-mcp-adapter@"))!;
+		const agentDir = mkdtempSync(join(tmpdir(), "october-default-mcp-"));
+		tempDirs.push(agentDir);
+		installFakePackage(agentDir, "pi-mcp-adapter", source.slice(source.lastIndexOf("@") + 1), {});
+		const path = join(agentDir, "npm", "node_modules", "pi-mcp-adapter", "index.ts");
+		writeFileSync(path, 'export default pi => pi.registerCommand("mcp", { handler: async () => {} });');
+		for (const extensions of [[], ["+builtin:mcp"]]) {
+			const loader = new DefaultResourceLoader({
+				cwd: agentDir,
+				agentDir,
+				settingsManager: SettingsManager.inMemory({ packages: [source], extensions }),
+				extensionFactories: [
+					{
+						name: "mcp",
+						builtin: true,
+						replaceable: true,
+						factory: (api) =>
+							api.registerCommand("mcp", { description: "Built-in MCP", handler: async () => {} }),
+					},
+				],
+			});
+			await loader.reload();
+			expect(loader.getExtensions().extensions.map((extension) => extension.path)).toEqual([path]);
+			const warnings = loader.getExtensions().warnings ?? [];
+			expect(warnings.filter((warning) => warning.path === "builtin:mcp")).toHaveLength(extensions.length);
+		}
+	});
+
 	it("still warns for other host packages or a user-chosen version", async () => {
 		const pinned = DEFAULT_SOURCES.find((source) => source.startsWith("npm:pi-web-access@"))!;
 		expect(await loadWarnings(pinned, { typebox: "^1.1.38", "@earendil-works/pi-ai": "*" })).toHaveLength(1);

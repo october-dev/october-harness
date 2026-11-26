@@ -7,6 +7,7 @@ import { fuzzyFilter } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { getNoModelsGuidance } from "../core/auth-guidance.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
+import { modelAccountLabel } from "../extensions/october/pricing.ts";
 
 /**
  * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")
@@ -72,7 +73,9 @@ export async function listModels(
 		maxOut: formatTokenCount(m.maxTokens),
 		thinking: m.reasoning ? "yes" : "no",
 		images: m.input.includes("image") ? "yes" : "no",
+		account: modelAccountLabel(m),
 	}));
+	const showAccount = rows.some((row) => row.account);
 
 	const headers = {
 		provider: "provider",
@@ -100,6 +103,7 @@ export async function listModels(
 		headers.maxOut.padEnd(widths.maxOut),
 		headers.thinking.padEnd(widths.thinking),
 		headers.images.padEnd(widths.images),
+		...(showAccount ? ["account"] : []),
 	].join("  ");
 	console.log(headerLine);
 
@@ -112,6 +116,7 @@ export async function listModels(
 			row.maxOut.padEnd(widths.maxOut),
 			row.thinking.padEnd(widths.thinking),
 			row.images.padEnd(widths.images),
+			...(row.account ? [row.account] : []),
 		].join("  ");
 		console.log(line);
 	}

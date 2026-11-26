@@ -17,6 +17,27 @@ const known = {
 } as unknown as Model<Api>;
 
 describe("listModels availability timeout", () => {
+	it("distinguishes a gateway route from the same model on a direct OpenRouter account", async () => {
+		const id = "example/model:free";
+		const runtime = {
+			getAvailable: async () => [
+				known,
+				{ ...known, id: `openrouter/${id}` },
+				{ ...known, provider: "openrouter", id },
+			],
+		} as unknown as ModelRuntime;
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		await listModels(runtime);
+		const rows = log.mock.calls.flat().map(String);
+		expect(rows).toEqual(
+			expect.arrayContaining([
+				expect.stringMatching(/^october\s+october\/Qwen.*October account$/),
+				expect.stringMatching(/^october\s+openrouter\/example\/model:free.*October account via OpenRouter$/),
+				expect.stringMatching(/^openrouter\s+example\/model:free.*OpenRouter account$/),
+			]),
+		);
+	});
+
 	it("lists the last known models when the availability check exceeds its deadline", async () => {
 		const runtime = {
 			getError: () => undefined,

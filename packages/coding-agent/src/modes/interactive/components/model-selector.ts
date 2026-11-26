@@ -11,7 +11,11 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
-import { octoberModelBadge, octoberModelPricingDetail } from "../../../extensions/october/pricing.ts";
+import {
+	modelAccountLabel,
+	octoberModelBadge,
+	octoberModelPricingDetail,
+} from "../../../extensions/october/pricing.ts";
 import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
 import { getDistinctModelName, getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
@@ -339,7 +343,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
 			const name = getDistinctModelName({ id: item.id, name: item.model.name });
 			const nameText = name ? theme.fg("muted", ` (${name})`) : "";
-			const providerBadge = theme.fg("muted", `[${item.provider}]`);
+			const providerBadge = theme.fg("muted", `[${modelAccountLabel(item.model) ?? item.provider}]`);
 			const line = `${cursor}${currentMarker}${modelText}${nameText} ${providerBadge}${priceBadge}${defaultBadge}`;
 
 			this.listContainer.addChild(new Text(line, 0, 0));

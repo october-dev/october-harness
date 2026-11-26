@@ -1,5 +1,14 @@
 import { OCTOBER_PROVIDER_ID } from "./auth.ts";
 
+/** The credential used for a route. Its account is independent of the model's price. */
+export function modelAccountLabel(model: { provider: string; id: string }): string | undefined {
+	if (model.provider === OCTOBER_PROVIDER_ID) {
+		return model.id.startsWith("openrouter/") ? "October account via OpenRouter" : "October account";
+	}
+	if (model.provider === "openrouter") return "OpenRouter account";
+	return undefined;
+}
+
 /**
  * Credit-billed pricing from a paid `/v1/models` entry. Free models (october/…, nvidia/…,
  * openrouter/…:free) carry no `pricing` field.

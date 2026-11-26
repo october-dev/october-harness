@@ -1428,7 +1428,13 @@ export async function main(args: string[], options?: MainOptions) {
 	if (parsed.listModels !== undefined) {
 		writeDiagnosticsToStderr(startupDiagnostics);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
-		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(LIST_MODELS_AVAILABILITY_TIMEOUT_MS));
+		const signal = AbortSignal.timeout(LIST_MODELS_AVAILABILITY_TIMEOUT_MS);
+		// Extension registration loads the offline seed. Discover the signed-in gateway's
+		// routes before listing them, using the same deadline as the availability check.
+		if (modelRuntime.getProviderAuthStatus(OCTOBER_PROVIDER_ID).configured) {
+			await modelRuntime.refresh({ providers: [OCTOBER_PROVIDER_ID], signal });
+		}
+		await listModels(modelRuntime, searchPattern, signal);
 		process.exit(0);
 	}
 

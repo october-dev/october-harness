@@ -172,7 +172,9 @@ export function isBuiltinExtension(input: InlineExtension): input is BuiltinExte
  */
 function omitReplacedExtensions(
 	extensions: Extension[],
-	warnings?: Array<{ path: string; warning: string }>,
+	warnings: Array<{ path: string; warning: string }>,
+	metadataByPath: Map<string, PathMetadata>,
+	configuredExtensions: string[],
 ): Extension[] {
 	const names = (extension: Extension) => [
 		...[...extension.tools.keys()].map((name) => `tool:${name}`),
@@ -191,10 +193,21 @@ function omitReplacedExtensions(
 			.find((value): value is { name: string; extension: Extension } => value.extension !== undefined);
 		if (!replacement) return true;
 		if (extension.path.startsWith(BUILTIN_PATH_PREFIX)) {
+			// Read-only commands and offline sessions can load the bundled adapter before
+			// the profile migration runs. Its /mcp replacement is the shipped default.
+			const source = metadataByPath.get(replacement.extension.path)?.source;
+			if (
+				extension.path === "builtin:mcp" &&
+				source?.startsWith("npm:pi-mcp-adapter@") &&
+				isOctoberDefaultPackageSource(source) &&
+				!configuredExtensions.some((path) => path === "+builtin:mcp" || path === "builtin:mcp")
+			) {
+				return false;
+			}
 			const builtinName = extension.path.slice(BUILTIN_PATH_PREFIX.length);
 			const [kind, rawName] = replacement.name.split(":", 2);
 			const registeredName = kind === "command" ? `/${rawName}` : kind === "flag" ? `--${rawName}` : rawName;
-			warnings?.push({
+			warnings.push({
 				path: extension.path,
 				warning: `Extension ${replacement.extension.path} registers ${kind} \`${registeredName}\`, so built-in extension \`${builtinName}\` was not loaded. To use \`${builtinName}\`, run \`${APP_NAME} config\` and make sure it is enabled under Built-in extensions, then disable or remove the existing extension. We recommend only having one or the other loaded at a time.`,
 			});
@@ -789,7 +802,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 		extensionsResult.extensions.push(...inlineExtensions.extensions);
 		extensionsResult.errors.push(...inlineExtensions.errors);
 		const replacementWarnings: Array<{ path: string; warning: string }> = [];
-		extensionsResult.extensions = omitReplacedExtensions(extensionsResult.extensions, replacementWarnings);
+		extensionsResult.extensions = omitReplacedExtensions(
+			extensionsResult.extensions,
+			replacementWarnings,
+			metadataByPath,
+			this.settingsManager.getExtensionPaths(),
+		);
 		mergeExtensionWarnings(extensionsResult, replacementWarnings);
 		return extensionsResult;
 	}
@@ -940,7 +958,12 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		const replacementWarnings: Array<{ path: string; warning: string }> = [];
 		const extensionsResult: LoadExtensionsResult = {
-			extensions: omitReplacedExtensions(orderedExtensions, replacementWarnings),
+			extensions: omitReplacedExtensions(
+				orderedExtensions,
+				replacementWarnings,
+				this.resourceMetadataByPath,
+				this.settingsManager.getExtensionPaths(),
+			),
 			errors: [...(preTrustExtensions?.errors ?? []), ...remainingExtensions.errors, ...inlineExtensions.errors],
 			warnings: [...(preTrustExtensions?.warnings ?? []), ...(remainingExtensions.warnings ?? [])],
 			runtime: remainingExtensions.runtime,

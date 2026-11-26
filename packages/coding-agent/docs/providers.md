@@ -117,6 +117,8 @@ Radius authentication uses its gateway catalog and caches refreshed model metada
 
 ### OpenRouter
 
+Signing in to October gives access to the routes its gateway advertises. In `/model` and `october --list-models`, **October account via OpenRouter** uses your October credentials. The picker shows which routes are free or use October credit. **OpenRouter account** uses a separately configured OpenRouter credential and its billing. Both can appear when you connect both accounts.
+
 Authenticate with `/login openrouter` or `OPENROUTER_API_KEY`.
 
 With a key, October lists only the OpenRouter chat models that key may use, with the key's context size, max output, and prices. These come from OpenRouter's `/models/user` endpoint and reflect guardrails and provider restrictions set in OpenRouter. Image and decision models are not filtered.

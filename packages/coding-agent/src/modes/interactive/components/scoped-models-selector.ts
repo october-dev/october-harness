@@ -11,6 +11,7 @@ import {
 	Spacer,
 	Text,
 } from "@earendil-works/pi-tui";
+import { modelAccountLabel } from "../../../extensions/october/pricing.ts";
 import { getDistinctModelName, getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -256,7 +257,10 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 			const modelText = isSelected ? theme.fg("accent", styledId) : styledId;
 			const name = item.model ? getDistinctModelName(item.model) : undefined;
 			const nameText = name ? theme.fg("muted", ` (${name})`) : "";
-			const providerBadge = theme.fg("muted", item.model ? ` [${item.model.provider}]` : " [unavailable]");
+			const providerBadge = theme.fg(
+				"muted",
+				item.model ? ` [${modelAccountLabel(item.model) ?? item.model.provider}]` : " [unavailable]",
+			);
 			const status = item.model && item.enabled ? theme.fg("accent", "✓ ") : "  ";
 			this.listContainer.addChild(new Text(`${prefix}${status}${modelText}${nameText}${providerBadge}`, 0, 0));
 		}
