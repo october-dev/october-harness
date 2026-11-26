@@ -127,7 +127,7 @@ const PROVIDER_MODEL_PAIRS: ProviderModelPair[] = [
 	{ provider: "opencode", model: "gpt-5.2-codex", label: "zen-gpt-5.2-codex" },
 	{ provider: "opencode", model: "minimax-m2.1-free", label: "zen-minimax-m2.1-free" },
 	// OpenCode Go
-	{ provider: "opencode-go", model: "kimi-k2.5", label: "go-kimi-k2.5" },
+	{ provider: "opencode-go", model: "kimi-k3", label: "go-kimi-k3" },
 	{ provider: "opencode-go", model: "minimax-m2.5", label: "go-minimax-m2.5" },
 	// Xiaomi MiMo
 	{ provider: "xiaomi", model: "mimo-v2.6-pro", label: "xiaomi-mimo-v2.6-pro" },
