@@ -54,8 +54,11 @@ jobs:
 
       # The checkout has no tags; the released changelog sections are compared with the newest release tag.
       - name: Fetch the newest release tag
+        env:
+          RELEASE_TAG_PATTERN: ${{ github.repository == 'october-dev/october-harness' && 'october-v*.*.*' || 'v*.*.*' }}
         run: |
-          tag=$(git ls-remote --tags --sort=-v:refname origin 'v*.*.*' | grep -v '\^{}' | head -1 | sed 's#.*refs/tags/##')
+          tag=$(git ls-remote --tags --refs --sort=-v:refname origin "$RELEASE_TAG_PATTERN" | head -1 | sed 's#.*refs/tags/##')
+          test -n "$tag"
           git fetch --depth=1 origin "refs/tags/$tag:refs/tags/$tag"
 
       - name: Check released changelog sections

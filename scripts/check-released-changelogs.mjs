@@ -14,9 +14,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getPublicWorkspacePackages } from "./release-packages.mjs";
 
-const RELEASED_HEADING = /^## \[\d+\.\d+\.\d+\]/m;
+const RELEASED_HEADING = /^## \[\d+\.\d+\.\d+(?:-[\w.-]+)?\]/m;
 
-const tag = git(["tag", "--list", "v*.*.*", "--sort=-v:refname"]).split("\n")[0];
+const octoberTag = git(["tag", "--list", "october-v*.*.*", "--sort=-v:refname"]).split("\n")[0];
+const tag = octoberTag || git(["tag", "--list", "v*.*.*", "--sort=-v:refname"]).split("\n")[0];
 if (!tag) {
 	console.error("No release tag found. Fetch the newest one: git fetch --depth=1 origin refs/tags/<tag>:refs/tags/<tag>");
 	process.exit(1);
@@ -29,8 +30,15 @@ for (const { directory } of getPublicWorkspacePackages()) {
 	const tagged = gitFileAt(tag, path);
 	// A package first published after the tag has no released sections to compare.
 	if (tagged === undefined) continue;
-	const current = releasedPart(readFileSync(path, "utf8"));
 	const released = releasedPart(tagged);
+	if (octoberTag && !released) continue;
+	const currentReleases = releasedPart(readFileSync(path, "utf8"));
+	// A Pi sync adds upstream releases above the last October release. Everything published
+	// by the October tag, starting at its first release heading, must still match byte-for-byte.
+	const firstReleasedHeading = released.split("\n", 1)[0];
+	const lines = currentReleases.split("\n");
+	const start = octoberTag ? lines.indexOf(firstReleasedHeading) : 0;
+	const current = start > 0 ? lines.slice(start).join("\n") : currentReleases;
 	if (current === released) continue;
 	failed = true;
 	console.error(`${path}: released sections differ from ${tag}:`);
