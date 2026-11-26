@@ -15,6 +15,7 @@ import type {
 } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ContextSnapshot, ContextSnapshotOptions } from "../../core/context-snapshot.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type {
 	PortableCompatibilityReport,
@@ -42,6 +43,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_permissions" }
 	| { id?: string; type: "get_team_inbox" }
 	| { id?: string; type: "set_team_inbox"; paused: boolean }
+	| ({ id?: string; type: "get_context_snapshot" } & ContextSnapshotOptions)
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -175,6 +177,7 @@ export type RpcResponse =
 			success: true;
 			data: TeamInboxDispatchState;
 	  }
+	| { id?: string; type: "response"; command: "get_context_snapshot"; success: true; data: ContextSnapshot | null }
 
 	// Model
 	| {

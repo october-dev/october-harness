@@ -501,6 +501,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "set_team_inbox", session.setTeamInboxDispatch(command.paused));
 			}
 
+			case "get_context_snapshot": {
+				const snapshot = session.getContextSnapshot({
+					requestId: command.requestId,
+					includeContent: command.includeContent,
+				});
+				return success(id, "get_context_snapshot", snapshot ?? null);
+			}
+
 			// =================================================================
 			// Model
 			// =================================================================

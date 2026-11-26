@@ -145,52 +145,69 @@ export function createCustomMessage(
  * - Compaction's generateSummary (for summarization)
  * - Custom extensions and tools
  */
-export function convertToLlm(messages: AgentMessage[]): Message[] {
-	return messages
-		.map((m): Message | undefined => {
-			switch (m.role) {
-				case "bashExecution":
-					// Skip messages excluded from context (!! prefix)
-					if (m.excludeFromContext) {
-						return undefined;
-					}
-					return {
-						role: "user",
-						content: [{ type: "text", text: bashExecutionToText(m) }],
-						timestamp: m.timestamp,
-					};
-				case "custom": {
-					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
-					return {
-						role: "user",
-						content,
-						timestamp: m.timestamp,
-					};
-				}
-				case "branchSummary":
-					return {
-						role: "user",
-						content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
-						timestamp: m.timestamp,
-					};
-				case "compactionSummary":
-					return {
-						role: "user",
-						content: [
-							{ type: "text" as const, text: COMPACTION_SUMMARY_PREFIX + m.summary + COMPACTION_SUMMARY_SUFFIX },
-						],
-						timestamp: m.timestamp,
-					};
-				case "system":
-				case "user":
-				case "assistant":
-				case "toolResult":
-					return m;
-				default:
-					// biome-ignore lint/correctness/noSwitchDeclarations: fine
-					const _exhaustiveCheck: never = m;
-					return undefined;
+const convertedSources = new WeakMap<Message, AgentMessage>();
+
+export function convertedMessageSource(message: Message): AgentMessage {
+	return convertedSources.get(message) ?? message;
+}
+
+export function recordConvertedSource(converted: Message, original: AgentMessage): Message {
+	if (converted !== original) convertedSources.set(converted, original);
+	return converted;
+}
+
+function convertMessage(m: AgentMessage): Message | undefined {
+	switch (m.role) {
+		case "bashExecution":
+			// Skip messages excluded from context (!! prefix)
+			if (m.excludeFromContext) {
+				return undefined;
 			}
-		})
-		.filter((m) => m !== undefined);
+			return {
+				role: "user",
+				content: [{ type: "text", text: bashExecutionToText(m) }],
+				timestamp: m.timestamp,
+			};
+		case "custom": {
+			const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
+			return {
+				role: "user",
+				content,
+				timestamp: m.timestamp,
+			};
+		}
+		case "branchSummary":
+			return {
+				role: "user",
+				content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
+				timestamp: m.timestamp,
+			};
+		case "compactionSummary":
+			return {
+				role: "user",
+				content: [
+					{ type: "text" as const, text: COMPACTION_SUMMARY_PREFIX + m.summary + COMPACTION_SUMMARY_SUFFIX },
+				],
+				timestamp: m.timestamp,
+			};
+		case "system":
+		case "user":
+		case "assistant":
+		case "toolResult":
+			return m;
+		default:
+			// biome-ignore lint/correctness/noSwitchDeclarations: fine
+			const _exhaustiveCheck: never = m;
+			return undefined;
+	}
+}
+
+export function convertToLlm(messages: AgentMessage[]): Message[] {
+	const result: Message[] = [];
+	for (const message of messages) {
+		const converted = convertMessage(message);
+		if (!converted) continue;
+		result.push(recordConvertedSource(converted, message));
+	}
+	return result;
 }

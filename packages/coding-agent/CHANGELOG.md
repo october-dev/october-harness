@@ -12,12 +12,12 @@
 - Added a capability preflight before the first load of a project-owned or newly installed extension. Each choice names the current extension while the pending set and full declaration stay scrollable; manifest text is cleaned before display, and Skip lasts for the process. `/capabilities` shows the remembered manifests after installation. The manifest remains disclosure metadata, not a sandbox. ([#7](https://github.com/october-dev/october-harness/issues/7))
 - Added pause and resume for automatic public Bus inbox delivery. `/inbox pause`, `/inbox resume`, and `/inbox status`, plus `AgentSession.getTeamInboxDispatch()` / `setTeamInboxDispatch()` and the RPC commands `get_team_inbox` and `set_team_inbox`, stop new peer batches without a model call. Unread messages stay pending, an in-flight peer turn may settle, and the choice is restored with the session. The team status line and `/cockpit` show it ([#46](https://github.com/october-dev/october-harness/issues/46)).
 - Added portable session compatibility inspection through `--import-report`, RPC and the SDK ([#64](https://github.com/october-dev/october-harness/pull/64) by [@SKeasyy](https://github.com/SKeasyy)).
+- Added a reviewable structured Bus handoff with session evidence and a bounded JSON payload ([#65](https://github.com/october-dev/october-harness/pull/65) by [@SKeasyy](https://github.com/SKeasyy)).
+- Added `/context`, SDK `session.getContextSnapshot()`, and RPC `get_context_snapshot`, which report what the latest model request included: instructions, tools, conversation, compaction summaries, and extension or Bus contributions, each with an estimated size, its place in the request, and the reason when content was omitted or truncated. The report reads the context the request already assembled, so opening it neither reloads sources nor sends a model request. It shows metadata by default and reveals content only through `/context reveal <index>` or `includeContent` ([#66](https://github.com/october-dev/october-harness/pull/66) by [@SKeasyy](https://github.com/SKeasyy)).
 
 ### Changed
 
 - A portable import with an unavailable next-turn model requires a replacement. Interactive users can choose a model or cancel. Headless imports fail before writing a session ([#64](https://github.com/october-dev/october-harness/pull/64) by [@SKeasyy](https://github.com/SKeasyy)).
-
-- Added a reviewable structured Bus handoff with session evidence and a bounded JSON payload ([#65](https://github.com/october-dev/october-harness/pull/65) by [@SKeasyy](https://github.com/SKeasyy)).
 
 ### Fixed
 

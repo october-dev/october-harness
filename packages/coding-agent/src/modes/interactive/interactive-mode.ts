@@ -78,6 +78,7 @@ import {
 	detectCacheMiss,
 } from "../../core/cache-stats.ts";
 import { formatCacheWarmingStatus, formatCacheWarmingUsage } from "../../core/cache-warmer.ts";
+import { formatContextSnapshot } from "../../core/context-snapshot.ts";
 import { findExtensionStackMatches, recordCrash, takeUnnotifiedCrash } from "../../core/crash-log.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "../../core/defaults.ts";
 import {
@@ -146,6 +147,7 @@ import {
 	isInstallTelemetryEnabled,
 	shouldOfferInstallTelemetryConsent,
 } from "../../core/telemetry.ts";
+import { cleanToolDisplayText } from "../../core/tools/render-utils.ts";
 import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
@@ -331,6 +333,8 @@ function isUsageSessionEntry(item: RenderSessionItem): item is Extract<SessionEn
 // EIO: tty reads/ioctls from an orphaned background process group, or writes after hangup.
 // ENOTTY: the tty was revoked (macOS) and stdin is no longer a terminal.
 const DEAD_TERMINAL_ERROR_CODES = new Set(["EIO", "EPIPE", "ENOTCONN", "ENOTTY"]);
+/** The most characters `/context reveal` prints for one item. */
+const MAX_REVEALED_CONTEXT_CHARS = 100_000;
 
 function isDeadTerminalError(error: unknown): boolean {
 	if (!error || typeof error !== "object" || !("code" in error)) {
@@ -3495,6 +3499,11 @@ export class InteractiveMode {
 			}
 			if (text === "/session") {
 				this.handleSessionCommand();
+				this.editor.setText("");
+				return;
+			}
+			if (text === "/context" || text.startsWith("/context ")) {
+				this.handleContextCommand(text);
 				this.editor.setText("");
 				return;
 			}
@@ -7085,6 +7094,41 @@ export class InteractiveMode {
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new ThemedText(renderInfo, 1, 0));
+		this.ui.requestRender();
+	}
+
+	/** `/context` shows what the latest request included. `/context reveal <index>` prints one item's content locally. */
+	private handleContextCommand(text: string): void {
+		const argument = text.slice("/context".length).trim();
+		const reveal = /^reveal\s+(\d+)$/.exec(argument);
+		if (argument !== "" && !reveal) {
+			this.showStatus("Usage: /context [reveal <index>]");
+			return;
+		}
+		const snapshot = this.session.getContextSnapshot();
+		if (!snapshot) {
+			this.showStatus("No model request has been sent in this session yet, so there is no context to inspect.");
+			return;
+		}
+		let body: string;
+		if (reveal) {
+			const item = snapshot.items[Number(reveal[1])];
+			if (!item) {
+				this.showStatus(`Request ${snapshot.requestId} has no context item #${reveal[1]}.`);
+				return;
+			}
+			// Item content can hold tool or bash output: strip terminal escapes and cap what one item prints.
+			const content = cleanToolDisplayText(this.session.getContextItemContent(item.index, snapshot.requestId) ?? "");
+			const shown =
+				content.length > MAX_REVEALED_CONTEXT_CHARS
+					? `${content.slice(0, MAX_REVEALED_CONTEXT_CHARS)}\n[truncated: showing ${MAX_REVEALED_CONTEXT_CHARS.toLocaleString("en-US")} of ${content.length.toLocaleString("en-US")} characters]`
+					: content;
+			body = `${theme.bold(cleanToolDisplayText(`Request ${snapshot.requestId} #${item.index} ${item.label}`))}\n${shown}`;
+		} else {
+			body = formatContextSnapshot(snapshot);
+		}
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new ThemedText(() => body, 1, 0));
 		this.ui.requestRender();
 	}
 

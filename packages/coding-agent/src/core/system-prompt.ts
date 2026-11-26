@@ -76,13 +76,12 @@ export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOption
 	};
 }
 
+export function renderProjectInstruction({ path, content }: { path: string; content: string }): string {
+	return `<project_instructions path="${path}">\n${content}\n</project_instructions>`;
+}
+
 function renderProjectContext(contextFiles: Array<{ path: string; content: string }>): string {
-	return [
-		"Project-specific instructions and guidelines:",
-		...contextFiles.map(
-			({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`,
-		),
-	].join("\n\n");
+	return ["Project-specific instructions and guidelines:", ...contextFiles.map(renderProjectInstruction)].join("\n\n");
 }
 
 function buildRules(
