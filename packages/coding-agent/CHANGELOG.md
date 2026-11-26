@@ -17,6 +17,8 @@
 
 - A portable import with an unavailable next-turn model requires a replacement. Interactive users can choose a model or cancel. Headless imports fail before writing a session ([#64](https://github.com/october-dev/october-harness/pull/64) by [@SKeasyy](https://github.com/SKeasyy)).
 
+- Added a reviewable structured Bus handoff with session evidence and a bounded JSON payload ([#65](https://github.com/october-dev/october-harness/pull/65) by [@SKeasyy](https://github.com/SKeasyy)).
+
 ### Fixed
 
 - Fixed October model discovery reading image support from the gateway's `capabilities.vision` field. Unknown prices no longer imply free access, request-only and one-sided fees remain visible, and invalid or duplicate model metadata is rejected ([#72](https://github.com/october-dev/october-harness/pull/72)).
