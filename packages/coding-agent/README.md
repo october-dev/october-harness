@@ -191,7 +191,13 @@ october --team --team-id builder --team-name Builder
 
 The first terminal checksum-installs and starts Bus when needed. Both terminals reuse the project scope and link to reachable peers automatically. The launcher injects execution-scoped credentials; the scope token is not passed to the model-facing process. Idle sessions wake for new messages, persist delivery state in the session, and acknowledge exact message IDs only after a successful settled turn. Failed or aborted turns remain unacknowledged and require `/inbox retry`.
 
-Use `/team` for peer presence, `/tasks` for the shared board, `/inbox` for delivery state, `/delegate` for a bounded task request, and `/handoff` to include a capped excerpt of the current session. A delegation can tighten the receiving turn to `read-only` or `accept-edits`; it cannot relax the receiver's local permission policy.
+Use `/team` for peer presence, `/tasks` for the shared board, `/inbox` for delivery state, and `/delegate` for a bounded task request. A delegation can tighten the receiving turn to `read-only` or `accept-edits`.
+
+`/handoff` opens a version 1 JSON draft for review in the interactive Bus interface. Edit the objective, constraints, decisions and remaining work before submitting. The reviewed objective becomes the task title. Cancelling or invoking the command without a review interface sends nothing. Invalid edits reopen for correction.
+
+The draft uses the selected session branch. Ordinary compaction retains its raw history. A branch summary contributes its text and marks coverage incomplete. Conversation lines are proposed as authored context for review. Successful built-in edits and writes supply file paths. Recognizable check commands run through the bash tool supply outcomes when available. Other shell commands, user-run shell sessions and changes outside the session can require sender input.
+
+The formatted JSON is limited to 16,000 UTF-16 code units. Repeated paths and identical command outcomes are coalesced. When the draft exceeds the limit, the oldest historical entry from the section with the most historical entries is removed, and the omission count is recorded. Explicit sender input is preserved. The receiver applies its local permission policy and the delegation ceiling independently of the reviewed text.
 
 Use `/cockpit` in the interactive TUI to inspect the Bus connection, peers, shared tasks, and messages in one read-only view. Enter opens an item's details; Escape goes back or closes. The view reads a snapshot when it opens, so reopen it to refresh. It never claims tasks, sends messages, or reads the inbox: the messages shown are the ones this session has already recorded (deliveries, replies, and `/delegate` or `/handoff` requests), and queued messages that have not been delivered yet are not previewed. A message's detail view fetches its current Bus delivery receipt.
 

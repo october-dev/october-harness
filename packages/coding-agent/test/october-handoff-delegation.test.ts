@@ -219,7 +219,11 @@ describe("/handoff over the October Bus (#43)", () => {
 
 	it("sends nothing when the sender's edit is malformed", async () => {
 		const bus = fakeBus();
-		const state: FakeUi = { notices: [], reviewEdit: () => "{not json", acceptance: "Report back." };
+		const state: FakeUi = {
+			notices: [],
+			reviewEdit: (draft) => (draft === "{not json" ? undefined : "{not json"),
+			acceptance: "Report back.",
+		};
 		const sender = await senderWithHistory(bus, state);
 
 		await runHandoff(sender);
@@ -237,6 +241,39 @@ describe("/handoff over the October Bus (#43)", () => {
 
 		expect(bus.calls.filter((call) => call.name === "add_task" || call.name === "message_peer")).toEqual([]);
 		expect(state.notices.some((notice) => notice.includes("exceeds the 16000 character limit"))).toBe(true);
+	});
+
+	// Regression test for #43.
+	it("uses the corrected review for the task, peer message and attached context", async () => {
+		const bus = fakeBus();
+		let corrected = "";
+		const state: FakeUi = {
+			notices: [],
+			acceptance: "Obsolete acceptance criteria",
+			reviewEdit: (draft) => {
+				if (draft === "{invalid") return corrected;
+				const parsed = parseHandoffSummary(draft);
+				if (!parsed.ok) throw new Error(parsed.error);
+				parsed.summary.objective.text = "Inspect the final branch";
+				parsed.summary.remainingWork = [];
+				corrected = JSON.stringify(parsed.summary);
+				return "{invalid";
+			},
+		};
+		const sender = await senderWithHistory(bus, state);
+		await runHandoff(sender);
+		const task = bus.calls.find((call) => call.name === "add_task");
+		expect(task?.args.title).toBe("Inspect the final branch");
+		const sent = bus.sent()[0];
+		expect(sent?.args.message).toContain("Inspect the final branch");
+		expect(JSON.stringify([task?.args, sent?.args])).not.toMatch(/Obsolete acceptance|Finish the Bus handoff/);
+		const context = sent?.args.context as SentMessage["context"];
+		const item = context.find((entry) => entry.title === HANDOFF_SUMMARY_CONTEXT_TITLE);
+		expect(JSON.parse(item?.text ?? "")).toMatchObject({
+			objective: { text: "Inspect the final branch" },
+			remainingWork: [],
+		});
+		expect(state.notices.some((notice) => notice.startsWith("Handoff not sent:"))).toBe(true);
 	});
 
 	it("delivers the summary to the receiver as untrusted data under the sender's policy ceiling", async () => {

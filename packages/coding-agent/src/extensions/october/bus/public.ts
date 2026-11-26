@@ -23,7 +23,7 @@ const INBOX_WAIT_MS = 25_000;
 const HEARTBEAT_MS = 10_000;
 const RETRY_MS = 2_000;
 /** Bash tool error text carries the exit status, e.g. "Command exited with code 1". */
-const BASH_EXIT_STATUS = /Command exited with code (\d+)/;
+const BASH_EXIT_STATUS = /(?:^|\n)Command exited with code (\d+)$/;
 
 type Lifecycle = "idle" | "working" | "needs_input" | "offline";
 type DeliveryState = "received" | "processing" | "handled" | "failed" | "acknowledged";
@@ -286,8 +286,8 @@ function messageText(message: AgentMessage): string {
 function handoffHistory(branch: SessionEntry[]): HandoffHistoryRecord[] {
 	const records: HandoffHistoryRecord[] = [];
 	for (const entry of branch) {
-		if (entry.type === "compaction") {
-			records.push({ kind: "compaction" });
+		if (entry.type === "branch_summary") {
+			records.push({ kind: "branchSummary", messageId: entry.id, text: entry.summary });
 			continue;
 		}
 		if (entry.type !== "message") continue;
@@ -307,12 +307,21 @@ function handoffHistory(branch: SessionEntry[]): HandoffHistoryRecord[] {
 				});
 			}
 		} else if (message.role === "toolResult") {
-			const exit = BASH_EXIT_STATUS.exec(messageText(message));
+			const status = messageText(message).trimEnd().split("\n").at(-1) ?? "";
+			const exit = message.toolName === "bash" && message.isError ? BASH_EXIT_STATUS.exec(status) : undefined;
+			const interruption = !message.isError
+				? undefined
+				: /^(Command aborted|Command timed out after |Operation aborted|Tool execution was aborted)/i.test(status)
+					? "interrupted"
+					: /blocked by|denied by|permission denied|user denied/i.test(status)
+						? "blocked"
+						: undefined;
 			records.push({
 				kind: "toolResult",
 				toolCallId: message.toolCallId,
 				isError: message.isError,
 				exitCode: exit ? Number(exit[1]) : undefined,
+				interruption,
 			});
 		}
 	}
@@ -594,6 +603,11 @@ export function registerOctoberPublicBus(
 
 	const delegate = async (args: string, ctx: ExtensionContext, handoff: boolean): Promise<void> => {
 		try {
+			if (handoff && !ctx.hasUI) {
+				const message = "Handoff needs interactive review before sending. Use /delegate for a plain task.";
+				console.error(message);
+				return;
+			}
 			await refresh();
 			if (peers.length === 0) {
 				ctx.ui.notify("No linked peers are available. Connect agents in the same Bus scope first.", "warning");
@@ -646,35 +660,36 @@ export function registerOctoberPublicBus(
 			// The sender reviews the summary before any Bus write, so cancelling leaves no orphan task.
 			let handoffPayload: string | undefined;
 			if (handoff) {
-				if (!ctx.hasUI) {
-					ctx.ui.notify(
-						"Handoff needs interactive review before sending. Use /delegate for a plain task.",
-						"error",
-					);
-					return;
-				}
 				const draft = buildHandoffSummary({
 					objective: title,
 					constraints: [],
 					remainingWork: [...details.split("\n"), acceptance].map((line) => line.trim()).filter(Boolean),
 					history: handoffHistory(ctx.sessionManager.getBranch()),
 				});
-				const edited = await ctx.ui.editor("Review handoff summary (JSON)", serializeHandoffSummary(draft));
-				if (edited === undefined) {
-					ctx.ui.notify("Handoff cancelled. Nothing was sent.", "info");
-					return;
+				let draftText = serializeHandoffSummary(draft);
+				for (;;) {
+					const edited = await ctx.ui.editor("Review handoff summary (JSON)", draftText);
+					if (edited === undefined) {
+						ctx.ui.notify("Handoff cancelled. Nothing was sent.", "info");
+						return;
+					}
+					const reviewed = parseHandoffSummary(edited);
+					if (!reviewed.ok) {
+						ctx.ui.notify(`Handoff not sent: ${reviewed.error}`, "error");
+						draftText = edited;
+						continue;
+					}
+					title = reviewed.summary.objective.text;
+					details = reviewed.summary.constraints.map((item) => item.text).join("\n");
+					acceptance = reviewed.summary.remainingWork.map((item) => item.text).join("\n");
+					handoffPayload = serializeHandoffSummary(reviewed.summary);
+					break;
 				}
-				const reviewed = parseHandoffSummary(edited);
-				if (!reviewed.ok) {
-					ctx.ui.notify(`Handoff not sent: ${reviewed.error}`, "error");
-					return;
-				}
-				handoffPayload = serializeHandoffSummary(reviewed.summary);
 			}
 
 			const description = [
 				details,
-				`Acceptance criteria:\n${acceptance}`,
+				acceptance ? `Acceptance criteria:\n${acceptance}` : "",
 				`Permission ceiling: ${permissionCeiling}`,
 				handoff ? "This task includes a reviewed structured handoff summary from the sender's session." : "",
 			]

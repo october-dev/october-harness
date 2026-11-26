@@ -60,7 +60,7 @@ describe("buildHandoffSummary (#43)", () => {
 
 		expect(summary.checks.map((check) => [check.command, check.status])).toEqual([
 			["npm run check", "failed"],
-			["npx vitest --run a.test.ts", "failed"],
+			["npx vitest --run a.test.ts", "unknown"],
 			["npx tsc", "unknown"],
 		]);
 	});
@@ -74,13 +74,13 @@ describe("buildHandoffSummary (#43)", () => {
 		expect(summary.changedFiles).toEqual([]);
 	});
 
-	it("marks incomplete history when the branch starts after a compaction", () => {
+	it("retains active-branch history through ordinary compaction", () => {
 		const summary = build([
 			{ kind: "compaction" },
 			{ kind: "assistant", messageId: "m9", text: "Decision: use the Bus context item" },
 		]);
 
-		expect(summary.historyComplete).toBe(false);
+		expect(summary.historyComplete).toBe(true);
 		expect(summary.decisions).toHaveLength(1);
 	});
 
