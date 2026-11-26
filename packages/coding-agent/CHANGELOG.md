@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.6.1-october.1] - 2026-11-26
+
+### New Features
+
+- **Quieter startup and updates.** October opens with its header and prompt. Successful installs stay quiet and errors remain visible. Use `october --verbose` to see the loaded resources or configure [startup settings](docs/settings.md#terminal-and-display).
+- **Inspect the request.** Use `/context` to see which instructions, tools and messages reached the model, how much space they took, and what was omitted. See [conversation context](docs/sessions.md#manage-conversation-context).
+- **Review a handoff before sending.** `/handoff` lets you review the structured summary and its session evidence before sending it to a teammate on October Bus. ([#65](https://github.com/october-dev/october-harness/pull/65) by [@SKeasyy](https://github.com/SKeasyy))
+
 ### Added
 
 - Added program resume through the [Program Resume Protocol (OSC 7577)](https://www.superlogical.com/rex/docs/build/program-resume): in terminals that set `OSC7577_TOKEN`, interactive mode reports `pi --session <id>` for the current session, so the terminal can bring it back after it restarts. Pi removes the token from the environment of every process it starts. See [Terminal setup](docs/terminal-setup.md#program-resume)
@@ -16,11 +24,18 @@
 - Added a reviewable structured Bus handoff with session evidence and a bounded JSON payload ([#65](https://github.com/october-dev/october-harness/pull/65) by [@SKeasyy](https://github.com/SKeasyy)).
 - Added `/context`, SDK `session.getContextSnapshot()`, and RPC `get_context_snapshot`, which report what the latest model request included: instructions, tools, conversation, compaction summaries, and extension or Bus contributions, each with an estimated size, its place in the request, and the reason when content was omitted or truncated. The report reads the context the request already assembled, so opening it neither reloads sources nor sends a model request. It shows metadata by default and reveals content only through `/context reveal <index>` or `includeContent` ([#66](https://github.com/october-dev/october-harness/pull/66) by [@SKeasyy](https://github.com/SKeasyy)).
 
+- Added local redacted agent traces with `--trace` and offline verification with `--replay-trace`. See [execution traces](docs/traces.md). ([#34](https://github.com/october-dev/october-harness/pull/34) by [@Pushkraj-Space](https://github.com/Pushkraj-Space))
+- Added regression comparisons against saved scenario evaluation reports. ([#61](https://github.com/october-dev/october-harness/pull/61) by [@nikhilcrypto0](https://github.com/nikhilcrypto0))
+
 ### Changed
 
 - A portable import with an unavailable next-turn model requires a replacement. Interactive users can choose a model or cancel. Headless imports fail before writing a session ([#64](https://github.com/october-dev/october-harness/pull/64) by [@SKeasyy](https://github.com/SKeasyy)).
 - The default model for `cloudflare-workers-ai` and `cloudflare-ai-gateway` is now `@cf/zai-org/glm-5.3`, because Cloudflare deprecated Workers AI Kimi K2.6 and K2.7 Code
 - Changed the `ant-ling` default model from the retired `Ring-2.6-1T` to `Ling-3.1-flash` ([#11800](https://github.com/earendil-works/pi/pull/11800) by [@lvisei](https://github.com/lvisei))
+
+- October now opens with the header and prompt. Use `--verbose` to see the loaded resources. Successful automatic installs and `october update` omit routine npm output.
+- The model picker and `--list-models` identify the account used for each October and OpenRouter route, including OpenRouter models served through an October login.
+- Qwen Token Plan Individual now offers `qwen4-max`. GitHub Copilot Claude and GPT-6 models preserve prompt caches across supported tool and thinking-level changes.
 
 ### Fixed
 
@@ -32,6 +47,9 @@
 - `october local-models` no longer offers Ollama models that cannot chat, such as embedding models: it skips any model whose reported capabilities lack `completion` ([#54](https://github.com/october-dev/october-harness/pull/54) by [@nikhilcrypto0](https://github.com/nikhilcrypto0)).
 - Fixed `pi.exec` reporting exit code 0 for a command that died from a signal, including one stopped by its timeout or abort signal. It now reports a nonzero code ([#44](https://github.com/october-dev/october-harness/issues/44)).
 - Fixed `app.message.followUp` (Alt+Enter) ignoring an open autocomplete menu and queuing the half-typed text. It now applies the selected suggestion like Enter: a completed command name is queued, and other completions are inserted without queuing
+
+- Fixed the first launch of the bundled MCP adapter showing a duplicate command warning and a Pi configuration notice.
+- Fixed Bedrock Kimi K3 multi-turn requests replaying earlier reasoning, and Kimi K3.1 and GLM 5.3 ignoring the selected reasoning effort. ([#12462](https://github.com/earendil-works/pi/issues/12462))
 
 ## [1.6.1] - 2026-11-25
 
