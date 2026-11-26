@@ -1,33 +1,45 @@
 // Fingerprints: the normal form of a contract version and its portable 64-bit hash. Not a security boundary.
 
 import type { JsonValue } from "../json.ts";
-import { type Kind, LOCAL, type VariantData, type VersionData } from "./contract.ts";
+import type { Kind, MembersData, VersionData } from "./contract.ts";
 import type { Change } from "./history.ts";
 import type { ParamsData } from "./params.ts";
 
-/** Version of the normal form; changing the normal form changes it and is a link-protocol change. */
+/**
+ * Version of the normal form; changing the normal form changes it and is a link-protocol change. It stays 2 although
+ * a remote contract's node changed in slice 15 (members, grantable ones and flags instead of variants): documents'
+ * stored fingerprints carry it, and a remote node of another shape changes the remote fingerprints by itself.
+ */
 export const NORMAL_FORM_VERSION = 2;
 
 /**
  * Materializes a version with its fingerprint: `hash64` of `JSON.stringify({ normalFormVersion, value })` over the
- * normal form `{ kind: "remote", params, variants }` or `{ kind: "local", params, members }`.
+ * normal form `{ kind: "local", params, members }` or `{ kind: "remote", params, members, grantable, flags }` (the
+ * grantable members and the flag names sorted; a flag's label is not in it).
  */
 export function materialize(
 	kind: Kind,
 	params: ParamsData,
 	version: number,
-	variants: ReadonlyMap<string, VariantData>,
+	members: MembersData,
+	grantable: ReadonlySet<string>,
+	flags: readonly string[],
 	changes: readonly Change[],
 ): VersionData {
+	const grantableNames = [...grantable].sort();
+	const flagNames = [...flags].sort();
 	const normal: JsonValue =
 		kind === "local"
-			? { kind, params: params.normal, members: variantNormal(variants.get(LOCAL)!) }
+			? { kind, params: params.normal, members: membersNormal(members) }
 			: {
 					kind,
 					params: params.normal,
-					variants: sortedDict([...variants].map(([name, v]) => [name, variantNormal(v)])),
+					members: membersNormal(members),
+					grantable: grantableNames,
+					flags: flagNames,
 				};
-	return { version, fingerprint: fingerprintOf(normal), variants, changes };
+	const grants = [...grantableNames, ...flagNames].sort();
+	return { version, fingerprint: fingerprintOf(normal), members, grantable, grants, changes };
 }
 
 /** `hash64` of `JSON.stringify({ normalFormVersion, value: normal })`: the fingerprint of a normal form. */
@@ -36,13 +48,24 @@ export function fingerprintOf(normal: JsonValue): string {
 }
 
 /**
- * Members as a sorted dictionary of `{ state }`, `{ args, result }` or `{ keyed }` (slice 6a §12: a node of its own,
- * so contracts without keyed members keep their fingerprints and `NORMAL_FORM_VERSION` stays).
+ * Members as a sorted dictionary of `{ state }`, `{ args, result }`, `{ keyed }` (`{ keyed, key }` keyed by a host
+ * kind) or `{ event }` (slice 6a §12, decision "Events: fire-and-forget members": a node of its own per kind, so
+ * contracts without keyed or event members keep their fingerprints and `NORMAL_FORM_VERSION` stays).
  */
-function variantNormal({ state, methods, keyed }: VariantData): JsonValue {
+function membersNormal({ state, methods, keyed, events, queries }: MembersData): JsonValue {
 	return sortedDict([
+		// A `queries` member's node is its own (slice 14): contracts without one keep their fingerprints.
+		...[...queries].map(([member, { item, args }]) => {
+			const named = sortedDict([...args].map(([query, schema]) => [query, schema.normal] as const));
+			return [member, { queries: item.normal, args: named }] as const;
+		}),
 		...[...state].map(([member, schema]) => [member, { state: schema.normal }] as const),
-		...[...keyed].map(([member, schema]) => [member, { keyed: schema.normal }] as const),
+		...[...events].map(([member, schema]) => [member, { event: schema.normal }] as const),
+		// A host-keyed member's kind joins its node: string-keyed members keep their fingerprints.
+		...[...keyed].map(([member, { normal, key }]) => {
+			const node: JsonValue = key === undefined ? { keyed: normal } : { keyed: normal, key: key.kind };
+			return [member, node] as const;
+		}),
 		...[...methods].map(
 			([member, { args, result }]) => [member, { args: args.normal, result: result.normal }] as const,
 		),

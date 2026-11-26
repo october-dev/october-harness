@@ -8,7 +8,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { ModelsError } from "@earendil-works/pi-ai";
 import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -78,17 +78,27 @@ function getActiveManagedInstallRoot(): string | undefined {
 	if (getCwdRelativePath(canonicalizePath(getPackageDir()), releasesDir) === undefined) return undefined;
 
 	const markerPath = join(managedRoot, MANAGED_INSTALL_MARKER);
+	let marker: { kind?: unknown; layout?: unknown; schemaVersion?: unknown; entrypoint?: { path?: unknown } };
 	try {
-		const marker = JSON.parse(stripBom(readFileSync(markerPath, "utf8"))) as {
-			kind?: unknown;
-			layout?: unknown;
-			schemaVersion?: unknown;
-		};
+		marker = JSON.parse(stripBom(readFileSync(markerPath, "utf8")));
 		if (marker.kind !== "pi-managed-install" || marker.schemaVersion !== 1 || marker.layout !== "releases-v1") {
 			throw new Error();
 		}
 	} catch {
 		throw new Error(`Managed install marker is missing or invalid: ${markerPath}`);
+	}
+
+	// install.ps1 records a Windows entrypoint (C:\...\pi.cmd). WSL can run that install
+	// through its sh launcher on Linux Node, where an update would rebuild it with Linux npm.
+	const entrypointPath = marker.entrypoint?.path;
+	if (
+		process.platform !== "win32" &&
+		typeof entrypointPath === "string" &&
+		/^(?:[A-Za-z]:\\|\\\\)/.test(entrypointPath)
+	) {
+		throw new Error(
+			`This is the Windows installation of ${APP_NAME}, run from WSL. Running the Windows installation from WSL is unsupported, so it cannot update itself here. Update it from Windows, or install ${APP_NAME} in WSL.`,
+		);
 	}
 
 	return managedRoot;
@@ -119,6 +129,19 @@ async function runManagedNpmCi(stageDir: string): Promise<void> {
 	if (code !== 0) throw new Error(`npm ${args.join(" ")} exited with code ${code ?? "unknown"}`);
 }
 
+/**
+ * Environment for the managed release smoke test, with the Node.js running this update
+ * first on PATH. On Windows the managed launcher runs Pi on the installer's standalone
+ * Node without changing PATH, so the release's `node_modules/.bin` shim may otherwise
+ * run an older system Node that cannot load the new release.
+ */
+function getManagedReleaseVerifyEnv(): NodeJS.ProcessEnv {
+	const nodeDir = dirname(process.execPath);
+	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+	const currentPath = process.env[pathKey] ?? "";
+	return { ...process.env, [pathKey]: [nodeDir, currentPath].filter(Boolean).join(delimiter) };
+}
+
 function verifyManagedRelease(releaseDir: string, expectedVersion: string): void {
 	const binPath = join(
 		releaseDir,
@@ -129,6 +152,7 @@ function verifyManagedRelease(releaseDir: string, expectedVersion: string): void
 	const result = spawnProcessSync(binPath, ["--version"], {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
+		env: getManagedReleaseVerifyEnv(),
 	});
 	if (result.error || result.status !== 0) {
 		const reason = result.error?.message || result.stderr.trim() || `exit code ${result.status ?? "unknown"}`;

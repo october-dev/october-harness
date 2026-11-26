@@ -1,59 +1,38 @@
-// Live queries (decision "Live queries over an object's own tables"): `self.query(table, q, limit)`, a JSON watchable
-// of a query's rows over a table of the object itself. Run once before the object goes live, then again inside the
-// commit step of every commit of the object that wrote the table (after its writes, so it sees them) and published in
-// that commit's batch as the diff from the previous rows (W1). Only the object writes its tables, so its commits are
-// the exact invalidation; a commit writing no table with a live query runs none.
+// Live queries (decision "Live queries over an object's own tables"; slice 14 §3): the rows of a query as a JSON
+// watchable, kept current by the store's reads. `self.query(table, q, limit)` is the owner's own unnamed window (its
+// value the rows); `self.liveQuery(namedQuery, args, { first })` reads a named query (its value `{ rows, more }`).
+// Both are this source over one open read; a commit's run is published in that commit's batch as the diff from the
+// previous rows (W1).
 
 import type { Context } from "../context/index.ts";
-import { ChordError } from "../data/index.ts";
 import { invalid } from "../data/internal.ts";
-import { diffRevisions, type Op } from "../delta/index.ts";
 import type { JsonValue } from "../json.ts";
 import type { SqliteValue } from "../sqlite/index.ts";
-import { type Batch, handedOut, Source, type WatchStart } from "../state/internal.ts";
-import { chordMetrics } from "../telemetry.ts";
+import { type FramedOwner, FramedSource } from "../state/internal.ts";
+import { OpenQuery, type OpenRead, type QuerySpec, type ReadSite } from "./open-query.ts";
 import type { Query } from "./query.ts";
-import type { Statement } from "./sql.ts";
-import type { StagedWrite, Step } from "./step.ts";
+import { identity, type ReadResult, type ReadRun, type ReadSink } from "./read.ts";
+import type { Range, StoredRead } from "./read-plan.ts";
 import type { TableDefinition } from "./table.ts";
-import type { TableHandle } from "./table-handle.ts";
-import type { StoreWrite } from "./writes.ts";
 
-/** Who a live query belongs to: its object, and where its failures after activation are reported (`query_failed`). */
-export type QueryOwner = {
-	readonly label: string;
-	report(error: unknown): void;
+/**
+ * What a live source reads: a query to keep open, and how a stored row of it becomes the value's row (decoded,
+ * projected, mapped); a row the code cannot read throws.
+ */
+export type LiveTarget = {
+	readonly spec: QuerySpec;
+	decode(stored: StoredRead, context: Context): JsonValue;
 };
 
-/**
- * The rows of one run: in order, and by key with the stored row each was decoded from, which the next run compares
- * against to keep an unchanged row the same object.
- */
-type Rows = { readonly value: JsonValue[]; readonly byKey: ReadonlyMap<unknown, Decoded> };
-
-/** A row as a run decoded it, with the stored row it came from. */
-type Decoded = { readonly stored: StoredRow; readonly row: JsonValue };
-
-/** One run of a live query in a commit step: its rows, or why it could not read them. */
-type QueryRun = { readonly kind: "rows"; readonly rows: Rows } | { readonly kind: "failed"; readonly error: unknown };
-
-/**
- * Where a live query stands: before its first run (activation), with rows, failed (its last run threw; its last good
- * rows kept for a watch opened meanwhile), or detached (its attempt ended).
- */
-type QueryState =
-	| { readonly kind: "loading" }
-	| { readonly kind: "rows"; readonly value: JsonValue[] }
-	| { readonly kind: "failed"; readonly error: unknown; readonly last: JsonValue[] | undefined }
-	| { readonly kind: "detached"; readonly error: unknown };
-
-/** A stored row as the backend returns it. */
-type StoredRow = { readonly [column: string]: SqliteValue };
+/** What a live query reads and shows: the rows of `range` (as they are, or as `{ rows, more }`), or a count. */
+export type LiveShape =
+	| { readonly kind: "rows"; readonly range: Range; present(rows: JsonValue[], more: boolean): JsonValue }
+	| { readonly kind: "count" };
 
 /**
  * Refuses what the types cannot (plugin code is bundled without type checks; declaration policy): a query of another
- * table than `table`, and a `limit` that is no positive integer (a live query must be bounded: one run per commit
- * that writes its table reads at most `limit` rows).
+ * table than `table`, and a `limit` that is no positive integer (a live query must be bounded: one run reads at most
+ * `limit` rows).
  */
 export function checkLiveQuery(table: TableDefinition, q: Query, limit: unknown, label: string): void {
 	if (q.table !== table) {
@@ -64,241 +43,277 @@ export function checkLiveQuery(table: TableDefinition, q: Query, limit: unknown,
 	}
 }
 
-/** The live queries of one object by table (its SQL name), across its attempts: what its commits re-run. */
-export class LiveQueries {
-	readonly #byTable = new Map<string, Set<LiveQuery>>();
-
-	/** Adds `query` (its attempt declared it): re-run by every commit writing its table from now on. */
-	add(query: LiveQuery): void {
-		const table = query.handle.sql.table;
-		let queries = this.#byTable.get(table);
-		if (queries === undefined) {
-			queries = new Set();
-			this.#byTable.set(table, queries);
-		}
-		queries.add(query);
-	}
-
-	/** Removes `query` (its attempt ended). */
-	delete(query: LiveQuery): void {
-		const table = query.handle.sql.table;
-		const queries = this.#byTable.get(table);
-		if (queries === undefined) return;
-		queries.delete(query);
-		if (queries.size === 0) this.#byTable.delete(table);
-	}
-
-	/** The live queries over `table`, if any. */
-	on(table: string): ReadonlySet<LiveQuery> | undefined {
-		return this.#byTable.get(table);
-	}
-}
-
 /**
- * The re-run of the live queries over the tables a transaction writes (`handles`), `undefined` when none has one (the
- * common case: a map lookup per written table, nothing more). `context` is the transaction's: the runs count through it.
+ * A live query as a JSON source (a state member, a derive source, an `on` source): the rows of one range of a query,
+ * or its count. `read` gives it the query; a later `read` (arguments that follow a value, a provider's successor)
+ * shows the previous value until the new read's first run is adopted, then switches in one frame.
  */
-export function refreshOf(handles: Iterable<TableHandle>, context: Context): QueryRefresh | undefined {
-	let queries: Set<LiveQuery> | undefined;
-	for (const handle of handles) {
-		const on = handle.owner.queries.on(handle.sql.table);
-		if (on === undefined) continue;
-		queries ??= new Set();
-		for (const query of on) queries.add(query);
-	}
-	return queries === undefined ? undefined : new QueryRefresh([...queries], context);
-}
+export class LiveQuery extends FramedSource {
+	readonly #site: ReadSite;
+	readonly #shape: LiveShape;
+	readonly #rows = new DecodedRows("values");
+	/** The read its value is of, and the one that replaces it once its first run is adopted. */
+	#current: Reading | undefined;
+	#next: Reading | undefined;
 
-const NO_WRITES: readonly StoreWrite[] = [];
-
-/**
- * The re-run of live queries in one commit: `write` reads them in the commit step after the commit's own writes (the
- * last write of the last phase), and `adopt` publishes their rows in the commit's batch; a refused step adopts nothing.
- * A transaction stages it as its own change (`Staged`).
- */
-export class QueryRefresh {
-	readonly #queries: readonly LiveQuery[];
-	readonly #context: Context;
-	readonly #runs: QueryRun[] = [];
-	/** The staged write that reads the queries; it writes nothing and records nothing in the outbox. */
-	readonly write: StagedWrite;
-
-	constructor(queries: readonly LiveQuery[], context: Context) {
-		this.#queries = queries;
-		this.#context = context;
-		this.write = { order: "write", apply: (step) => this.#rerun(step) };
-	}
-
-	async #rerun(step: Step): Promise<readonly StoreWrite[]> {
-		// A grouped commit that rolled back applies again alone (store.ts): only the last application's runs count.
-		this.#runs.length = 0;
-		for (const query of this.#queries) this.#runs.push(await query.rerun(step, this.#context));
-		return NO_WRITES;
-	}
-
-	/** Publishes each query's new rows (or its failure), inside the commit's batch. */
-	adopt(): void {
-		for (const [index, query] of this.#queries.entries()) query.adopt(this.#runs[index]!);
-	}
-
-	committed(): void {}
-
-	discarded(): void {}
-}
-
-/** What the watches of a failed live query had: no rows, so its next rows replace the value whole. */
-const NO_VALUE: unique symbol = Symbol("no value");
-
-const NO_ROWS: ReadonlyMap<unknown, Decoded> = new Map();
-
-/**
- * A live query: the rows of `query` (at most `limit`, in its order) over its object's table `handle`, as a JSON source
- * (a state member, a derive source, an `on` source). Its statement is compiled once; each run decodes only the rows
- * whose stored columns changed and keeps the others the same objects, so its frame, the diff from the rows its watches
- * had, compares unchanged rows by identity (a window shifted by one row: one insert and one removal, not a comparison
- * of every row with every other).
- */
-export class LiveQuery extends Source {
-	readonly handle: TableHandle;
-	readonly #owner: QueryOwner;
-	readonly #statement: Statement;
-	#state: QueryState = { kind: "loading" };
-	/** The last adopted rows by key, with the stored rows they were decoded from (the next run reuses unchanged ones). */
-	#byKey: ReadonlyMap<unknown, Decoded> = NO_ROWS;
-	/** The rows this query's watches have, kept from its adoption to its frame in the batch; `undefined`: not listed. */
-	#framed: JsonValue[] | typeof NO_VALUE | undefined;
-	/** Commits adopted so far: an activation run that a commit overtook keeps the commit's newer rows. */
-	#adopted = 0;
-	/** Set from a failed run until the next good one: a failure episode is reported once. */
-	#failing = false;
-
-	constructor(handle: TableHandle, query: Query, limit: number, owner: QueryOwner, batch: Batch) {
-		super(batch);
-		this.handle = handle;
-		this.#owner = owner;
-		this.#statement = handle.sql.select(query.condition, query.order, undefined, limit);
-	}
-
-	get value(): JsonValue[] {
-		const state = this.#state;
-		if (state.kind === "rows") return state.value;
-		if (state.kind === "loading") {
-			throw new ChordError({ code: "not_ready", message: `${this.#owner.label}: a live query read before it ran` });
-		}
-		throw state.error;
-	}
-
-	/** Its rows, or while failed its failure and last good rows (a detached query throws). */
-	override start(): WatchStart {
-		const state = this.#state;
-		if (state.kind === "failed") return { kind: "failed", error: state.error, last: state.last };
-		return { kind: "value", value: this.value };
+	constructor(site: ReadSite, owner: FramedOwner, shape: LiveShape) {
+		super(site.batch, owner);
+		this.#site = site;
+		this.#shape = shape;
 	}
 
 	/**
-	 * The first run, before its object goes live (activation, after its tables are prepared): a failure throws and fails
-	 * the activation. Rows a commit adopted meanwhile are newer and stay.
+	 * The first run of the owner's own window, before its object goes live (activation, after its tables are
+	 * prepared): a failure throws and fails the activation, which reports it.
 	 */
-	async load(context: Context): Promise<void> {
-		const adopted = this.#adopted;
-		this.#count(context);
-		const { sql, params } = this.#statement;
-		const stored = await this.handle.store.read((executor) => executor.all<StoredRow>(sql, ...params), context);
-		// Decoded outside the store's read: a row the code cannot read is this query's failure, not the backend's.
-		const rows = this.#decode(stored, context);
-		if (this.#adopted !== adopted) return;
-		this.#byKey = rows.byKey;
-		this.#state = { kind: "rows", value: rows.value };
-	}
-
-	/** A run inside the commit step `step`, after its writes: the rows, or the failure; it never throws. */
-	async rerun(step: Step, context: Context): Promise<QueryRun> {
-		try {
-			this.#count(context);
-			const { sql, params } = this.#statement;
-			return { kind: "rows", rows: this.#decode(await step.all<StoredRow>(sql, ...params), context) };
-		} catch (error) {
-			return { kind: "failed", error };
-		}
+	async load(target: LiveTarget, context: Context): Promise<void> {
+		this.quiet();
+		await this.read(target, context);
+		const failure = this.failure;
+		if (failure !== undefined) throw failure.error;
 	}
 
 	/**
-	 * Takes a commit's run, inside its batch: listed for a frame when watched, its dependents marked. A failed run makes
-	 * the query a failed member (as a throwing derive): its watches get one failure call, the owner a report per
-	 * failure episode; the next good run replaces the value whole.
+	 * Reads `target` from now on (its shape's range of it, or its count). Resolves with its first run once adopted
+	 * (`undefined`: a commit's run came first, a table it reads is held, or the query was detached or given another
+	 * read meanwhile).
 	 */
-	adopt(run: QueryRun): void {
-		const state = this.#state;
-		if (state.kind === "detached") return;
-		this.#adopted++;
-		if (this.watched && this.#framed === undefined) this.#framed = state.kind === "rows" ? state.value : NO_VALUE;
-		if (run.kind === "rows") {
-			this.#failing = false;
-			this.#byKey = run.rows.byKey;
-			this.#state = { kind: "rows", value: run.rows.value };
-		} else {
-			if (!this.#failing) this.#owner.report(handedOut(run.error));
-			this.#failing = true;
-			const last = state.kind === "rows" ? state.value : state.kind === "failed" ? state.last : undefined;
-			this.#state = { kind: "failed", error: run.error, last };
-		}
-		this.changed();
+	read(target: LiveTarget, context: Context): Promise<ReadRun | undefined> {
+		if (this.detached) return Promise.resolve(undefined);
+		this.#next?.query.close();
+		const reading = new Reading(this, this.#site, this.#shape, target, context);
+		this.#next = reading;
+		return reading.read.load();
 	}
 
-	/** Delivers the frame: the diff from the rows its watches had, or one failure call when they had rows. */
-	deliver(context: Context): void {
-		const before = this.#framed;
-		this.#framed = undefined;
-		const state = this.#state;
-		if (state.kind === "rows") {
-			// Listed by `adopt`, so `before` was kept (a detach in the batch leaves no rows).
-			const after = state.value;
-			const ops: readonly Op[] = before === NO_VALUE ? [["r", after]] : diffRevisions(before!, after);
-			if (ops.length > 0) this.publish(after, ops, false, context);
-			return;
-		}
-		// Still failed since the last call: nothing new for the watches.
-		if (state.kind === "failed" && before !== NO_VALUE) this.failWatches(state.error, context);
+	/**
+	 * What it should read cannot be read (its arguments threw, its provider refused them): a failed member, as a
+	 * failed run makes it. Its reads close: neither the read of the previous arguments nor a pending one may publish
+	 * or heal the failure; the next `read` does.
+	 */
+	fail(error: unknown, context: Context): void {
+		if (this.detached) return;
+		this.#close();
+		this.batch.within(() => this.failWith(error), context);
 	}
 
-	/** Its attempt ended: no commit re-runs it, reads throw `error` (the object's), its watches end `ended`. */
+	/** Its attempt ended: no commit runs it again, reads throw `error` (the object's), its watches end `ended`. */
 	detach(error: Error): void {
-		this.handle.owner.queries.delete(this);
-		this.#state = { kind: "detached", error };
-		this.#framed = undefined;
-		this.endWatches();
+		this.#close();
+		this.end(error);
 	}
 
-	/** One run, counted where it happens (the cost guard: a commit not writing the table runs none). */
-	#count(context: Context): void {
-		chordMetrics(context.telemetry.metrics).counter("chord.query.runs").add(1);
+	#close(): void {
+		this.#current?.query.close();
+		this.#next?.query.close();
+		this.#current = undefined;
+		this.#next = undefined;
 	}
 
 	/**
-	 * The rows of `stored`: a row whose stored columns are all the same as in the last adopted run is that run's object
-	 * (one comparison per physical column), any other is decoded.
+	 * Takes a run of one of its reads, inside a batch (called by the reading). The first run of a new read makes it the
+	 * current one. A failed run, and a row the code cannot read, make the query a failed member.
 	 */
-	#decode(stored: readonly StoredRow[], context: Context): Rows {
-		const { key, rows } = this.handle.definition;
-		const value: JsonValue[] = [];
-		const byKey = new Map<unknown, Decoded>();
-		for (const each of stored) {
-			const id = key.length === 1 ? each[key[0]!] : JSON.stringify(key.map((column) => each[column]));
-			const before = this.#byKey.get(id);
-			const row =
-				before !== undefined && sameStored(before.stored, each, rows.physical)
-					? before.row
-					: // A table's rows hold its columns' values: scalars and JSON.
-						(rows.decode(each, context) as JsonValue);
-			value.push(row);
-			byKey.set(id, { stored: each, row });
+	adopted(reading: Reading, run: ReadRun): void {
+		if (this.detached) return;
+		if (reading === this.#next) {
+			this.#current?.query.close();
+			this.#current = reading;
+			this.#next = undefined;
+			this.#rows.reset();
+		} else if (reading !== this.#current) return;
+		if (run.kind === "failed") this.failWith(run.error);
+		else if (run.kind === "count") this.set(run.count);
+		else this.#present(reading, run.result);
+	}
+
+	/** The value of a run's rows; a row the code cannot read fails the member. */
+	#present(reading: Reading, result: ReadResult): void {
+		const shape = this.#shape;
+		// A count's read returns counts.
+		if (shape.kind !== "rows") return;
+		try {
+			this.set(
+				shape.present(
+					this.#rows.decode(result.rows, reading.target, reading.query.context, result.ids),
+					result.more,
+				),
+			);
+		} catch (error) {
+			this.failWith(error);
 		}
-		return { value, byKey };
 	}
 }
 
-/** Whether two stored rows have the same value in every physical column (SQLite values compare by `===`). */
-function sameStored(a: StoredRow, b: StoredRow, physical: readonly string[]): boolean {
-	for (const column of physical) if (a[column] !== b[column]) return false;
+/**
+ * One of a live query's reads, open, with the query it is of and what it reads; the sink of its runs. A class: an
+ * object and a closure as its sink cost 88 B per read.
+ */
+class Reading implements ReadSink {
+	readonly query: OpenQuery;
+	readonly target: LiveTarget;
+	readonly read: OpenRead;
+	readonly #live: LiveQuery;
+
+	constructor(live: LiveQuery, site: ReadSite, shape: LiveShape, target: LiveTarget, context: Context) {
+		this.#live = live;
+		this.target = target;
+		// A binding changed: its one read runs again (a failure is a failed run handed to it; nothing awaits the run).
+		this.query = new OpenQuery(site, target.spec, shape.kind, () => void this.read.load(), context);
+		// A shape of rows is what the read reads (its range), a count is one: no read kind made per read.
+		this.read = this.query.read(shape, this);
+	}
+
+	adopt(run: ReadRun): void {
+		this.#live.adopted(this, run);
+	}
+}
+
+/**
+ * A row as a run decoded it, with the values of the stored row it came from in `columns`, that row's columns in its
+ * own order. Not the stored row itself: node:sqlite returns a dictionary-mode object per row (256 B for two columns),
+ * and a value keeps every row it shows.
+ */
+class Decoded {
+	readonly columns: readonly string[];
+	readonly values: readonly SqliteValue[];
+	readonly row: JsonValue;
+
+	constructor(columns: readonly string[], values: readonly SqliteValue[], row: JsonValue) {
+		this.columns = columns;
+		this.values = values;
+		this.row = row;
+	}
+}
+
+/**
+ * A row as a run decoded it, with the stored row it came from: what decoded rows keep where the stored row is kept by
+ * someone else anyway (a list's pages keep theirs), so it costs nothing more than the entry.
+ */
+class KeptRow {
+	readonly stored: StoredRead;
+	readonly row: JsonValue;
+
+	constructor(stored: StoredRead, row: JsonValue) {
+		this.stored = stored;
+		this.row = row;
+	}
+}
+
+/** An entry of decoded rows: the stored row's values, or the stored row (`DecodedRows`' `keeps`). */
+type Entry = Decoded | KeptRow;
+
+/** No rows decoded yet: the shared empty map. */
+const NO_ROWS: ReadonlyMap<unknown, Entry> = new Map();
+
+/**
+ * The decoded rows of a live source's last value, by key: a row whose stored columns are all the same in the next
+ * run is that value's object (one comparison per selected column), any other is decoded. So a frame, the diff from
+ * the value the watches had, compares unchanged rows by identity (a window shifted by one row: one insert and one
+ * removal, not a comparison of every row with every other).
+ */
+export class DecodedRows {
+	/**
+	 * What it keeps of a stored row to compare the next run's with: its values (a live query: nobody else keeps the
+	 * row, a dictionary-mode object of node:sqlite's), or the row itself (a list: its pages keep their rows).
+	 */
+	readonly #keeps: "values" | "rows";
+	/** By key (`identity`); the one entry itself after a run of one row (a map of one costs 184 B), its key `#oneId`. */
+	#byKey: ReadonlyMap<unknown, Entry> | Entry = NO_ROWS;
+	#oneId: unknown;
+	/** The columns of the rows decoded since the last reset: their entries share the list. */
+	#columns: readonly string[] | undefined;
+
+	/** `keeps` the values of a stored row (a live query's), or the row itself (a list's, by default). */
+	constructor(keeps: "values" | "rows" = "rows") {
+		this.#keeps = keeps;
+	}
+
+	/**
+	 * The rows of `stored` as `target` decodes them, unchanged ones reused; a row the code cannot read throws. `ids`:
+	 * the identities of their keys when the run that fetched them made them already (`ReadResult.ids`).
+	 */
+	decode(stored: readonly StoredRead[], target: LiveTarget, context: Context, ids?: readonly unknown[]): JsonValue[] {
+		const key = target.spec.query.table.key;
+		if (stored.length === 1) {
+			const one = stored[0]!;
+			const id = ids === undefined ? identity(key, one) : ids[0];
+			const entry = this.#reused(id, one, target, context);
+			this.#byKey = entry;
+			this.#oneId = id;
+			return [entry.row];
+		}
+		const byKey = new Map<unknown, Entry>();
+		// `map`: a list of exactly its rows (the value keeps it; one pushed to reserves room for 16 more).
+		const rows = stored.map((each, at) => {
+			const id = ids === undefined ? identity(key, each) : ids[at];
+			const decoded = this.#reused(id, each, target, context);
+			byKey.set(id, decoded);
+			return decoded.row;
+		});
+		this.#byKey = byKey;
+		this.#oneId = undefined;
+		return rows;
+	}
+
+	/** Forgets the last value's rows: another target decodes its own way, nothing of the previous one is reused. */
+	reset(): void {
+		this.#byKey = NO_ROWS;
+		this.#oneId = undefined;
+		this.#columns = undefined;
+	}
+
+	/**
+	 * The entry of `stored`: the last value's row of its key when its stored columns are all the same, else decoded.
+	 * Kept values stay the entry as it is; a kept row is replaced by the new one, which the next run is compared with.
+	 */
+	#reused(id: unknown, stored: StoredRead, target: LiveTarget, context: Context): Entry {
+		const before = this.#byKey;
+		const entry = before instanceof Map ? before.get(id) : this.#oneId === id ? (before as Entry) : undefined;
+		if (entry instanceof KeptRow) {
+			// The same stored row (a list's page that did not run again hands its rows again): unchanged, a row being
+			// plain data the backend does not change (`sqliteBackend`); no comparison of its columns (1,000 loaded rows
+			// per frame of a list).
+			if (entry.stored === stored) return entry;
+			return new KeptRow(stored, sameRow(entry.stored, stored) ? entry.row : target.decode(stored, context));
+		}
+		if (entry !== undefined && sameStored(entry, stored)) return entry;
+		if (this.#keeps === "rows") return new KeptRow(stored, target.decode(stored, context));
+		return this.#decoded(stored, target, context);
+	}
+
+	#decoded(stored: StoredRead, target: LiveTarget, context: Context): Decoded {
+		const row = target.decode(stored, context);
+		const columns = this.#columnsOf(stored);
+		return new Decoded(
+			columns,
+			columns.map((column) => stored[column]!),
+			row,
+		);
+	}
+
+	/**
+	 * The columns of the stored rows: one list for every row decoded since the last reset, taken from the first, as
+	 * the rows of one statement have the same columns (the backend contract, `sqliteBackend`).
+	 */
+	#columnsOf(stored: StoredRead): readonly string[] {
+		this.#columns ??= Object.keys(stored);
+		return this.#columns;
+	}
+}
+
+/**
+ * Whether `stored` has the decoded row's values in every column of the row it came from (SQLite values compare by
+ * `===`): what comparing the two stored rows column by column gave, without keeping the old one.
+ */
+function sameStored(decoded: Decoded, stored: StoredRead): boolean {
+	const { columns, values } = decoded;
+	for (let at = 0; at < columns.length; at++) if (stored[columns[at]!] !== values[at]) return false;
+	return true;
+}
+
+/** Whether two stored rows of one statement have the same value in every column (SQLite values compare by `===`). */
+function sameRow(a: StoredRead, b: StoredRead): boolean {
+	for (const column in a) if (a[column] !== b[column]) return false;
 	return true;
 }

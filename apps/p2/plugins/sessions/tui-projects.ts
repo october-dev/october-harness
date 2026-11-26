@@ -1,4 +1,4 @@
-// Projects in the TUI (`projects.json`, the projects plugin): whether each place of a project is reachable, as the
+// Projects in the TUI (the projects plugin): whether each place of a project is reachable, as the
 // session selector's project rows show it, and resolving a place for `/move <env>`. A place is resolved with
 // `Envs.listDirectory`, which expands `~` on its machine and fails when that machine is unreachable.
 
@@ -35,7 +35,6 @@ export const placeProblem = (label: string, state: PlaceState): string | undefin
 /** The absolute path of `place` on its machine; throws when the machine or the directory cannot be reached. */
 export async function resolvePlace(ctx: TuiContext, place: ProjectPlace): Promise<string> {
 	const envs = await ownerEnvs(ctx);
-	if (envs.variant !== "owner") throw new Error("Environments are owner-only");
 	const listing = await envs.listDirectory(
 		{ path: place.path, ...(place.env ? { env: place.env } : {}) },
 		BACKGROUND_CONTEXT,
@@ -76,7 +75,7 @@ export class PlaceProbes {
 		this.probe(places);
 	}
 
-	/** Probes the places not probed yet (projects.json changed). */
+	/** Probes the places not probed yet (the projects changed). */
 	probe(places: readonly ProjectPlace[]): void {
 		for (const place of places) this.result(place);
 	}

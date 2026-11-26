@@ -1,16 +1,5 @@
 import { arr, bool, int, nul, num, obj, opt, type Static, str, union } from "@earendil-works/pi-schema";
-import {
-	evolve,
-	literal,
-	local,
-	method,
-	param,
-	propertiesOf,
-	record,
-	remote,
-	serverHost,
-	sessionHost,
-} from "@p2/app/v1";
+import { literal, local, method, param, propertiesOf, record, remote, serverHost, sessionHost } from "@p2/app/v1";
 
 /** One committed user or assistant message of a session conversation, as indexed. */
 export const IndexedMessageSchema = obj({
@@ -92,7 +81,8 @@ const EntryIdsSchema = record(num());
  * rebuildable: a schema change drops it, and workers catch up from their cursors (0) at their next start.
  */
 export const SearchIndex = local("p2.search-index", {
-	version: 1,
+	/** 2: `mentions`. Only the server's plugins hold it, and they reload with it: no `accepts`. */
+	version: 2,
 	params: {},
 	members: {
 		/** The entry ID up to which the chosen conversation is indexed (0: nothing). */
@@ -110,6 +100,11 @@ export const SearchIndex = local("p2.search-index", {
 		history: method(obj({ session: str(), ...propertiesOf(HistoryQuerySchema) }), HistoryHitsSchema),
 		/** Message matches among `sessions` (literal terms, all required). */
 		messages: method(obj({ query: str(), sessions: arr(str()) }), arr(MessageHitSchema)),
+		/**
+		 * The sessions with a message matching `query` (keywords as `ftsQuery` reads them, all required) at or after
+		 * `since`, each with the time of its latest one (rollups' `mentions`).
+		 */
+		mentions: method(obj({ query: str({ minLength: 1, maxLength: 500 }), since: opt(num()) }), record(num())),
 		/** The index rebuilds running or failed (a job each: they survive a server restart). */
 		rebuilds: arr(RebuildSchema),
 		/** Starts re-indexing `session` from the start (`Search.rebuildIndex`); refuses an unknown session. */
@@ -123,74 +118,61 @@ export const SearchIndex = local("p2.search-index", {
  * committed it, and the cursor moves only after a whole range committed, so an interrupted scan is retried.
  */
 export const SearchFeed = remote("p2.search-feed", {
-	version: 1,
+	version: 2,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		worker: {
-			methods: {
-				cursor: method(union([nul(), obj({ conversation: num() })]), num()),
-				index: method(BatchSchema),
-				/** Searches one of this worker's own conversations (the history tools); the session is the worker's. */
-				history: method(HistoryQuerySchema, HistoryHitsSchema),
-			},
-		},
-	},
-});
-
-/** Search over session titles, working directories and message text (owner only): the base of the history. */
-const SearchV1 = remote("p2.search", {
-	version: 1,
-	params: {},
-	hostAddress: serverHost,
-	variants: {
-		owner: {
-			methods: {
-				search: method(QuerySchema, SearchResultsSchema),
-				/**
-				 * Re-indexes one session from the start (Pi Mobile's `rebuildIndex`): its worker stops, its index entries
-				 * go, and a fresh worker scans its history; an archived session's worker scans without resuming work and
-				 * stops again.
-				 */
-				rebuildIndex: method(obj({ session: str() })),
-			},
-		},
+	methods: {
+		cursor: method(union([nul(), obj({ conversation: num() })]), num()),
+		index: method(BatchSchema),
+		/** Searches one of this worker's own conversations (the history tools); the session is the worker's. */
+		history: method(HistoryQuerySchema, HistoryHitsSchema),
 	},
 });
 
 /**
  * Search over session titles, working directories and message text (owner only). 2: `rebuildIndex` answers once the
- * rebuild started (a job); `rebuilds` shows it running, and why it failed. The provider still serves 1.
+ * rebuild started (a job); `rebuilds` shows it running, and why it failed. 3: `sessions` limits a search to those
+ * sessions before ranking and the 41-hit limit (a sidebar list's own sessions). 4: a new base (grantable members
+ * replaced variants; older versions are refused, their pages reload).
  */
-export const Search = evolve(SearchV1, (e) => e.addState("owner", "rebuilds", arr(RebuildSchema)));
+export const Search = remote("p2.search", {
+	version: 4,
+	params: {},
+	hostAddress: serverHost,
+	state: { rebuilds: arr(RebuildSchema) },
+	methods: {
+		search: method(
+			obj({ ...propertiesOf(QuerySchema), sessions: opt(arr(str({ maxLength: 64 }), { maxItems: 10_000 })) }),
+			SearchResultsSchema,
+		),
+		/**
+		 * Re-indexes one session from the start (Pi Mobile's `rebuildIndex`): its worker stops, its index entries
+		 * go, and a fresh worker scans its history; an archived session's worker scans without resuming work and
+		 * stops again.
+		 */
+		rebuildIndex: method(obj({ session: str() })),
+	},
+});
 
 /**
  * Unread answers (owners only): a session is unread while its latest root answer (`answers`) is newer than what an owner
  * has read (`reads`), on any device. A browser marks a session read when its root conversation is shown.
  */
 export const SessionReads = remote("p2.session-reads", {
-	version: 1,
+	version: 2,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: { answers: EntryIdsSchema, reads: EntryIdsSchema },
-			methods: { markRead: method(obj({ session: str(), through: num() })) },
-		},
-	},
+	state: { answers: EntryIdsSchema, reads: EntryIdsSchema },
+	methods: { markRead: method(obj({ session: str(), through: num() })) },
 });
 
 /** A session worker's indexer as the server's rebuild waits for it (the server's broker principal only). */
 export const IndexScan = remote("p2.search-index-scan", {
-	version: 1,
+	version: 2,
 	params: { session: param.str() },
 	hostAddress: sessionHost,
-	variants: {
-		server: {
-			methods: {
-				/** Resolves once this worker's indexer has completed its first full scan. */
-				scanned: method(),
-			},
-		},
+	methods: {
+		/** Resolves once this worker's indexer has completed its first full scan. */
+		scanned: method(),
 	},
 });

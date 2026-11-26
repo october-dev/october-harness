@@ -94,7 +94,7 @@ export class SettingsList implements Component {
 		this.submenuComponent?.invalidate?.();
 	}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		// If submenu is active, render it instead
 		if (this.submenuComponent) {
 			return this.submenuComponent.render(width);
@@ -249,8 +249,11 @@ export class SettingsList implements Component {
 		} else if (kb.matches(data, "tui.select.cancel")) {
 			this.onCancel();
 		} else if (this.searchEnabled && this.searchInput) {
+			// Cursor keys leave the query as it is and must not move the selection.
+			const previousQuery = this.searchInput.getValue();
 			this.searchInput.handleInput(data);
-			this.applyFilter(this.searchInput.getValue());
+			const query = this.searchInput.getValue();
+			if (query !== previousQuery) this.applyFilter(query);
 		}
 	}
 
@@ -318,14 +321,13 @@ export class SettingsList implements Component {
 	}
 
 	private addHintLine(lines: string[], width: number): void {
+		const kb = getKeybindings();
+		const confirm = [...kb.getKeys("tui.select.confirm"), "space"].join("/");
+		const keysHint = `${confirm} to change · ${kb.getKeys("tui.select.cancel").join("/")} to cancel`;
 		lines.push("");
 		lines.push(
 			truncateToWidth(
-				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
-				),
+				this.theme.hint(this.searchEnabled ? `  Type to search · ${keysHint}` : `  ${keysHint}`),
 				width,
 			),
 		);

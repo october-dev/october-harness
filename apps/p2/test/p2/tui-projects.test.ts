@@ -5,11 +5,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type ConversationView, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { Chat, type ModelMeta } from "../../plugins/chat/contract.ts";
+import { CHAT_PARTICIPANT, Chat, type ModelMeta } from "../../plugins/chat/contract.ts";
 import chatTui from "../../plugins/chat/tui.ts";
 import { Envs } from "../../plugins/envs/contract.ts";
 import { type Project, Projects } from "../../plugins/projects/contract.ts";
-import { type Session, Sessions } from "../../plugins/sessions/contract.ts";
+import { SESSIONS_OWNER, type Session, Sessions } from "../../plugins/sessions/contract.ts";
 import sessionsTui, { SessionsSurface } from "../../plugins/sessions/tui.ts";
 import { placeFailure } from "../../plugins/sessions/tui-projects.ts";
 import statusTui from "../../plugins/status/tui.ts";
@@ -55,7 +55,7 @@ const PROJECTS: Project[] = [
 		],
 	},
 ];
-/** Other rows of the catalog: one more in pi, one of no project, one of a project projects.json no longer has. */
+/** Other rows of the catalog: one more in pi, one of no project, one of a project archived or deleted. */
 const ROWS: Session[] = [
 	{ ...SESSION, id: "s2", title: "Second pi", cwd: "/home/me/projects/pi/pi", updatedAt: 4 },
 	{ ...SESSION, id: "free", title: "Free work", cwd: "/tmp/free", updatedAt: 3 },
@@ -98,7 +98,6 @@ function stubs(macGate: Promise<void>, down: Set<string>) {
 			(_input, _principal, self) => {
 				const sessions = self.state([SESSION, ...ROWS]);
 				return {
-					variant: "owner",
 					sessions,
 					defaultCwd: self.state("~"),
 					defaultEnv: self.state(null),
@@ -127,11 +126,11 @@ function stubs(macGate: Promise<void>, down: Set<string>) {
 					fork: unused,
 				};
 			},
+			SESSIONS_OWNER,
 		],
 		[
 			Envs,
 			(_input, _principal, self) => ({
-				variant: "owner",
 				envs: self.state(
 					["mac", "gpu"].map((name) => ({ name, config: { type: "ssh", host: `${name}.example` }, sessions: 0 })),
 				),
@@ -171,15 +170,16 @@ function stubs(macGate: Promise<void>, down: Set<string>) {
 				projects = self.state(PROJECTS);
 				const sessions = members;
 				return {
-					variant: "owner",
 					projects,
-					failure: self.state(null),
+					archived: self.state([]),
 					local: self.state("test-host"),
 					sessions,
 					assign: (args: { session: string; project: string }, ctx: Ctx) => {
 						record("assign", args);
 						sessions.replace(ctx, { ...sessions.value, [args.session]: args.project });
 					},
+					// The web sidebar manages projects; the TUI never does.
+					...unusedMethods(["create", "rename", "locate", "move", "archive", "restore", "remove"]),
 				};
 			},
 		],
@@ -193,7 +193,6 @@ function stubs(macGate: Promise<void>, down: Set<string>) {
 		[
 			Chat,
 			(_input, _principal, self) => ({
-				variant: "participant",
 				view: self.state(view),
 				model: self.state(META),
 				liveShell: self.state(null),
@@ -212,6 +211,7 @@ function stubs(macGate: Promise<void>, down: Set<string>) {
 					"dequeueOwn",
 				]),
 			}),
+			CHAT_PARTICIPANT,
 		],
 	];
 	return { server, worker, calls, members: () => members!, projects: () => projects! };
@@ -408,15 +408,15 @@ test("/move <env> follows the stored project, keeps the subfolder, works while t
 	typed(send, "y");
 	await poll(() => (calls.relocate?.length ?? 0) === 6);
 	assert.deepEqual(calls.relocate?.[5], { id: "s", env: null, cwd: "/home/me/projects/pi/pi" });
-	// No project, or one projects.json no longer has: nothing moves.
+	// No project, or an archived or deleted one: nothing moves.
 	for (const [membership, notice] of [
 		[{}, "This session belongs to no project: start one from a project's row in /sessions"],
-		[{ s: "gone" }, "Project gone is no longer in projects.json"],
+		[{ s: "gone" }, "Project gone is archived or deleted"],
 	] as const) {
 		members().replace(undefined, membership);
 		const surface = runtime.ctx.surface("sessions");
 		assert(surface instanceof SessionsSurface);
-		await poll(() => surface.projectOf("s") === ("s" in membership ? membership.s : undefined));
+		await poll(() => surface.projectOf("s") === (membership as { readonly s?: string }).s);
 		typed(send, "/move mac");
 		send(ENTER);
 		await poll(() => runtime.notices.some((each) => each.text === notice));
@@ -443,7 +443,7 @@ test("/move without an argument: a picker of the project's places, the current o
 	await poll(() => surface.projects[0]?.places.length === 3);
 	typed(send, "/move");
 	send(ENTER);
-	// Every place in projects.json's order, this device marked current; the cursor skips gpu (unreachable) for mac.
+	// Every place in the project's order, this device marked current; the cursor skips gpu (unreachable) for mac.
 	await poll(async () =>
 		/ {2}✗ gpu {2}~\/projects\/pi\/pi +connect ECONNREFUSED *\n {2}• test-host {2}~\/projects\/pi\/pi +current *\n→ ✓ mac {2}~\/projects\/pi\/pi/.test(
 			await screen(),

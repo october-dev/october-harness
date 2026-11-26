@@ -3,13 +3,13 @@
 `plugins/discord` lets people in a Discord channel wake a p2 session by mentioning a bot. The session reads what was
 said since its last turn, works in its sandbox, and its answer goes back to the channel as a reply.
 
-## Bots (More › Discord)
+## Bots (Settings › Discord)
 
 Bots are global: the owner sets them up once, then links sessions to channels from the sessions themselves.
 
 1. At https://discord.com/developers/applications create an application, add a **Bot**, turn on **Message Content
    Intent** (Bot → Privileged Gateway Intents), and copy the bot token.
-2. More › Discord lists the bots with their status. **Add bot**: paste the token, **Connect**. Discord's refusal
+2. Settings › Discord lists the bots with their status. **Add bot**: paste the token, **Connect**. Discord's refusal
    (a wrong token, the intent off) shows there and nothing is kept; once Discord accepts it, the bot's sheet opens.
 3. A bot's sheet: who it is and whether it is connected, the servers it is in (live: inviting it somewhere adds the
    server), the **invite link** (copy or open; it asks for view channels, send messages and in threads, embed links,
@@ -115,11 +115,10 @@ exactly what the owner picked:
 
 - **MCP servers:** only the picked servers of `mcp.json`; the project's `.pi/mcp.json` servers only when picked.
 - **Instructions:** the global AGENTS.md, skills and prompt templates only when picked (the project's own always).
-- **Capabilities:** `ports` (forwarding) and `conversations` (messaging other sessions) only when picked;
-  `reload_plugins` never. Other owner-only tools pass: what they reach is already confined (location tools by the
-  sandbox).
+- **Capabilities:** `ports` (forwarding) and `conversations` (messaging other sessions) only when picked. Other
+  tools pass: what they reach is already confined (location tools, bash and `reload_plugins` by the sandbox).
 
-In a locked session the lock replaces the "a turn the owner started" check, for the owner too. Unlinking lifts it.
+The lock holds for everyone, the owner too (p2 has no per-turn authority). Unlinking lifts it.
 
 ## State
 

@@ -1,10 +1,12 @@
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { arr, bool, int, nul, num, obj, opt, type Static, str, union, unknown } from "@earendil-works/pi-schema";
-import type { Author, Ctx } from "@p2/app/v1";
 import {
 	AttachmentSchema,
+	type Author,
+	type Ctx,
 	EntriesPageSchema,
 	EntriesQuerySchema,
+	grantable,
 	keyedRegistry,
 	literal,
 	local,
@@ -13,6 +15,7 @@ import {
 	method,
 	param,
 	propertiesOf,
+	type RefWith,
 	remote,
 	sessionHost,
 	ThinkingLevelSchema,
@@ -23,7 +26,8 @@ import type { ActiveStats } from "@p2/app/v1/worker";
 /**
  * Durable's conversation view as clients hold it: a window over the transcript (the newest 50 to 100 entries, `before`
  * the entry just before it) and the conversation's documents; null until the watch delivered it. Clients render it
- * through `ConversationTranscript`, which pages in what lies before the window or in a gap (`Chat.entries`).
+ * through `ConversationTranscript`, which pages in what lies before the window or in a gap (`Chat.entries`). Image parts
+ * of its entries' messages are references (`ImageRef`, src/runtime/entry-images.ts), loaded through `ChatImages`.
  */
 export const ViewSchema = unsafe<ConversationView | null>(unknown());
 
@@ -158,6 +162,16 @@ export const SubmitSchema = obj({
 });
 export type Submit = Static<typeof SubmitSchema>;
 
+/** One image part of an entry: the entry, the message in its `model`, the part in that message's content. */
+export const ImagePlaceSchema = obj({
+	entry: int({ minimum: 1 }),
+	message: int({ minimum: 0 }),
+	part: int({ minimum: 0 }),
+});
+
+/** An image part's bytes as the entry holds them: base64 `data`. */
+export const ImageBytesSchema = obj({ mimeType: str(), data: str() });
+
 /**
  * One Durable conversation of this worker (host-internal, shared by every viewer): its view mirrored from a Durable
  * watch, and the operations that need an author, which callers pass explicitly.
@@ -190,6 +204,8 @@ export const Conversation = local("p2.conversation", {
 		stop: method(undefined, obj({ restored: RestoredSchema })),
 		dequeue: method(obj({ submissionId: num(), restore: bool() }), obj({ restored: RestoredSchema })),
 		entries: method(EntriesQuerySchema, EntriesPageSchema),
+		/** An image part of an entry (`ChatImages`); throws when there is none there. */
+		image: method(ImagePlaceSchema, ImageBytesSchema),
 		configure: method(ConversationConfigureSchema),
 		/** The current model's metadata (see `ModelMetaSchema`), following the view's `pi.agent` and the catalog. */
 		model: ModelStateSchema,
@@ -215,47 +231,75 @@ export const Chat = remote("p2.chat", {
 	 * 4: `liveShell` state; `shell` and `abortShell` (user shell commands, `!cmd`/`!!cmd`).
 	 * 5: `view` holds the newest entries only (`ChatView.window`; older ones through `history`).
 	 * 6: `view` is Durable's window over the transcript (`before`); `stats` state; `entries` replaces `history`.
+	 * 7: a new base (grantable members replaced variants; older versions are refused).
 	 */
-	version: 6,
+	version: 7,
 	params: { session: param.str(), conversation: param.int() },
 	hostAddress: sessionHost,
-	variants: {
-		viewer: {
-			state: { view: ViewSchema, stats: StatsSchema, model: ModelStateSchema, liveShell: ShellStateSchema },
-			methods: { entries: method(EntriesQuerySchema, EntriesPageSchema) },
-		},
-		participant: {
-			state: { view: ViewSchema, stats: StatsSchema, model: ModelStateSchema, liveShell: ShellStateSchema },
-			methods: {
-				entries: method(EntriesQuerySchema, EntriesPageSchema),
-				send: method(SendSchema, obj({ submissionId: num() })),
-				/** Aborts the current run; queued inputs are withdrawn and the caller's own come back as text. */
-				stop: method(undefined, obj({ restored: arr(str()) })),
-				/** Withdraws a queued input; with `restore`, returns its text if the caller wrote it. */
-				dequeue: method(obj({ submissionId: num(), restore: opt(bool()) }), obj({ text: union([str(), nul()]) })),
-				configure: method(ConfigureSchema),
-				/** Summarizes earlier context now (pi's `/compact [instructions]`); returns the compaction task. */
-				compact: method(CompactSchema, obj({ taskId: num() })),
-				/** Aborts running compactions (pi: Escape while compacting); returns how many were marked. */
-				abortCompaction: method(undefined, obj({ aborted: int({ minimum: 0 }) })),
-				/** Starts a new context with an optional handoff (owner only: it changes the context for everyone). */
-				reset: method(ResetSchema),
-				/**
-				 * Withdraws the caller's own queued inputs (by the server-stamped author, in submission order) and returns
-				 * their texts; other authors' stay queued. Inputs placed or withdrawn concurrently are counted as skipped.
-				 */
-				dequeueOwn: method(undefined, DequeueOwnResultSchema),
-				/**
-				 * Runs a shell command in this conversation's working directory on the session's environment (pi's `!cmd`;
-				 * `!!cmd` without context). It never starts a run: the finished command becomes a `p2.shell` entry. One
-				 * command at a time per conversation.
-				 */
-				shell: method(ShellSchema, obj({ shellId: str() })),
-				/** Cancels the running command (its author or the owner). */
-				abortShell: method(obj({ shellId: str() }), obj({ aborted: bool() })),
-			},
-		},
+	state: { view: ViewSchema, stats: StatsSchema, model: ModelStateSchema, liveShell: ShellStateSchema },
+	/** Everyone who views reads; people who may send in the session are granted the rest (`CHAT_PARTICIPANT`). */
+	methods: {
+		entries: method(EntriesQuerySchema, EntriesPageSchema),
+		send: grantable(method(SendSchema, obj({ submissionId: num() }))),
+		/**
+		 * Aborts the current run; queued inputs are withdrawn and the caller's own come back as text. Messages from
+		 * subagents and peer sessions stay queued for the next input.
+		 */
+		stop: grantable(method(undefined, obj({ restored: arr(str()) }))),
+		/** Withdraws a queued input; with `restore`, returns its text if the caller wrote it. */
+		dequeue: grantable(
+			method(obj({ submissionId: num(), restore: opt(bool()) }), obj({ text: union([str(), nul()]) })),
+		),
+		configure: grantable(method(ConfigureSchema)),
+		/** Summarizes earlier context now (pi's `/compact [instructions]`); returns the compaction task. */
+		compact: grantable(method(CompactSchema, obj({ taskId: num() }))),
+		/** Aborts running compactions (pi: Escape while compacting); returns how many were marked. */
+		abortCompaction: grantable(method(undefined, obj({ aborted: int({ minimum: 0 }) }))),
+		/** Starts a new context with an optional handoff (owner only: it changes the context for everyone). */
+		reset: grantable(method(ResetSchema)),
+		/**
+		 * Withdraws the caller's own queued inputs (by the server-stamped author, in submission order) and returns
+		 * their texts; other authors' stay queued. Inputs placed or withdrawn concurrently are counted as skipped.
+		 */
+		dequeueOwn: grantable(method(undefined, DequeueOwnResultSchema)),
+		/**
+		 * Runs a shell command in this conversation's working directory on the session's environment (pi's `!cmd`;
+		 * `!!cmd` without context). It never starts a run: the finished command becomes a `p2.shell` entry. One
+		 * command at a time per conversation.
+		 */
+		shell: grantable(method(ShellSchema, obj({ shellId: str() }))),
+		/** Cancels the running command (its author or the owner). */
+		abortShell: grantable(method(obj({ shellId: str() }), obj({ aborted: bool() }))),
 	},
+});
+
+/** What people who may send in the session are granted on `Chat`. */
+export const CHAT_PARTICIPANT = [
+	"send",
+	"stop",
+	"dequeue",
+	"configure",
+	"compact",
+	"abortCompaction",
+	"reset",
+	"dequeueOwn",
+	"shell",
+	"abortShell",
+] as const;
+
+/** A reference to a conversation that may send there. */
+export type ChatParticipant = RefWith<typeof Chat, (typeof CHAT_PARTICIPANT)[number]>;
+
+/**
+ * Stopping a conversation's run from outside its chat (the sidebar's Cancel, the command menu's Stop): every input the
+ * stop withdraws, the caller's own too, waits as its author's draft (`DraftStore`), restored to their composer when
+ * they open that conversation. The chat's own Stop (`Chat.stop`) returns the caller's texts to the composer at once.
+ */
+export const RunControl = remote("p2.run-control", {
+	version: 2,
+	params: { session: param.str(), conversation: param.int() },
+	hostAddress: sessionHost,
+	methods: { stop: method() },
 });
 
 /**
@@ -263,12 +307,21 @@ export const Chat = remote("p2.chat", {
  * view holds only a window).
  */
 export const ChatCosts = remote("p2.chat-costs", {
-	version: 1,
+	version: 2,
 	params: { session: param.str(), conversation: param.int() },
 	hostAddress: sessionHost,
-	variants: {
-		viewer: { methods: { costs: method(undefined, arr(AssistantCostSchema)) } },
-	},
+	methods: { costs: method(undefined, arr(AssistantCostSchema)) },
+});
+
+/**
+ * The images of a conversation's entries for the server's `/entry-image` route (plugins/chat/server.ts), which checks
+ * who may view the session; the view carries references to them instead of their bytes.
+ */
+export const ChatImages = remote("p2.chat-images", {
+	version: 2,
+	params: { session: param.str(), conversation: param.int() },
+	hostAddress: sessionHost,
+	methods: { image: method(ImagePlaceSchema, ImageBytesSchema) },
 });
 
 /** What a participant sent, with the server-stamped author, as `Chat.send` hands it to a router. */
@@ -299,3 +352,18 @@ export type EntryDisplay = {
  */
 export const TranscriptEntries =
 	keyedRegistry<(data: unknown) => EntryDisplay | undefined>("p2.chat-transcript-entries");
+
+/**
+ * A subagent's conversation as a command target's id, `<session>/<conversation>` (the chat page's "conversation"
+ * target; other plugins' commands act on it too).
+ */
+export const conversationTargetId = (session: string, conversation: number): string => `${session}/${conversation}`;
+
+/** Parses a "conversation" target's id (`conversationTargetId`); it comes back from the menu's locator, so it is checked. */
+export function conversationOf(id: string): { readonly session: string; readonly conversation: number } | undefined {
+	const slash = id.lastIndexOf("/");
+	const conversation = Number(id.slice(slash + 1));
+	return slash > 0 && Number.isInteger(conversation) && conversation > 0
+		? { session: id.slice(0, slash), conversation }
+		: undefined;
+}

@@ -1,5 +1,6 @@
 import { arr, bool, num, obj, opt, type Static, str } from "@earendil-works/pi-schema";
 import {
+	grantable,
 	type Location,
 	LocationSchema,
 	literal,
@@ -11,6 +12,20 @@ import {
 	serverHost,
 	sessionHost,
 } from "@p2/app/v1";
+
+/** A child as 6e11a00a0 released it, before its time and failure (`Subagents` 2, `ChildRows` 1). */
+const ChildSchemaV2 = obj({
+	name: str(),
+	kind: opt(literal("agent")),
+	callId: opt(str()),
+	archived: opt(bool()),
+	conversationId: num(),
+	model: str(),
+	thinkingLevel: str(),
+	tools: arr(str()),
+	location: opt(LocationSchema),
+	lastEntryId: num(),
+});
 
 export const ChildSchema = obj({
 	/** A subagent's name; a one-shot agent's label. */
@@ -28,8 +43,28 @@ export const ChildSchema = obj({
 	/** A subagent's own location (environment and cwd, e.g. a git worktree); absent: it follows the session. */
 	location: opt(LocationSchema),
 	lastEntryId: num(),
+	/** When its newest message was written (ms). */
+	updatedAt: opt(num()),
+	/**
+	 * Why its latest run ended without an answer: Durable's run failure reason (e.g. `aborted`, `no_model`) and its
+	 * detail (an error's text; owners only). Absent after a run that answered.
+	 */
+	failure: opt(obj({ reason: str(), detail: opt(str()) })),
 });
 export type Child = Static<typeof ChildSchema>;
+
+/** A child's model text (`provider/modelId`; the model ID may hold more slashes) as a model reference. */
+export function modelRefOf(text: string): { provider: string; modelId: string } | undefined {
+	const slash = text.indexOf("/");
+	return slash > 0 ? { provider: text.slice(0, slash), modelId: text.slice(slash + 1) } : undefined;
+}
+
+/** A model's short name: the part of its text (`provider/modelId`, or a model ID) after the last slash. */
+export const shortModelName = (text: string): string => text.slice(text.lastIndexOf("/") + 1);
+
+/** The order subagents are listed in (the sidebar, the command menu): the most recently active first. */
+export const byRecentActivity = (a: Child, b: Child): number =>
+	b.lastEntryId - a.lastEntryId || b.conversationId - a.conversationId;
 
 /** Where a conversation works: a child's own location, else the session's (the main conversation's). */
 export const conversationLocation = (
@@ -61,8 +96,8 @@ const ChildrenSchema = record(arr(ChildSchema));
 
 /** Persistent sidebar metadata; transcripts remain in the worker's Durable storage. */
 export const ChildStore = local("p2.child-store", {
-	// 2: a child's own location instead of its own cwd.
-	version: 2,
+	// 2: a child's own location instead of its own cwd. 3: its time and failure.
+	version: 3,
 	params: {},
 	members: {
 		children: ChildrenSchema,
@@ -70,37 +105,35 @@ export const ChildStore = local("p2.child-store", {
 	},
 });
 
-/** Workers report their own children; readers never start workers just to fill the sidebar. */
+/**
+ * Every session's subagents for people (`children`: the owner every session's, a guest its sessions'); a worker reports
+ * its own session's (`report`). Readers never start workers just to fill the sidebar. 2: a child's own location
+ * instead of its own cwd. 3: a child's time and failure. 4: a new base (grantable members replaced variants; older
+ * versions are refused, their pages reload).
+ */
 export const Subagents = remote("p2.subagents", {
-	// 2: a child's own location instead of its own cwd.
-	version: 2,
+	version: 4,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		reader: { state: { children: ChildrenSchema } },
-		reporter: { methods: { report: method(obj({ children: arr(ChildSchema) })) } },
-	},
+	state: { children: grantable(ChildrenSchema) },
+	methods: { report: grantable(method(obj({ children: arr(ChildSchema) }))) },
 });
 
 /** Changing a session's subagents from the browser (worker): the owner and read/write guests. */
 export const SubagentControl = remote("p2.subagent-control", {
-	version: 1,
+	version: 2,
 	params: { session: param.str() },
 	hostAddress: sessionHost,
-	variants: {
-		participant: {
-			methods: {
-				/**
-				 * Archives a subagent (stopping its work first) or restores it. One-shot agents are read-only: they belong to
-				 * the script waiting for their answer.
-				 */
-				archive: method(obj({ conversation: num(), archived: bool() })),
-			},
-		},
+	methods: {
+		/**
+		 * Archives a subagent (stopping its work first) or restores it. One-shot agents are read-only: they belong to
+		 * the script waiting for their answer.
+		 */
+		archive: method(obj({ conversation: num(), archived: bool() })),
 	},
 });
 
-export { ChildrenSchema };
+export { ChildrenSchema, ChildSchemaV2 };
 
 export {
 	AGENT_MESSAGE_ENTRY,

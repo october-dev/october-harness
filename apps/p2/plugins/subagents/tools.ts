@@ -27,7 +27,7 @@ import {
 import { arr, bool, compile, nul, obj, opt, str, union } from "@earendil-works/pi-schema";
 import type { Context, JsonValue } from "@p2/app/v1";
 import { type Location, type LocationInput, literal, locationText, senderText } from "@p2/app/v1";
-import { answerOrigin, defineP2Tool, mainConversation, originOf, type P2Tool } from "@p2/app/v1/worker";
+import { defineP2Tool, mainConversation, type P2Tool } from "@p2/app/v1/worker";
 import { AGENT_MESSAGE_ENTRY, type AgentMessage, SUBAGENT_TASK_ENTRY, SubagentLocationsSchema } from "./contract.ts";
 import {
 	CODEMODE_TOOL,
@@ -39,6 +39,7 @@ import {
 	TEAM_TOOL,
 	type ToolChoice,
 } from "./contract.worker.ts";
+import { listModels } from "./model-list.ts";
 
 const SUBAGENT_EXTENSION = "subagent-tools";
 
@@ -106,7 +107,7 @@ function textOf(message: AssistantMessage | undefined): string {
 /**
  * A subagent's message as an input: the structural entry readers use, and what the model reads: the sender block, then
  * the intent and the text. `replyWith` is the tool call that answers a question (the main agent's `subagent send`, a
- * sibling's `team send`).
+ * sibling's `team send`). A Stop keeps it queued for the next input: the subagent cannot send it again.
  */
 function agentMessageInput(message: AgentMessage, replyWith: string) {
 	const label = {
@@ -121,6 +122,7 @@ function agentMessageInput(message: AgentMessage, replyWith: string) {
 			{ type: "text" as const, text: `[${label}] ${message.text}` },
 		],
 		entry: { kind: AGENT_MESSAGE_ENTRY, data: message as unknown as JsonValue },
+		onAbort: "keep" as const,
 	};
 }
 
@@ -154,14 +156,9 @@ type ReporterInput = {
 	parent?: ConversationId;
 	message: string;
 	followUp: boolean;
-	/** The owner started the main agent's turn: the subagent's turn inherits it (`SUBAGENT_TASK_ENTRY`). */
-	origin?: "owner";
 };
-/**
- * `report`: what to tell the main agent, with the origin of the subagent's run that answered (`answerOrigin`); a
- * failure the reporter itself describes has the task's.
- */
-type Report = { intent: "answered" | "failed"; text: string; origin?: "owner" };
+/** `report`: what to tell the main agent. */
+type Report = { intent: "answered" | "failed"; text: string };
 type ReporterState = { phase: "deliver" } | { phase: "report"; report?: Report };
 const Reporter = defineTask<ReporterInput, ReporterState, null>({
 	name: "p2.subagent-reporter",
@@ -169,14 +166,14 @@ const Reporter = defineTask<ReporterInput, ReporterState, null>({
 	initial: () => ({ phase: "deliver" }),
 	phases: {
 		deliver: async (reporter, runtime, context) => {
-			const { name, conversationId, message, followUp, origin } = reporter.input;
+			const { name, conversationId, message, followUp } = reporter.input;
 			const subagent = await runtime.conversation(conversationId, context);
 			if (!subagent) throw new Error(`Subagent ${name} has no conversation`);
 			const submission = await subagent.submit(
 				{
 					type: "input",
 					content: message,
-					...(origin ? { entry: { kind: SUBAGENT_TASK_ENTRY, data: { origin } } } : {}),
+					entry: { kind: SUBAGENT_TASK_ENTRY, data: {} },
 					whenBusy: followUp ? "followUp" : "steer",
 					requestId: `subagent:${reporter.id}`,
 				},
@@ -185,7 +182,7 @@ const Reporter = defineTask<ReporterInput, ReporterState, null>({
 			const settled = await settledOrWithdrawn(submission, subagent, () => pause(runtime, 1000, context), context);
 			await runtime.commit(async (tx) => {
 				const next = (report?: Report) => ({ status: "running", checkpoint: { phase: "report", report } }) as const;
-				const failed = (text: string): Report => ({ intent: "failed", text, ...(origin ? { origin } : {}) });
+				const failed = (text: string): Report => ({ intent: "failed", text });
 				if (settled === undefined) return next(failed(undelivered));
 				if (settled.status === "unanswered")
 					return next(settled.reason === "aborted" ? undefined : failed(settled.reason));
@@ -195,8 +192,7 @@ const Reporter = defineTask<ReporterInput, ReporterState, null>({
 				if (!agent || agent.reported.includes(settled.answer)) return next();
 				agent.reported.push(settled.answer);
 				const answer = (await tx.entry(AssistantEntry, settled.answer))?.model?.[0] as AssistantMessage | undefined;
-				const answered = await answerOrigin(tx, conversationId, settled.answer);
-				return next({ intent: "answered", text: textOf(answer), ...(answered ? { origin: answered } : {}) });
+				return next({ intent: "answered", text: textOf(answer) });
 			}, context);
 		},
 		report: async (reporter, runtime, context) => {
@@ -314,7 +310,9 @@ export type SubagentLocator = {
 		target: LocationInput,
 		from: Location,
 		context: Context,
-	) => Promise<Location | { error: string }>;
+	) => Promise<
+		{ readonly kind: "directory"; readonly location: Location } | { readonly kind: "invalid"; readonly error: string }
+	>;
 };
 
 /**
@@ -333,7 +331,7 @@ export async function placeTarget(
 	if (sandbox !== undefined && env !== sandbox)
 		return `You work in sandbox ${sandbox}; your subagents can only work inside it.`;
 	const resolved = await locator.directory({ env, path: args.cwd ?? "" }, caller, context);
-	if (!("error" in resolved)) return resolved;
+	if (resolved.kind === "directory") return resolved.location;
 	const where = `${env === caller.env ? "" : `${env ?? "local"}:`}${args.cwd ?? "~"}`;
 	return resolved.error === "not an existing directory"
 		? `cwd ${where} is not an existing directory.`
@@ -385,8 +383,7 @@ export function createSubagentExtension(
 			"  Without env and cwd it works where you work and follows the session when it moves. With them it gets its own",
 			"  location, which stays when the session moves: cwd is an existing directory its tools run in and the user's workspace",
 			"  view shows, e.g. a git worktree you created first (relative to your cwd on your environment, to the home on another);",
-			"  env is an environment name from location_envs, or null for this device (default: yours; another environment needs",
-			"  the owner's request).",
+			"  env is an environment name from location_envs, or null for this device (default: yours).",
 			"  model is 'provider/modelId' (default: yours); thinkingLevel is off|minimal|low|medium|high|xhigh|max",
 			"  (clamped to the model); tools names tools of yours it gets (default: all you can give; [] for none). Tools that",
 			"  work only in your conversation (subagent, rename_session, …) cannot be given. With codemode its scripts call",
@@ -400,7 +397,8 @@ export function createSubagentExtension(
 			"- archive (name): stop it and hide it from the user's sidebar and from status; restore (name) or send brings it back.",
 			"- answer (name): return its latest completed answer, e.g. when a report did not reach you or you need it again.",
 			"- status (optional name): list subagents and whether they are working; archived ones only by name.",
-			"- models: list models that have credentials configured.",
+			"- models (optional model: a provider or parts of a model id, e.g. 'anthropic' or 'sonnet 4'): list models that have",
+			"  credentials configured, or only those matching model.",
 			"Answers are reported back to you as messages when they arrive; do not wait or poll for them.",
 			'Subagents can also message you while they work: a <sender kind="subagent"> message marked [asks; …] needs your',
 			"answer (send to that subagent); a note needs none.",
@@ -447,8 +445,7 @@ export function createSubagentExtension(
 
 			if (action === "models") {
 				const available = await models.getAvailable(undefined, { signal: AbortSignal.timeout(10_000) });
-				const lines = available.slice(0, 200).map((model) => `${model.provider}/${model.id} (${model.name})`);
-				return reply(lines.length ? lines.join("\n") : "No models with configured credentials.");
+				return reply(listModels(available, args.model));
 			}
 			if (action === "status") {
 				const all = Object.entries(registry.agents);
@@ -512,8 +509,6 @@ export function createSubagentExtension(
 				return reply("Only spawn and configure take a location.", {}, true);
 			if (args.followSession && (action !== "configure" || placing))
 				return reply("followSession is for configure, without env or cwd.", {}, true);
-			// Who started this turn: the owner may choose another environment, and the subagent's turn inherits it.
-			const origin = action === "spawn" || action === "send" || placing ? await originOf(api, context) : undefined;
 			if (action === "spawn" || action === "configure") {
 				if (action === "spawn" && agent)
 					return reply(`${name} already exists${agent.archived ? " (archived)" : ""}; use send.`, {}, true);
@@ -534,8 +529,6 @@ export function createSubagentExtension(
 				else if (placing) {
 					// From the caller's location (the session's: subagents spawn none).
 					const caller = await locator.locate(api.conversationId, api, context);
-					if (args.env !== undefined && args.env !== caller.env && origin !== "owner")
-						return reply("Another environment needs a turn the owner started.", {}, true);
 					// A subagent in a sandbox: a cwd alone means a path in that sandbox (it cannot be placed elsewhere).
 					const kept =
 						agent?.location && args.env === undefined ? await locator.sandbox(agent.location) : undefined;
@@ -615,7 +608,6 @@ export function createSubagentExtension(
 					parent: api.conversationId,
 					message: message ?? "",
 					followUp: action === "send" && followUp === true,
-					...(origin === "owner" ? { origin } : {}),
 				};
 				state.reporters[api.taskId] = await tx.createTask(Reporter, input, background);
 				return action === "send" ? `Sent to ${name}.` : `Started ${name}.`;
@@ -738,8 +730,6 @@ const teamTool: P2Tool = defineP2Tool({
 			context,
 		);
 		if (!target) return reply(`${args.to} has no conversation.`, true);
-		// The receiver's turn may act for the owner if this one may.
-		const origin = await originOf(api, context);
 		await target.submit(
 			{
 				type: "input",
@@ -748,7 +738,6 @@ const teamTool: P2Tool = defineP2Tool({
 						from: { name: self, conversationId: api.conversationId },
 						intent: args.intent ?? "question",
 						text: args.message,
-						...(origin ? { origin } : {}),
 					},
 					sibling ? `team send to ${self}` : `subagent send to ${self}`,
 				),

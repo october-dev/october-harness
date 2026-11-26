@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { type Api, type ImageContent, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
-import { setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { setCapabilityOverrides, takeProgramResumeToken } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Args, isValidThinkingLevel, type Mode, normalizeSessionName, parseArgs, printHelp } from "./cli/args.ts";
 import {
@@ -58,6 +58,7 @@ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dis
 import { resolveCliModel, resolveModelScopeWithDiagnostics, type ScopedModel } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
+import type { ProgressEvent } from "./core/package-manager.ts";
 import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
@@ -88,6 +89,7 @@ import { OCTOBER_PROVIDER_ID } from "./extensions/october/auth.ts";
 import { seedOctoberDefaultPackages } from "./extensions/october/default-packages.ts";
 import { octoberCatalogIsLive } from "./extensions/october/provider.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+import { writeDiagnosticsToStderr } from "./modes/diagnostics-stderr.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-schema.ts";
@@ -870,6 +872,10 @@ export interface MainOptions {
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
+	// Taken in every mode, before anything starts a child process: pi reports its own resume command, and
+	// shells, editors and extension processes it starts must not replace it or register commands that later
+	// run with the user's rights (OSC 7577).
+	const programResumeToken = takeProgramResumeToken();
 	// Trace flags are validated before any settings, extension, or auth bootstrap, and replay reads
 	// only the trace file, so a rejected or replay invocation has no startup side effects.
 	const optionArgs = args.includes("--") ? args.slice(0, args.indexOf("--")) : args;
@@ -1098,7 +1104,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
 	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager);
 
-	// Experimental first-time setup: theme choice and analytics opt-in.
+	// Experimental first-time setup: analytics opt-in.
 	// Runs before any runtime services are created so the chosen settings apply everywhere.
 	if (appMode === "interactive" && !parsed.help && parsed.listModels === undefined && shouldRunFirstTimeSetup()) {
 		await showFirstTimeSetup(startupSettingsManager);
@@ -1201,6 +1207,16 @@ export async function main(args: string[], options?: MainOptions) {
 	// Resolved once per process from global settings; every runtime reuses it, so an edit to the
 	// settings file during the process cannot change where shell commands run.
 	const shellRunner = await resolveShellRunner(startupSettingsManager.getShellRunnerSettings(), sessionCwd);
+	// Interactive mode installs and refreshes packages again on /reload, /new, /resume and /fork while the TUI
+	// draws on the terminal, where git and npm output would corrupt its screen (#11264). Their output is
+	// captured, and until the TUI starts each install is announced on stderr instead.
+	const packageCommandOutput = appMode === "interactive" ? "capture" : "inherit";
+	let announcePackageInstalls = packageCommandOutput === "capture";
+	const onPackageProgress = (event: ProgressEvent) => {
+		if (announcePackageInstalls && event.type === "start" && event.message) {
+			console.error(chalk.dim(event.message));
+		}
+	};
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -1256,6 +1272,8 @@ export async function main(args: string[], options?: MainOptions) {
 					}
 				: undefined,
 			resourceLoaderOptions: {
+				packageCommandOutput,
+				onPackageProgress,
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
@@ -1289,14 +1307,15 @@ export async function main(args: string[], options?: MainOptions) {
 		];
 
 		const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
-		let scopedModels: ScopedModel[] = [];
-		if (modelPatterns && modelPatterns.length > 0) {
-			const scope = await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime, {
-				signal: AbortSignal.timeout(15_000),
-			});
-			scopedModels = scope.scopedModels;
-			diagnostics.push(...scope.diagnostics);
-		}
+		const { scopedModels, diagnostics: modelScopeDiagnostics } =
+			modelPatterns && modelPatterns.length > 0
+				? await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime, {
+						signal: AbortSignal.timeout(15_000),
+					})
+				: { scopedModels: [], diagnostics: [] };
+		// Returned as diagnostics instead of printed: this factory runs again on /new, /resume and /fork,
+		// while the interactive TUI draws on the terminal (#11264).
+		diagnostics.push(...modelScopeDiagnostics);
 		const octoberModel =
 			!offlineMode && appMode !== "interactive" ? await resolveOctoberCliModel(parsed, modelRuntime) : undefined;
 		const {
@@ -1362,6 +1381,12 @@ export async function main(args: string[], options?: MainOptions) {
 				);
 			}
 		}
+		// "Could not restore model x/y. Using a/b." is set again on /resume and /fork. As a diagnostic, every
+		// mode reports it at startup and after each replacement. Without any model, the message is login
+		// guidance instead: interactive mode shows it at startup, the other modes exit with it below.
+		if (created.modelFallbackMessage && created.session.model) {
+			diagnostics.push({ type: "warning", message: created.modelFallbackMessage });
+		}
 
 		return {
 			...created,
@@ -1382,11 +1407,15 @@ export async function main(args: string[], options?: MainOptions) {
 	applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
 	configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
 
-	const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+	// Taking them marks them reported, so the modes do not report them again after a session replacement.
+	const startupDiagnostics = deduplicateDiagnostics([
+		...startupSettingsDiagnostics,
+		...runtime.takeUnreportedDiagnostics(),
+	]);
 	const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
 
 	if (parsed.help) {
-		reportDiagnostics(startupDiagnostics);
+		writeDiagnosticsToStderr(startupDiagnostics);
 		const extensionFlags = resourceLoader
 			.getExtensions()
 			.extensions.flatMap((extension) => Array.from(extension.flags.values()));
@@ -1395,7 +1424,7 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	if (parsed.listModels !== undefined) {
-		reportDiagnostics(startupDiagnostics);
+		writeDiagnosticsToStderr(startupDiagnostics);
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		await listModels(modelRuntime, searchPattern, AbortSignal.timeout(LIST_MODELS_AVAILABILITY_TIMEOUT_MS));
 		process.exit(0);
@@ -1467,11 +1496,13 @@ export async function main(args: string[], options?: MainOptions) {
 		await runRpcMode(runtime);
 		finishTrace();
 	} else if (appMode === "interactive") {
+		announcePackageInstalls = false;
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
 			shellRunnerNotice,
-			modelFallbackMessage,
+			// A fallback to another model is already in startupDiagnostics.
+			modelFallbackMessage: session.model ? undefined : modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			capabilityPreflightHost,
 			initialMessage,
@@ -1480,6 +1511,7 @@ export async function main(args: string[], options?: MainOptions) {
 			verbose: parsed.verbose,
 			tuiMode: parsed.tuiMode,
 			initialThemeSetting: parsed.useTheme,
+			programResumeToken,
 		});
 		if (startupBenchmark) {
 			await interactiveMode.init();

@@ -1,26 +1,25 @@
 // The MCP sheet (owners): the running servers with their status, errors and tools, restart, and signing in and out of
-// HTTP servers that use OAuth. Sign in opens `/mcp/sign-in/<server>` in a new tab (it finds out where the browser runs);
+// HTTP servers that use OAuth (signing in again is signing out, then in, as in pi). Sign in opens `/mcp/sign-in/<server>` in a new tab (it finds out where the browser runs);
 // while a sign-in waits, the final redirect URL can be pasted here, for a browser that cannot reach where it returns.
+// Until the servers load it says so; a view that failed or ended shows why, with Retry.
 
-import { BACKGROUND_CONTEXT, contribute, defineFacet, type HeldIn, locationText } from "@p2/app/v1";
+import { BACKGROUND_CONTEXT, contribute, defineFacet, keptWith, locationText } from "@p2/app/v1";
 import {
 	ChevronIcon,
 	closeLayers,
 	errorText,
-	openLayer,
+	SettingsSections,
 	Sheet,
-	Slots,
 	useComposerState,
+	useConnected,
 	useObject,
 	useOptimisticCall,
 	useOwner,
 	useReadable,
 	useSheet,
 } from "@p2/app/v1/web";
-import { useState } from "react";
-import { type Instance, Mcp, type SignIn, signInLink } from "./contract.ts";
-
-type OwnerView = HeldIn<typeof Mcp, "owner">;
+import { useCallback, useEffect, useRef, useState } from "react";
+import { type Instance, MCP_OWNER, Mcp, type McpOwnerView, type SignIn, signInLink } from "./contract.ts";
 
 /** A change of the instances while its call is in flight: a restart starts it, a sign-out leaves it signed out. */
 type InstanceGuess =
@@ -53,9 +52,42 @@ const STATUS: Record<Instance["status"], string> = {
 	failed: "Failed",
 };
 
-/** The sheet: configuration errors, then each server with its instances and sign-in. */
+/** The sheet: the intro, then the servers, held anew when their view ended. */
 function McpSheet({ onClose }: { onClose: () => void }) {
-	const view = useObject(Mcp, {}, { variant: "owner" });
+	const [hold, setHold] = useState(0);
+	const holdAgain = useCallback(() => setHold((count) => count + 1), []);
+	return (
+		<Sheet title="MCP servers" onClose={onClose}>
+			<p className="muted small">
+				Servers of <span className="mono">mcp.json</span> run while sessions use them. Sign-in credentials are
+				stored on the server.
+			</p>
+			<McpServers key={hold} holdAgain={holdAgain} />
+		</Sheet>
+	);
+}
+
+/**
+ * Configuration errors, then each server with its instances and sign-in. A dropped link keeps the last values while
+ * the view binds again; before the first values it says "Loading…"; a failed or ended view says why, with Retry, and is
+ * retried when the page reconnects (Chord binds loading references again by itself, not failed or ended ones).
+ */
+function McpServers({ holdAgain }: { holdAgain: () => void }) {
+	const ref = useObject(Mcp, {});
+	const state = useReadable(ref?.state);
+	const view = keptWith(ref, ...MCP_OWNER);
+	const retry = useCallback(() => {
+		if (ref?.state.value.kind === "ended") holdAgain();
+		else ref?.retry();
+	}, [ref, holdAgain]);
+	const connected = useConnected();
+	const wasConnected = useRef(connected);
+	useEffect(() => {
+		const reconnected = connected && !wasConnected.current;
+		wasConnected.current = connected;
+		const kind = ref?.state.value.kind;
+		if (reconnected && (kind === "failed" || kind === "ended")) retry();
+	}, [connected, ref, retry]);
 	const errors = useReadable(view?.errors) ?? [];
 	const { fail } = useComposerState();
 	const [instances, changeInstance] = useOptimisticCall(useReadable(view?.instances) ?? [], applyInstance, fail);
@@ -72,19 +104,30 @@ function McpSheet({ onClose }: { onClose: () => void }) {
 			changeInstance({ kind: "signOut", server }, () => view.signOut({ server }, BACKGROUND_CONTEXT)),
 		cancelSignIn: (id) => cancel(id, () => view.cancelSignIn({ id }, BACKGROUND_CONTEXT)),
 	};
+	if (view === undefined) {
+		const failure = state?.kind === "failed" ? state.cause.error : state?.kind === "ended" ? state.error : undefined;
+		return failure === undefined ? (
+			<p className="empty-note">Loading…</p>
+		) : (
+			<div className="stack">
+				<p className="error small">The MCP servers could not be loaded: {errorText(failure)}</p>
+				<div className="inline-form">
+					<button type="button" className="text-action" onClick={retry}>
+						Retry
+					</button>
+				</div>
+			</div>
+		);
+	}
 	return (
-		<Sheet title="MCP servers" onClose={onClose}>
-			<p className="muted small">
-				Servers of <span className="mono">mcp.json</span> run while sessions use them. Sign-in credentials are
-				stored on the server.
-			</p>
+		<>
 			{errors.map((error) => (
 				<p key={error} className="notice error small">
 					{error}
 				</p>
 			))}
-			{view && servers.length === 0 && <p className="empty-note">No MCP server is running.</p>}
-			{view && actions && (
+			{servers.length === 0 && <p className="empty-note">No MCP server is running.</p>}
+			{actions && (
 				<div className="list">
 					{servers.map((server) => (
 						<ServerEntry
@@ -98,7 +141,7 @@ function McpSheet({ onClose }: { onClose: () => void }) {
 					))}
 				</div>
 			)}
-		</Sheet>
+		</>
 	);
 }
 
@@ -110,15 +153,17 @@ function ServerEntry({
 	instances,
 	signIn,
 }: {
-	view: OwnerView;
+	view: McpOwnerView;
 	actions: Actions;
 	server: string;
 	instances: readonly Instance[];
 	signIn: SignIn | undefined;
 }) {
 	const oauth = instances.some((instance) => instance.auth === "oauth");
-	const needsSignIn = instances.some((instance) => instance.status === "sign-in");
-	const connected = instances.some((instance) => instance.status === "connected");
+	const mayNeedSignIn = instances.some((instance) => instance.status === "sign-in" || instance.status === "failed");
+	// Signing in again (another account, a grant the server refuses) is signing out, then in, as in pi: any instance
+	// not waiting for a sign-in may hold credentials (a failed or reconnecting one too), so it offers the sign-out.
+	const mayHoldCredentials = instances.some((instance) => instance.status !== "sign-in");
 	return (
 		<div className="stack mcp-server">
 			<strong>{server}</strong>
@@ -156,13 +201,13 @@ function ServerEntry({
 			)}
 			{oauth && (
 				<div className="inline-form">
-					{needsSignIn || signIn !== undefined ? (
+					{mayNeedSignIn || signIn !== undefined ? (
 						<a className="login-continue" href={signInLink(server)} target="_blank" rel="noreferrer">
 							{signIn?.status === "waiting" ? "Sign in again" : "Sign in"}
 							<ChevronIcon />
 						</a>
 					) : null}
-					{connected && (
+					{mayHoldCredentials && (
 						<button type="button" className="text-action danger" onClick={() => actions.signOut(server)}>
 							Sign out
 						</button>
@@ -174,7 +219,7 @@ function ServerEntry({
 }
 
 /** A sign-in waiting for the browser: paste the final redirect URL, or cancel. */
-function PendingSignIn({ view, signIn, onCancel }: { view: OwnerView; signIn: SignIn; onCancel: () => void }) {
+function PendingSignIn({ view, signIn, onCancel }: { view: McpOwnerView; signIn: SignIn; onCancel: () => void }) {
 	const [value, setValue] = useState("");
 	const [sending, setSending] = useState(false);
 	const [error, setError] = useState<string>();
@@ -219,28 +264,15 @@ function PendingSignIn({ view, signIn, onCancel }: { view: OwnerView; signIn: Si
 	);
 }
 
-/** The sidebar footer's MCP button: any authenticated owner. */
-function McpButton() {
+/** The MCP sheet while it is open (any authenticated owner): a page of Settings. */
+function McpSheetSlot() {
 	const owner = useOwner();
 	const open = useSheet("mcp") !== undefined;
-	if (!owner) return null;
-	return (
-		<>
-			<button
-				type="button"
-				className="foot-button"
-				onClick={() => openLayer({ kind: "sheet", name: "mcp" }, { fromDrawer: true })}
-				title="MCP servers"
-			>
-				MCP
-			</button>
-			{open && <McpSheet onClose={closeLayers} />}
-		</>
-	);
+	return owner && open ? <McpSheet onClose={closeLayers} /> : null;
 }
 
 export default defineFacet((host) => {
 	contribute(host, "p2.web-mcp", (self) => {
-		self.contribute(Slots, { "sidebar-foot:mcp": McpButton });
+		self.contribute(SettingsSections, { mcp: { label: "MCP servers", order: 20, Sheet: McpSheetSlot } });
 	});
 });

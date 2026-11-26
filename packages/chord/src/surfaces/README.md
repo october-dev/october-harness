@@ -18,18 +18,26 @@ from `@earendil-works/chord`.
   one after another; an `aborted` reload after its commit adopts the commit.
 - **The connection loop** (`connection.ts`, p2's `keepConnected`): reconnects after 250 ms doubling to 5 s (reset by a
   connection open 10 s; the longest while offline), at once on a wake; gives up a socket not open in 20 s; replaces an
-  open socket silent past the server's pings (25 s) on a wake, once its next ping is overdue; asks `canRetry` after
-  every close; reports `connecting`, `connected`, `waiting`. The environment (clock, timers, online, wakes) is given.
+  open socket silent past the server's pings (25 s) on a wake, once its next ping is overdue, and retries at once a drop
+  soon after a wake; after a close it asks `canRetry` alongside the next attempt, never holding it up (a page's base
+  check is an HTTP request, slow on a network just woken), one question at a time (closes while one is open ask
+  nothing more: its answer covers them), a `false` stopping the loop (the attempt it ends reported `waiting`); reports
+  `connecting`, `connected`, `waiting`. The environment (clock, timers, online, wakes) is given.
 - **A client** (`client.ts`): `startClient` makes a client host (no address), loads the initial scripts with the app's
   core facets, keeps its parent link with the loop (the link's close shared by the loop and the host), and follows the
   scripts object: a new set fetches the changed scripts (`fetchScript`), has a page's `styles` (`ClientStyles`) fetch
   the new stylesheets without applying them (`prepare`; a stop removes what it prepared), reloads the host in place
   (failures reported, kept old), then has them settled (`settle`: a plugin whose new code was adopted gets its new
   stylesheet applied, one that kept its old code keeps its old stylesheet); it records per plugin the script it runs (a
-  failed one's old script), so a set showing what the client runs reloads nothing, and a reconnect re-applies the newest
+  failed one's old script), so a set showing what the client runs reloads nothing; the client follows the scripts
+  object in the background (it starts, a page renders, offline too) and applies the set it shows when following
+  begins as well as later ones, and a reconnect re-applies the newest
   set when a plugin kept its old code (the scripts object shows an unchanged set no second time); a set with another
-  `base` calls `outdated`. Before each reconnect it asks the server's base (`serverBase`): another one also calls
-  `outdated` (a new link protocol comes with a new base bundle, Chord being in it), and the loop stops.
+  `base` calls `outdated`. At each reconnect, beside the next attempt, it asks the server's base (`serverBase`): another
+  one stops the loop (ending an attempt made meanwhile), then calls `outdated` (a new link protocol comes with a new base
+  bundle, Chord being in it). A static client
+  (`follow: false`) neither follows the scripts object nor asks the server's base. `limits` sets the limits per part of
+  what arrives from the server (an untrusted link's by default).
 - **Themes** (`themes.ts`, `theme-choice.ts`, `active-theme.ts`): `Theme` (`{ id, name, mode, colors, web?, tui? }`; the
   base roles `accent`, `bg`, `fg`, `muted`, `error`, `warning`, `success`, apps add roles), the `Themes` registry
   (version 1; a later role is a version bump mapping old entries from the fallback theme), `themesFacet` serving it on a
@@ -40,11 +48,15 @@ from `@earendil-works/chord`.
   `followActiveTheme(host, mode, changed, ctx)`.
 - **Messages and languages** (`messages.ts`, `language.ts`, `format.ts`, `translations.ts`, `locale-choice.ts`,
   `active-language.ts`; design §23): `defineMessages(namespace, catalogs)` (a typed `t`; `t.message`, `t.render`,
-  `t.in(language)`, `t.translations`), `MessagesOf`, `MessageData`, `MessageSchema`; `Language`
+  `t.in(language)`, `t.translations`), `MessagesOf`, `MessageData` and `MessageSchema` (defined in `data`, re-exported); `Language`
   (`createLanguage(locale, translations, report)`; internally the render scope `inLanguage`, `matchLocale`,
   `resolveLocale`); `formatTime`, `formatNumber`; the `Translations` registry (a list of `{ namespace, locale, messages, override? }` per
   contributor; one catalog per namespace and locale) with `translationsFacet`; `LocaleChoice` with
   `localeChoiceFacet`; `followActiveLanguage(host, preferred, changed, report, ctx)`, keeping the host's language as
   its page state (`hostLanguage`).
+- **A reference read while live** (`live.ts`; slice 15 §1.5): `liveGrant(ref)`, the reference's `granted` while it is
+  live or loads again after it last settled live (the reference's own history, `WAS_LIVE`), `undefined` otherwise;
+  internal, what React's `useLive` and `TuiScope.live` compare, each with its own subscription to the reference's
+  state. The type `LiveRef` is exported with those bindings.
 
 Tests: `test/surfaces/`.

@@ -5,14 +5,16 @@
 
 import { describe, expect, it } from "vitest";
 import { type Context, BACKGROUND_CONTEXT as context } from "../../src/context/index.ts";
-import { arr, int, keyed, local, method, obj, remote, str } from "../../src/contracts/index.ts";
+import { arr, bool, grantable, int, keyed, local, method, obj, remote, str } from "../../src/contracts/index.ts";
 import { ChordError } from "../../src/data/index.ts";
 import { defineState, type SingletonHandle } from "../../src/documents/index.ts";
-import { createHost, defineFacet, type Reference, type Self, type StoreSelf } from "../../src/host/index.ts";
+import { allow, createHost, defineFacet, type Reference, type Self, type StoreSelf } from "../../src/host/index.ts";
 import { ChordObject } from "../../src/host/object.ts";
 import { resolveWatchable } from "../../src/host/reference.ts";
+import { ReferenceSource } from "../../src/host/reference-source.ts";
+import { Replica } from "../../src/remote/replica.ts";
 import { constant } from "../../src/state/index.ts";
-import type { Source, Subscriber } from "../../src/state/internal.ts";
+import { Batch, type Source, type Subscriber } from "../../src/state/internal.ts";
 import {
 	changesOf,
 	delivered,
@@ -27,6 +29,7 @@ import {
 	metered,
 	Server,
 	transported,
+	until,
 	valuesOf,
 } from "../support.ts";
 
@@ -337,7 +340,7 @@ describe("subscribers", () => {
 			version: 1,
 			params: {},
 			hostAddress: () => Server(),
-			variants: { v: { state: { n: obj({ n: int() }) } } },
+			state: { n: obj({ n: int() }) },
 		});
 		const Counter = defineState("counter", { schema: obj({ n: int() }), version: 1, initial: () => ({ n: 0 }) });
 		const selves: Self[] = [];
@@ -353,11 +356,10 @@ describe("subscribers", () => {
 					},
 				};
 			});
-			h.serve(View, (_, _principal, self) => ({ variant: "v", members: { n: self.get(Count, {}).n } }));
+			h.serve(View, (_, _principal, self) => ({ n: self.get(Count, {}).n }));
 		});
 		const count = await server.get(Count, {}, context);
 		const view = await client.get(View, {}, context);
-		if (view.variant !== "v") throw new Error("expected variant v");
 		const frames = changesOf(await view.n.watch(context));
 		await count.add(context);
 		await transported();
@@ -415,49 +417,77 @@ describe("subscribers, directly", () => {
 	});
 });
 
-describe("a member the new attempt's variant lacks", () => {
-	it("fails: its watch gets one failure call and stays open, reads throw invalid/member; a later attempt brings it back", async () => {
+describe("a denied reference's source (slice 14 §2.2)", () => {
+	it("keeps no value: reads throw the denial, a watch opened now has nothing to start at, the next bind is whole", () => {
+		const batch = new Batch(() => {}, undefined);
+		const owner = { none: () => new ChordError({ code: "not_ready", message: "none" }) };
+		const source = new ReferenceSource(batch, owner);
+		const events: unknown[] = [];
+		const subscriber: Subscriber = {
+			advance: (call) =>
+				void events.push(call.kind === "value" ? [call.value, call.ops] : (call.error as Error).message),
+			end: () => {},
+			endAfterDelivery: () => {},
+		};
+		const denial = new ChordError({ code: "forbidden", message: "no access" });
+		batch.commit(() => source.bind(constant(1) as unknown as Source), context);
+		source.subscribe(subscriber);
+		batch.commit(() => source.deny(denial, context), context);
+		expect(() => source.value).toThrow("no access");
+		// Unlike a failed target's source: no last value to show.
+		expect(source.start()).toEqual({ kind: "failed", error: denial, last: undefined });
+		expect(() => source.openWatch(context)).toThrow("no access");
+		// The same denial told again (its object notifies for another reason) is no second call.
+		batch.commit(() => source.deny(denial, context), context);
+		batch.commit(() => source.bind(constant(1) as unknown as Source), context);
+		expect(events).toEqual(["no access", [1, [["r", 1]]]]);
+	});
+});
+
+describe("a member the new attempt was not granted (slice 15 §1.4)", () => {
+	it("fails: its watch gets one failure call and stays open, reads throw forbidden; a later grant brings it back", async () => {
 		const Two = remote("app.two", {
 			version: 1,
 			params: {},
 			hostAddress: () => Server(),
-			variants: { full: { state: { n: int() } }, view: { state: { m: int() } } },
+			state: { n: grantable(int()), m: int() },
 		});
+		const Grants = local("app.grants", { version: 1, params: {}, members: { n: bool(), set: method(bool()) } });
 		const owner = { kind: "owner" } as const;
 		const host = createHost<typeof owner>({ address: Server(), principal: owner, onError: () => {} });
-		const selves: Self[] = [];
-		const facet = defineFacet<typeof owner>((h) =>
-			h.serve(Two, (_, _principal, self) => {
-				selves.push(self);
-				self.state(List);
-				return selves.length === 2
-					? { variant: "view", members: { m: constant(2) } }
-					: { variant: "full", members: { n: constant(selves.length) } };
-			}),
-		);
+		let built = 0;
+		const facet = defineFacet<typeof owner>((h) => {
+			h.serve(Grants, (_params, self) => {
+				const granted = self.writable(true);
+				return {
+					n: self.derive([granted], ([value]) => value),
+					set: async (next) => {
+						granted.set(next);
+						return null;
+					},
+				};
+			});
+			h.serve(Two, () => ({ n: () => constant(++built), m: constant(0) }), {
+				admit: (_params, _principal, self) =>
+					self.derive([self.get(Grants, {}).n], ([n]) => (n ? allow({ granted: ["n"] }) : allow({}))),
+			});
+		});
 		await host.load([{ name: "@test/app", facet }], context);
 		const two = await host.get(Two, {}, context);
-		if (two.variant !== "full") throw new Error("expected the full variant");
-		const n = two.n;
+		const grants = await host.get(Grants, {}, context);
+		const n = two.n!;
 		const calls = changesOf(await n.watch(context));
-		const boom = new ChordError({ code: "unavailable", message: "boom" });
-		failLive(attempted, selves[0]!, boom);
-		two.retry();
-		(await host.get(Two, {}, context)).release();
+		await grants.set(false, context);
+		await until(() => two.state.value.kind === "live" && two.n === undefined);
 		await delivered();
-		// The failed instance is followed until its admitted commits published (audit A10), when the retry's attempt
-		// loads already (no failure call for it); then the new variant's lack of it.
-		expect(calls).toEqual([
-			{ kind: "failed", error: expect.objectContaining({ code: "invalid", reason: "member" }) },
-		]);
-		expect(() => n.value).toThrow('app.two (variant view) has no state member "n"');
-		// The same as over a link: the member comes back with the next attempt that has it.
-		failLive(attempted, selves[1]!, boom);
-		two.retry();
-		(await host.get(Two, {}, context)).release();
+		expect(calls).toEqual([{ kind: "failed", error: expect.objectContaining({ code: "forbidden" }) }]);
+		expect(() => n.value).toThrow('app.two has not granted "n"');
+		await grants.set(true, context);
+		await until(() => two.n !== undefined);
 		await delivered();
-		expect(n.value).toBe(3);
-		expect(calls.at(-1)).toEqual({ kind: "value", value: 3, ops: [["r", 3]], retired: false });
+		expect(two.n).toBe(n);
+		expect(n.value).toBe(2);
+		expect(calls.at(-1)).toEqual({ kind: "value", value: 2, ops: [["r", 2]], retired: false });
 		await host.close(context);
 	});
 });
@@ -595,22 +625,20 @@ describe('what a reference keeps (decision "References are the only indirection"
 	});
 });
 
-describe("a reference keeps the last values of its attached instance's variant (final review)", () => {
+describe("a reference keeps the last values of what its attached instance granted (final review)", () => {
 	it("keeps an unread member of a remote contract served on its host when the type is removed (Astra)", async () => {
 		const Type = remote("app.remote-unread", {
 			version: 1,
 			params: {},
 			hostAddress: () => Server(),
-			variants: { full: { state: { n: int() } } },
+			state: { n: int() },
 		});
 		const owner = { kind: "owner" } as const;
-		const facet = defineFacet<typeof owner>((h) =>
-			h.serve(Type, () => ({ variant: "full", members: { n: constant(7) } })),
-		);
+		const facet = defineFacet<typeof owner>((h) => h.serve(Type, () => ({ n: constant(7) })));
 		const host = createHost<typeof owner>({ address: Server(), principal: owner, onError: () => {} });
 		await host.load([{ name: "@app/remote-unread", facet }], context);
 		const ref = await host.get(Type, {}, context);
-		// `n` never read: the removal takes its last value from the instance's variant (the object is live no more).
+		// `n` never read: the removal takes its last value from what the instance granted (the object is live no more).
 		await host.reload([], context);
 		await delivered();
 		expect(ref.n.value).toBe(7);
@@ -643,5 +671,43 @@ describe("a failed object lets its ended instance go (final review)", () => {
 		await expectCollected(instance);
 		ref.release();
 		await host.close(context);
+	});
+});
+
+describe('a member its reference has not seen (decision "References share one wire hold")', () => {
+	/** A source following a replica of `x` failed after 7, its reference not having seen `x` while `seen.now` is false. */
+	const unseen = () => {
+		const batch = new Batch(() => {}, undefined);
+		const replica = new Replica(batch, { kind: "value", value: 7 });
+		batch.commit(() => replica.fail(new Error("x threw")), context);
+		const seen = { now: false };
+		const source = new ReferenceSource(batch, { none: () => new ChordError({ code: "not_ready", message: "none" }) });
+		source.unseen(() => seen.now);
+		batch.commit(() => source.bind(replica), context);
+		return { batch, source, seen };
+	};
+
+	it("starts and opens watches as on a fresh failed snapshot: the failure, no last value from before", () => {
+		const { source } = unseen();
+		expect(source.start()).toEqual({ kind: "failed", error: new Error("x threw"), last: undefined });
+		expect(() => source.openWatch(context)).toThrow("x threw");
+	});
+
+	it("held or vanished, keeps no last value from before either", () => {
+		const held = unseen();
+		held.batch.commit(() => held.source.hold(), context);
+		expect(held.source.start()).toMatchObject({ kind: "failed", last: undefined });
+		const vanished = unseen();
+		const error = new ChordError({ code: "invalid", reason: "member", message: "no x" });
+		vanished.batch.commit(() => vanished.source.vanish(error, context), context);
+		expect(vanished.source.start()).toEqual({ kind: "failed", error, last: undefined });
+	});
+
+	it("once seen, starts at the member's last value, and stays seen", () => {
+		const { source, seen } = unseen();
+		seen.now = true;
+		expect(source.start()).toMatchObject({ kind: "failed", last: 7 });
+		seen.now = false;
+		expect(source.start()).toMatchObject({ kind: "failed", last: 7 });
 	});
 });

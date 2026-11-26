@@ -26,6 +26,7 @@ import type {
 	MarkdownTheme,
 	OverlayHandle,
 	OverlayOptions,
+	ProgramResumeCommand,
 	SlashCommand,
 	TuiMainScreenRenderState,
 } from "@earendil-works/pi-tui";
@@ -159,6 +160,7 @@ import { cleanDisplayLine } from "../../utils/ansi.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
+import { flushStdout } from "../../utils/flush-stdout.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
 import { getCwdRelativePath, shortenHomePath } from "../../utils/paths.ts";
@@ -223,7 +225,8 @@ import { UserMessageSelectorComponent } from "./components/user-message-selector
 import { editInExternalEditor } from "./external-editor.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 import { getModelSearchText } from "./model-search.ts";
-import { type BlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
+import { ProgramResumeReporter } from "./program-resume-reporter.ts";
+import { type BlockedStatus, dialogBlockedStatus, ProgramStatusReporter } from "./program-status-reporter.ts";
 import { shareSession } from "./session-share.ts";
 import {
 	getAvailableThemes,
@@ -379,8 +382,8 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
-	if (!process.stdout.isTTY) return undefined;
+/** Arguments that open the session in a new process, or undefined while the session has no file to open. */
+function getResumeArgs(sessionManager: SessionManager): string[] | undefined {
 	if (!sessionManager.isPersisted()) return undefined;
 
 	const sessionFile = sessionManager.getSessionFile();
@@ -388,10 +391,25 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 
 	const args = [APP_NAME];
 	if (!sessionManager.usesDefaultSessionDir()) {
-		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
+		args.push("--session-dir", sessionManager.getSessionDir());
 	}
 	args.push("--session", sessionManager.getSessionId());
-	return args.join(" ");
+	return args;
+}
+
+/** The resume command as shell text for the user to copy. */
+export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
+	if (!process.stdout.isTTY) return undefined;
+	return getResumeArgs(sessionManager)?.map(quoteIfNeeded).join(" ");
+}
+
+/**
+ * The command a terminal runs to bring this session back (OSC 7577). It is the command printed on exit, run in
+ * the session's directory: `--session <id>` finds the session there.
+ */
+function getProgramResumeCommand(sessionManager: SessionManager): ProgramResumeCommand | undefined {
+	const argv = getResumeArgs(sessionManager);
+	return argv && { argv, cwd: sessionManager.getCwd() };
 }
 
 function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
@@ -496,12 +514,67 @@ export interface InteractiveModeOptions {
 	 * and session replacement run through the active UI instead of startup selectors.
 	 */
 	capabilityPreflightHost?: CapabilityPreflightHost;
+	/**
+	 * Token the terminal set in `OSC7577_TOKEN`, taken out of the environment before any child process starts.
+	 * When set, pi tells the terminal how to resume the session after the terminal restarts.
+	 */
+	programResumeToken?: string;
 }
 
 interface ExtensionChangelogUpdate {
 	name: string;
 	version: string;
 	markdown: string;
+}
+
+interface ReasoningDropDiagnostic {
+	provider: string;
+	/** Transformation `type` of a withheld block. */
+	droppedType: string;
+	/** Singular and plural name of a withheld block. */
+	noun: [string, string];
+}
+
+/** Assistant diagnostics that list reasoning a provider withheld from the model, by diagnostic type. */
+const REASONING_DROP_DIAGNOSTICS = new Map<string, ReasoningDropDiagnostic>([
+	[
+		"anthropic_input_transformations",
+		{ provider: "Anthropic", droppedType: "thinking_dropped", noun: ["thinking block", "thinking blocks"] },
+	],
+	[
+		"openai_input_transformations",
+		{ provider: "OpenAI", droppedType: "reasoning", noun: ["reasoning item", "reasoning items"] },
+	],
+]);
+
+interface DroppedReasoning {
+	diagnostic: ReasoningDropDiagnostic;
+	count: number;
+	reasons: string[];
+}
+
+/** Count the reasoning blocks a provider reported as withheld from the request that produced `message`. */
+function getDroppedReasoning(message: AssistantMessage): DroppedReasoning | undefined {
+	for (const diagnostic of message.diagnostics ?? []) {
+		const kind = REASONING_DROP_DIAGNOSTICS.get(diagnostic.type);
+		if (!kind) continue;
+		// Session data: diagnostics details are untyped JSON.
+		const transformations = diagnostic.details?.transformations;
+		if (!Array.isArray(transformations)) continue;
+		const dropped = transformations.filter(
+			(transformation): transformation is Record<string, unknown> =>
+				typeof transformation === "object" &&
+				transformation !== null &&
+				(transformation as Record<string, unknown>).type === kind.droppedType,
+		);
+		if (dropped.length === 0) continue;
+		const reasons = new Set<string>();
+		for (const transformation of dropped) {
+			if (typeof transformation.reason === "string") reasons.add(transformation.reason);
+		}
+		return { diagnostic: kind, count: dropped.length, reasons: [...reasons] };
+	}
+	return undefined;
 }
 
 export class InteractiveMode {
@@ -613,6 +686,9 @@ export class InteractiveMode {
 		() => this.sessionManager.getSessionName(),
 	);
 
+	/** Reports how to resume the session to terminals that support OSC 7577. Undefined without a token. */
+	private readonly programResume: ProgramResumeReporter | undefined;
+
 	/** The `/bug` hint is shown at most once per session so error output stays readable. */
 	private bugReportHintShown = false;
 	private installChangeWarningShown = false;
@@ -684,12 +760,20 @@ export class InteractiveMode {
 		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
 		this.options = { ...options, tuiMode };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
+		if (options.programResumeToken) {
+			this.programResume = new ProgramResumeReporter(
+				options.programResumeToken,
+				() => this.ui.terminal,
+				() => getProgramResumeCommand(this.sessionManager),
+			);
+		}
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession({ renderBeforeBind: true });
 			this.themeController.applyFromSettings();
+			this.showRuntimeDiagnostics(this.runtimeHost.takeUnreportedDiagnostics());
 		});
 		this.version = VERSION;
 		this.renderer = createInteractiveTui({
@@ -1010,6 +1094,7 @@ export class InteractiveMode {
 		});
 		nextUi.setClearOnShrink(clearOnShrink);
 		nextUi.onDebug = onDebug;
+		nextUi.setSuspendSignalHandler(() => this.handleCtrlZ());
 		if (nextUi instanceof TuiMainScreen && this.mainScreenRenderState) {
 			nextUi.restoreRenderState(this.mainScreenRenderState);
 		}
@@ -1079,12 +1164,15 @@ export class InteractiveMode {
 		this.defaultEditor.onSubmit = (text) => this.handleStartupSubmit(text);
 		this.ui.setFocus(this.editor);
 
+		// An external SIGTSTP (kill -TSTP) restores the terminal like Ctrl+Z (#12272).
+		this.ui.setSuspendSignalHandler(() => this.handleCtrlZ());
 		// Start the UI before initializing extensions so session_start handlers can use interactive dialogs
 		this.ui.start();
 		// Route later capability disclosures through the active UI, never a second startup UI.
 		this.options.capabilityPreflightHost?.setInteractiveHandler((items) => this.discloseExtensionCapabilities(items));
 		this.isInitialized = true;
 		this.programStatus.report();
+		this.programResume?.report();
 		this.ensurePngTranscoder();
 
 		this.themeController.applyFromSettings();
@@ -1301,23 +1389,10 @@ export class InteractiveMode {
 			initialMessages,
 		} = this.options;
 
-		for (const diagnostic of startupDiagnostics ?? []) {
-			if (diagnostic.type === "error") {
-				this.showError(diagnostic.message);
-			} else if (diagnostic.type === "warning") {
-				this.showWarning(diagnostic.message);
-			} else {
-				this.showStatus(diagnostic.message);
-			}
-		}
+		this.showRuntimeDiagnostics(startupDiagnostics ?? []);
 
 		if (migratedProviders && migratedProviders.length > 0) {
 			this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);
-		}
-
-		const modelsJsonError = this.session.modelRuntime.getError();
-		if (modelsJsonError) {
-			this.showError(`models.json error: ${modelsJsonError}`);
 		}
 
 		if (modelFallbackMessage) {
@@ -2306,12 +2381,25 @@ export class InteractiveMode {
 		}
 	}
 
+	private showRuntimeDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]): void {
+		for (const diagnostic of diagnostics) {
+			if (diagnostic.type === "error") {
+				this.showError(diagnostic.message);
+			} else if (diagnostic.type === "warning") {
+				this.showWarning(diagnostic.message);
+			} else {
+				this.showStatus(diagnostic.message);
+			}
+		}
+	}
+
 	private async rebindCurrentSession(options: { renderBeforeBind?: boolean } = {}): Promise<void> {
 		const session = this.session;
 
 		this.unsubscribe?.();
 		this.unsubscribe = undefined;
 		this.programStatus.reset();
+		this.programResume?.report();
 		this.applyRuntimeSettings();
 
 		if (options.renderBeforeBind) {
@@ -2347,6 +2435,7 @@ export class InteractiveMode {
 		}
 		stopThemeWatcher();
 		this.stop("transcript");
+		await flushStdout();
 		process.exit(1);
 	}
 
@@ -2909,8 +2998,14 @@ export class InteractiveMode {
 			setHeader: (factory) => this.setExtensionHeader(factory),
 			setTitle: (title) => this.ui.terminal.setTitle(title),
 			custom: (factory, options) => this.showExtensionCustom(factory, options),
-			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
-			setEditorText: (text) => this.editor.setText(text),
+			pasteToEditor: (text) => {
+				this.editor.handleInput(`\x1b[200~${text}\x1b[201~`);
+				this.ui.requestRender();
+			},
+			setEditorText: (text) => {
+				this.editor.setText(text);
+				this.ui.requestRender();
+			},
 			getEditorText: () => this.editor.getExpandedText?.() ?? this.editor.getText(),
 			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
 			addAutocompleteProvider: (factory) => {
@@ -2978,7 +3073,6 @@ export class InteractiveMode {
 		title: string,
 		options: string[],
 		opts?: ExtensionUIDialogOptions,
-		blocked: BlockedStatus = { kind: "question", message: title },
 	): Promise<string | undefined> {
 		return new Promise((resolve) => {
 			if (opts?.signal?.aborted) {
@@ -3002,7 +3096,7 @@ export class InteractiveMode {
 				() => finish(undefined),
 				{ tui: this.ui, timeout: opts?.timeout, onToggleToolsExpanded: () => this.toggleToolOutputExpansion() },
 			);
-			this.pushExtensionDialog(selector, blocked);
+			this.pushExtensionDialog(selector, dialogBlockedStatus(opts?.blockedKind ?? "question", title));
 		});
 	}
 
@@ -3014,9 +3108,9 @@ export class InteractiveMode {
 		message: string,
 		opts?: ExtensionUIDialogOptions,
 	): Promise<boolean> {
-		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts, {
-			kind: "permission",
-			message: title,
+		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], {
+			...opts,
+			blockedKind: opts?.blockedKind ?? "permission",
 		});
 		return result === "Yes";
 	}
@@ -3062,7 +3156,7 @@ export class InteractiveMode {
 				() => finish(undefined),
 				{ tui: this.ui, timeout: opts?.timeout },
 			);
-			this.pushExtensionDialog(input, { kind: "question", message: title });
+			this.pushExtensionDialog(input, dialogBlockedStatus(opts?.blockedKind ?? "question", title));
 		});
 	}
 
@@ -3085,7 +3179,7 @@ export class InteractiveMode {
 				undefined,
 				this.settingsManager.getExternalEditorCommand(),
 			);
-			this.pushExtensionDialog(editor, { kind: "question", message: title });
+			this.pushExtensionDialog(editor, dialogBlockedStatus("question", title));
 		});
 	}
 
@@ -3596,7 +3690,9 @@ export class InteractiveMode {
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 				if (command) {
 					if (this.session.isBashRunning) {
-						this.showWarning("A bash command is already running. Press Esc to cancel it first.");
+						this.showWarning(
+							`A bash command is already running. Press ${keyText("app.interrupt")} to cancel it first.`,
+						);
 						this.editor.setText(text);
 						return;
 					}
@@ -3657,6 +3753,9 @@ export class InteractiveMode {
 
 		this.footer.invalidate();
 		this.programStatus.handleEvent(event);
+		// The session file, and with it the resume command, appears when the first prompt is written, which
+		// happens after its message_end reaches listeners. The reply's message_start or the run's end sees it.
+		if (event.type === "message_start" || event.type === "agent_settled") this.programResume?.reportIfNone();
 
 		switch (event.type) {
 			case "agent_start":
@@ -4147,7 +4246,9 @@ export class InteractiveMode {
 					message.cancelled,
 					message.truncated ? ({ truncated: true } as TruncationResult) : undefined,
 					message.fullOutputPath,
+					message.fullOutputError,
 				);
+				component.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(component);
 				break;
 			}
@@ -4280,7 +4381,7 @@ export class InteractiveMode {
 		const renderedPendingTools = new Map<string, ToolExecutionComponent>();
 		// Cache misses are not persisted, unlike successful cache-warming usage.
 		// Re-derive them and inject them after the assistant messages that paid for them.
-		const cacheMisses = this.settingsManager.getShowCacheMissNotices()
+		const cacheMisses = this.settingsManager.getNotices().cacheMisses
 			? collectCacheMisses(this.sessionManager.getEntries(), this.session.modelRuntime)
 			: new Map<AssistantMessage, CacheMiss>();
 
@@ -4405,7 +4506,7 @@ export class InteractiveMode {
 	}
 
 	private addCacheWarmingUsage(entry: UsageEntry): void {
-		if (!this.settingsManager.getShowCacheMissNotices()) return;
+		if (!this.settingsManager.getNotices().cacheWarming) return;
 		// Back-to-back warms collapse into one line with the cumulative cost.
 		const previous = this.cacheWarmingNotice;
 		if (previous && this.chatContainer.children.at(-1) === previous.component && previous.note === entry.note) {
@@ -4425,7 +4526,7 @@ export class InteractiveMode {
 	 * from persisted summary usage and is not stored as a separate session entry.
 	 */
 	private addCompactionCostNotice(notice: CompactionCostNotice): void {
-		if (!this.settingsManager.getShowCacheMissNotices()) return;
+		if (!this.settingsManager.getNotices().compactionCosts) return;
 
 		const { usage } = notice;
 		const tokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
@@ -4437,46 +4538,32 @@ export class InteractiveMode {
 		);
 	}
 
-	private static countDroppedThinkingBlocks(message: AssistantMessage): number {
-		let count = 0;
-		for (const diagnostic of message.diagnostics ?? []) {
-			if (diagnostic.type !== "anthropic_input_transformations") continue;
-			const transformations = diagnostic.details?.transformations;
-			if (!Array.isArray(transformations)) continue;
-			count += transformations.filter(
-				(transformation) =>
-					typeof transformation === "object" &&
-					transformation !== null &&
-					(transformation as Record<string, unknown>).type === "thinking_dropped",
-			).length;
-		}
-		return count;
-	}
-
 	private maybeShowThinkingDropNotice(message: AssistantMessage): void {
-		if (!this.settingsManager.getShowCacheMissNotices()) return;
+		if (!this.settingsManager.getNotices().reasoningDrops) return;
 
-		const droppedCount = InteractiveMode.countDroppedThinkingBlocks(message);
-		if (droppedCount === 0) return;
+		const dropped = getDroppedReasoning(message);
+		if (!dropped) return;
 
-		let previousDroppedCount = 0;
-		// message_end reaches the UI before the current message is persisted,
-		// so the branch's last assistant message is the previous response.
+		// Providers report a withheld block again on every later request that replays it, so only
+		// a count above the previous response's means new losses. message_end reaches the UI before
+		// the current message is persisted, so the branch's last assistant message is the previous response.
 		const branch = this.sessionManager.getBranch();
 		for (let i = branch.length - 1; i >= 0; i--) {
 			const entry = branch[i];
 			if (entry.type === "message" && entry.message.role === "assistant") {
-				previousDroppedCount = InteractiveMode.countDroppedThinkingBlocks(entry.message);
+				const previous = getDroppedReasoning(entry.message);
+				if (previous?.diagnostic === dropped.diagnostic && dropped.count <= previous.count) return;
 				break;
 			}
 		}
-		if (droppedCount <= previousDroppedCount) return;
 
-		const noun = droppedCount === 1 ? "thinking block" : "thinking blocks";
+		const { provider, noun: nouns } = dropped.diagnostic;
+		const noun = nouns[dropped.count === 1 ? 0 : 1];
+		const reasons = dropped.reasons.length > 0 ? `: ${dropped.reasons.join(", ")}` : "";
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(
 			new ThemedText(
-				() => theme.fg("warning", `Anthropic dropped ${droppedCount} ${noun} (details in session)`),
+				() => theme.fg("warning", `${provider} dropped ${dropped.count} ${noun}${reasons} (details in session)`),
 				1,
 				0,
 			),
@@ -4489,7 +4576,7 @@ export class InteractiveMode {
 	 * a model switch, or an idle gap past the cache TTL.
 	 */
 	private maybeShowCacheMissNotice(message: AssistantMessage): void {
-		if (!this.settingsManager.getShowCacheMissNotices()) return;
+		if (!this.settingsManager.getNotices().cacheMisses) return;
 
 		// Entries don't contain `message` yet: message_end fires before persistence.
 		const miss = detectCacheMiss(this.sessionManager.getEntries(), message, this.session.modelRuntime);
@@ -4602,7 +4689,7 @@ export class InteractiveMode {
 		// dispatch and re-sends the signal if only its own listeners remain.
 
 		if (options?.fromSignal) {
-			// Signal-triggered shutdown (SIGTERM/SIGHUP). Emit extension cleanup
+			// Signal-triggered shutdown (SIGTERM/SIGHUP, SIGBREAK on Windows). Emit extension cleanup
 			// (session_shutdown) BEFORE touching the terminal. Extension teardown
 			// such as removing sockets does not write to the tty, so it must not be
 			// skipped if a later terminal-restore write fails on a dead or stalled
@@ -4613,6 +4700,8 @@ export class InteractiveMode {
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
 			this.stop();
+			await flushStdout();
+			killTrackedDetachedChildren();
 			process.exit(0);
 		}
 
@@ -4623,15 +4712,22 @@ export class InteractiveMode {
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
 		this.themeController.disableAutoSync();
 		await this.ui.terminal.drainInput(1000);
+		// The user ended pi, so the terminal must not bring it back. Signal shutdowns above keep the command.
+		this.programResume?.clear();
 
 		this.stop();
 		await this.runtimeHost.dispose();
 
 		const resumeCommand = formatResumeCommand(this.sessionManager);
 		if (resumeCommand) {
-			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
+			// Own line so the command can be selected with a triple-click (#12237).
+			process.stdout.write(`${chalk.dim("To resume this session:")}\n${resumeCommand}\n`);
 		}
 
+		await flushStdout();
+		// dispose() only starts killing a running `!` command, which on Windows loses the race with
+		// exit. After the last await, so it also catches a shell spawned after the abort.
+		killTrackedDetachedChildren();
 		process.exit(0);
 	}
 
@@ -4694,10 +4790,12 @@ export class InteractiveMode {
 	private registerSignalHandlers(): void {
 		this.unregisterSignalHandlers();
 
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
-		if (process.platform !== "win32") {
-			signals.push("SIGHUP");
-		}
+		const signals: NodeJS.Signals[] = ["SIGTERM", "SIGHUP"];
+		// Without a listener, a console Ctrl+Break ends the process without running any JavaScript,
+		// leaving the alternate screen, mouse reporting and keyboard modes on (#12133). Raw mode does
+		// not block it, and a console child calling GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT) on a
+		// process that is not a group leader sends it to every process in the console.
+		if (process.platform === "win32") signals.push("SIGBREAK");
 
 		for (const signal of signals) {
 			const handler = () => {
@@ -4762,6 +4860,7 @@ export class InteractiveMode {
 			clearInterval(suspendKeepAlive);
 			process.removeListener("SIGINT", ignoreSigint);
 			this.ui.start();
+			this.programResume?.reportAgain();
 			this.ui.requestRender(true);
 		});
 
@@ -5253,7 +5352,6 @@ export class InteractiveMode {
 					doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
 					treeFilterMode: this.settingsManager.getTreeFilterMode(),
 					showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
-					showCacheMissNotices: this.settingsManager.getShowCacheMissNotices(),
 					defaultProjectTrust: this.settingsManager.getDefaultProjectTrust(),
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					outputPad: this.settingsManager.getOutputPad(),
@@ -5267,6 +5365,7 @@ export class InteractiveMode {
 					fullscreenCopyOnSelect: this.settingsManager.getFullscreenCopyOnSelect(),
 					fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 					warnings: this.settingsManager.getWarnings(),
+					notices: this.settingsManager.getNotices(),
 				},
 				{
 					onAutoCompactChange: (enabled) => {
@@ -5357,10 +5456,6 @@ export class InteractiveMode {
 						this.chatContainer.invalidate();
 						this.ui.requestRender();
 					},
-					onShowCacheMissNoticesChange: (shown) => {
-						this.settingsManager.setShowCacheMissNotices(shown);
-						this.rebuildChatFromMessages();
-					},
 					onCollapseChangelogChange: (collapsed) => {
 						this.settingsManager.setCollapseChangelog(collapsed);
 					},
@@ -5446,6 +5541,11 @@ export class InteractiveMode {
 					},
 					onWarningsChange: (warnings) => {
 						this.settingsManager.setWarnings(warnings);
+					},
+					onNoticeChange: (key, shown) => {
+						this.settingsManager.setNotice(key, shown);
+						// Cache miss, cache warming and compaction notices are derived when the transcript renders.
+						this.rebuildChatFromMessages();
 					},
 					onCancel: () => {
 						done();
@@ -6128,13 +6228,13 @@ export class InteractiveMode {
 
 	private async getLogoutProviderOptions(): Promise<AuthSelectorProvider[]> {
 		return (await this.session.modelRuntime.listCredentials({ signal: AbortSignal.timeout(15_000) }))
-			.map(({ providerId, type }) => {
+			.map(({ providerId, type }): AuthSelectorProvider => {
 				const provider = this.session.modelRuntime.getProvider(providerId);
 				return {
 					id: providerId,
 					name: provider?.name ?? providerId,
 					authType: type,
-					status: { type, source: "stored credential" },
+					status: { kind: "configured", type, source: "stored credential" },
 					subscription: provider?.auth.oauth?.isSubscription === true,
 				};
 			})
@@ -6796,7 +6896,7 @@ export class InteractiveMode {
 			const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
 			const modelsJsonError = this.session.modelRuntime.getError();
 			if (modelsJsonError) {
-				this.showError(`models.json error: ${modelsJsonError}`);
+				this.showWarning(`models.json error: ${modelsJsonError}`);
 			}
 			this.showStatus(
 				savedImplicitProjectTrust
@@ -7193,6 +7293,7 @@ export class InteractiveMode {
 		const yankPop = this.getEditorKeyDisplay("tui.editor.yankPop");
 		const undo = this.getEditorKeyDisplay("tui.editor.undo");
 		const tab = this.getEditorKeyDisplay("tui.input.tab");
+		const cancelAutocomplete = this.getEditorKeyDisplay("tui.select.cancel");
 
 		// App keybindings
 		const interrupt = this.getAppKeyDisplay("app.interrupt");
@@ -7240,7 +7341,8 @@ export class InteractiveMode {
 | Key | Action |
 |-----|--------|
 | \`${tab}\` | Path completion / accept autocomplete |
-| \`${interrupt}\` | Cancel autocomplete / abort streaming |
+| \`${cancelAutocomplete}\` | Cancel autocomplete |
+| \`${interrupt}\` | Abort streaming or running bash command |
 | \`${clear}\` | Clear editor (first) / exit (second) |
 | \`${exit}\` | Exit (when editor is empty) |
 | \`${suspend}\` | Suspend to background |
@@ -7385,6 +7487,7 @@ export class InteractiveMode {
 				result.cancelled,
 				result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 				result.fullOutputPath,
+				result.fullOutputError,
 			);
 
 			// Record the result in session
@@ -7427,6 +7530,7 @@ export class InteractiveMode {
 					result.cancelled,
 					result.truncated ? ({ truncated: true, content: result.output } as TruncationResult) : undefined,
 					result.fullOutputPath,
+					result.fullOutputError,
 				);
 			}
 		} catch (error) {

@@ -1,6 +1,29 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import { arr, bool, nul, num, obj, opt, type Static, str, union, unknown } from "@earendil-works/pi-schema";
-import { local, method, param, record, remote, serverHost, unsafe } from "@p2/app/v1";
+import { grantable, literal, local, method, param, record, remote, serverHost, unsafe } from "@p2/app/v1";
+
+/**
+ * What a busy conversation does now: the model answers (`thinking`), tools of its current round run (their names, in
+ * call order, at least one), it compacts its context, or other work runs (`working`: hooks, waiting for its own tasks).
+ */
+export const WorkStepSchema = union([
+	obj({ kind: literal("thinking") }),
+	obj({ kind: literal("tools"), names: arr(str(), { minItems: 1 }) }),
+	obj({ kind: literal("compacting") }),
+	obj({ kind: literal("working") }),
+]);
+export type WorkStep = Static<typeof WorkStepSchema>;
+
+/** A busy conversation's work: since when it is busy (the worker's clock, ms), its tool rounds so far and its step. */
+export const WorkSchema = obj({ since: num(), rounds: num(), step: WorkStepSchema });
+export type Work = Static<typeof WorkSchema>;
+
+/**
+ * Why a conversation's last run ended without an answer: Durable's run failure reason (e.g. `model_error`, `aborted`)
+ * and its detail (an error's text; owners only).
+ */
+export const RunFailureSchema = obj({ reason: str(), detail: opt(str()) });
+export type RunFailure = Static<typeof RunFailureSchema>;
 
 export const StatusSchema = obj({
 	/** A worker process runs for the session. */
@@ -11,21 +34,30 @@ export const StatusSchema = obj({
 	tasks: num(),
 	/** Conversations with foreground work, ascending. */
 	busy: arr(num()),
+	/** What each busy conversation does, by conversation ID. */
+	work: record(WorkSchema),
+	/** Why the main conversation's last run ended without an answer, while it is not busy. */
+	failure: opt(RunFailureSchema),
 });
 export type Status = Static<typeof StatusSchema>;
 export const StatusesSchema = record(StatusSchema);
 
-/** What a worker reports of its work: its live tasks, its busy conversations and its spend. */
+/**
+ * What a worker reports of its work: its live tasks, its busy conversations and what they do, its main conversation's
+ * last run failure, and its spend.
+ */
 export const ReportFields = {
 	tasks: num(),
 	busy: arr(num()),
+	work: record(WorkSchema),
+	failure: opt(RunFailureSchema),
 	usage: opt(unsafe<Usage>(unknown())),
 };
 const ReportSchema = obj(ReportFields);
 
-/** Live status of every session (server, in memory). Reports are fenced by worker generation. */
+/** Live status of every session (server, in memory), fenced by worker generation. 2: `work`. 3: `failure`. */
 export const StatusStore = local("p2.status-store", {
-	version: 1,
+	version: 3,
 	params: {},
 	members: {
 		statuses: StatusesSchema,
@@ -33,15 +65,18 @@ export const StatusStore = local("p2.status-store", {
 	},
 });
 
-/** Readers (owner) see every session's status; a worker reports its own session's (its principal names it). */
+/**
+ * Every session's status for people (`statuses`: the owner every session's, a guest its sessions'); a worker reports its
+ * own session's (`report`, its principal names it). 2: what each busy conversation does (`work`). 3: why the main
+ * conversation's last run failed (`failure`). 4: a new base (grantable members replaced variants; older versions are
+ * refused, their pages reload).
+ */
 export const SessionStatus = remote("p2.session-status", {
-	version: 1,
+	version: 4,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		reader: { state: { statuses: StatusesSchema } },
-		reporter: { methods: { report: method(ReportSchema) } },
-	},
+	state: { statuses: grantable(StatusesSchema) },
+	methods: { report: grantable(method(ReportSchema)) },
 });
 
 /**
@@ -60,10 +95,10 @@ export const StatusReport = local("p2.status-report", {
  * runs, or fails with why it could not start (`worker_failed`).
  */
 export const WorkerControl = remote("p2.worker-control", {
-	version: 1,
+	version: 2,
 	params: { session: param.str() },
 	hostAddress: serverHost,
-	variants: { owner: { methods: { restart: method() } } },
+	methods: { restart: method() },
 });
 
 /**
@@ -71,12 +106,8 @@ export const WorkerControl = remote("p2.worker-control", {
  * active session, child views included) and the session's spend.
  */
 export const SessionMetrics = remote("p2.session-metrics", {
-	version: 1,
+	version: 2,
 	params: { session: param.str(), viewer: param.str({ min: 1, max: 80 }) },
 	hostAddress: serverHost,
-	variants: {
-		reader: {
-			state: { clients: num(), usage: union([unsafe<Usage>(unknown()), nul()]) },
-		},
-	},
+	state: { clients: num(), usage: union([unsafe<Usage>(unknown()), nul()]) },
 });

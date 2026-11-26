@@ -60,6 +60,7 @@ describe("package commands", () => {
 	function prepareManagedInstall(
 		targetVersion: string,
 		npmExitCode = 0,
+		stagedPiUsesNode = false,
 	): { managedRoot: string; npmRecordPath: string } {
 		const managedRoot = join(agentDir, "install");
 		const activeRelease = join(managedRoot, "releases", VERSION);
@@ -91,7 +92,9 @@ fs.writeFileSync(
 	binPath,
 	process.platform === "win32"
 		? "@echo off\\r\\necho ${targetVersion}\\r\\n"
-		: "#!/bin/sh\\nprintf '%s\\n' ${targetVersion}\\n",
+		: ${stagedPiUsesNode}
+			? "#!/usr/bin/env node\\nconsole.log('${targetVersion}')\\n"
+			: "#!/bin/sh\\nprintf '%s\\n' ${targetVersion}\\n",
 );
 if (process.platform !== "win32") fs.chmodSync(binPath, 0o755);
 `,
@@ -983,6 +986,29 @@ if (process.platform !== "win32") fs.chmodSync(binPath, 0o755);
 		expect(process.exitCode).toBeUndefined();
 	});
 
+	it.skipIf(process.platform === "win32")(
+		"verifies a managed update with the running Node when an older node is first on PATH",
+		async () => {
+			// https://github.com/earendil-works/pi/issues/12048
+			const targetVersion = getNewerPatchVersion();
+			const { managedRoot } = prepareManagedInstall(targetVersion, 0, true);
+			const oldNodeDir = join(tempDir, "old-node");
+			mkdirSync(oldNodeDir, { recursive: true });
+			const oldNodePath = join(oldNodeDir, "node");
+			writeFileSync(oldNodePath, "#!/bin/sh\necho 'unsupported old node' >&2\nexit 1\n");
+			chmodSync(oldNodePath, 0o755);
+			process.env.PATH = `${oldNodeDir}${delimiter}${process.env.PATH ?? ""}`;
+			mockManagedUpdate(targetVersion);
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
+
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(readFileSync(join(managedRoot, "current-version"), "utf8")).toBe(`${targetVersion}\n`);
+		},
+	);
+
 	it("rejects a concurrent managed update", async () => {
 		const targetVersion = getNewerPatchVersion();
 		const { managedRoot, npmRecordPath } = prepareManagedInstall(targetVersion);
@@ -1021,6 +1047,34 @@ if (process.platform !== "win32") fs.chmodSync(binPath, 0o755);
 		expect(existsSync(npmRecordPath)).toBe(false);
 		expect(errorSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
 			`Managed ${APP_NAME} installations do not support --force`,
+		);
+		expect(process.exitCode).toBe(1);
+	});
+
+	it.skipIf(process.platform === "win32")("rejects updating the Windows managed install from WSL", async () => {
+		// https://github.com/earendil-works/pi/issues/12172
+		const targetVersion = getNewerPatchVersion();
+		const { managedRoot, npmRecordPath } = prepareManagedInstall(targetVersion);
+		writeFileSync(
+			join(managedRoot, "managed-install.json"),
+			`${JSON.stringify({
+				kind: "pi-managed-install",
+				schemaVersion: 1,
+				layout: "releases-v1",
+				entrypoint: { type: "script", path: "C:\\Users\\user\\.pi\\agent\\bin\\pi.cmd" },
+			})}\r\n`,
+		);
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await expect(runPackageCommandDirectly(["update", "--self"])).resolves.toBeUndefined();
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(existsSync(npmRecordPath)).toBe(false);
+		expect(readFileSync(join(managedRoot, "current-version"), "utf8")).toBe(`${VERSION}\n`);
+		expect(errorSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+			"Running the Windows installation from WSL is unsupported",
 		);
 		expect(process.exitCode).toBe(1);
 	});

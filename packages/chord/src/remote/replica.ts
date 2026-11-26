@@ -4,12 +4,12 @@
 
 import type { Context } from "../context/index.ts";
 import type { ChordError } from "../data/index.ts";
-import { applyImmutable, decoder, type Op } from "../delta/index.ts";
+import { applyImmutable, type Decoder, decoder, type Op } from "../delta/index.ts";
 import type { JsonValue } from "../json.ts";
 import { type Batch, handedOut, Source, type WatchStart } from "../state/internal.ts";
 
 /**
- * Where a replica stands: a value, a failed member (reads throw; the provider's member failed, or a newly bound variant
+ * Where a replica stands: a value, a failed member (reads throw; the provider's member failed, or a new binding
  * lacks it, and either may come back; `last` is its last good value, `undefined` when it had none), or ended with its
  * reference.
  */
@@ -25,20 +25,49 @@ export type MemberSnapshot =
 
 const NO_OPS: readonly Op[] = [];
 
+/** What a fork is made with before it takes its original's state. */
+const FORKED: MemberSnapshot = { kind: "value", value: null };
+
 /** One state member of a hold, as the consumer reads and watches it; changed only inside the consumer's batch. */
 export class Replica extends Source {
 	#state: ReplicaState;
-	/** The member's decoder, started with the snapshot as the provider's encoder was; a new one per snapshot. */
-	#decoder = decoder();
+	/**
+	 * The member's decoder, started with the snapshot as the provider's encoder was; a new one per snapshot. Made by the
+	 * first change after it (a fresh decoder has no state): a member that never changes (a constant) keeps none, 0.3 KiB
+	 * per replica (its paths' map and closure).
+	 */
+	#decoder: Decoder | undefined;
 	/** The ops of the current batch's frame, and whether the provider's document was retired in it. */
 	#ops = NO_OPS;
 	#retired = false;
 	/** A retirement that reached it while failed: its next value carries the flag. */
 	#retiredWhileFailed = false;
+	/**
+	 * How many values it took (its first value included): a reference joining a shared remote object sees a member it
+	 * found failed or missing once this passes the count it found (decision "References share one wire hold").
+	 */
+	#generation: number;
 
 	constructor(batch: Batch, state: MemberSnapshot) {
 		super(batch);
 		this.#state = state.kind === "value" ? state : { kind: "failed", error: handedOut(state.error), last: undefined };
+		this.#generation = state.kind === "value" ? 1 : 0;
+	}
+
+	/** How many values it took: one per adoption (a snapshot's, a change's, a recovery's). */
+	get generation(): number {
+		return this.#generation;
+	}
+
+	/**
+	 * A copy of it for another remote object of the same reference (a private retry after `too_large/part`): its state,
+	 * last good value and count, no decoder yet (that object's next snapshot resets it).
+	 */
+	fork(batch: Batch): Replica {
+		const fork = new Replica(batch, FORKED);
+		fork.#state = this.#state;
+		fork.#generation = this.#generation;
+		return fork;
 	}
 
 	get value(): JsonValue {
@@ -62,6 +91,7 @@ export class Replica extends Source {
 	decode(wire: unknown): { readonly value: JsonValue; readonly ops: readonly Op[] } {
 		// Trust boundary: fresh JSON from the link; Delta's decoder checks each op.
 		if (!Array.isArray(wire)) throw new Error("part: a member's changes are a list of ops");
+		this.#decoder ??= decoder();
 		const ops = this.#decoder.decode(wire);
 		const state = this.#state;
 		if (state.kind === "ended") throw state.error;
@@ -77,6 +107,7 @@ export class Replica extends Source {
 	adopt(value: JsonValue, ops: readonly Op[], retired: boolean): void {
 		const flagged = retired || this.#retiredWhileFailed;
 		this.#state = { kind: "value", value };
+		this.#generation++;
 		this.#ops = ops;
 		this.#retired = flagged;
 		this.#retiredWhileFailed = false;
@@ -99,7 +130,7 @@ export class Replica extends Source {
 	 * starts anew with it): a value is one frame `[["r", value]]`, a failed member fails.
 	 */
 	reset(state: MemberSnapshot): void {
-		this.#decoder = decoder();
+		this.#decoder = undefined;
 		if (state.kind === "failed") this.fail(state.error);
 		else this.adopt(state.value, [["r", state.value]], false);
 	}
@@ -126,8 +157,8 @@ export class Replica extends Source {
 	}
 
 	/**
-	 * The member is not in a newly bound variant, in the batch that binds it: as a failure (`fail`) with `error`; a later
-	 * binding of a variant that has it brings it back (`reset`), as on the provider's host.
+	 * The member is not in a new binding (not granted), in the batch that binds it: as a failure (`fail`) with
+	 * `error`; a later binding that has it brings it back (`reset`), as on the provider's host.
 	 */
 	vanish(error: ChordError): void {
 		this.fail(error);

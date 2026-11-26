@@ -24,8 +24,8 @@ import { Watch, type WatchCall, type WatchEnd } from "../watch.ts";
  * Where a reference's source stands: never had a value (`unbound`: reads throw what its reference has instead),
  * following an instance's member, holding its last value while pointing at nothing (`failure` while its target is
  * failed: new watches start with it; `told`: its watches got a failure since that value, so the next is whole), failed
- * (a member its target's live variant lacks, or its compute threw when it was held: reads throw, `last` is the last
- * good value) or ended with its reference (nothing kept).
+ * (a member its target's live instance lacks (not granted), or its compute threw when it was held: reads throw, `last`
+ * is the last good value) or ended with its reference (nothing kept).
  */
 type SourceState =
 	| { readonly kind: "unbound" }
@@ -60,10 +60,23 @@ export class ReferenceSource extends Source implements Dependent {
 	#framed: { readonly value: JsonValue | undefined } | undefined;
 	/** Its reference: what a read throws while it never had a value (its failure, `not_ready`, or `released`). */
 	readonly #owner: SourceOwner;
+	/**
+	 * While its reference has not seen the member (it joined a shared remote object and no value arrived since: decision
+	 * "References share one wire hold"), what tells whether it has now; the member's failure then shows no last value.
+	 */
+	#unseen: (() => boolean) | undefined;
 
 	constructor(batch: Batch, owner: SourceOwner) {
 		super(batch);
 		this.#owner = owner;
+	}
+
+	/**
+	 * Its reference has not seen the member until `seen` says so: until then a failure of the member it follows shows
+	 * no last value (as a fresh failed snapshot), in reads, watches, holds and vanishings alike.
+	 */
+	unseen(seen: () => boolean): void {
+		this.#unseen = seen;
 	}
 
 	/** Whether it never had a value (a watch waits for its reference's values first). */
@@ -91,7 +104,7 @@ export class ReferenceSource extends Source implements Dependent {
 		const state = this.#state;
 		switch (state.kind) {
 			case "bound":
-				return state.source instanceof Source ? state.source.start() : { kind: "value", value: state.source.value };
+				return this.#startOf(state.source);
 			case "held":
 				return state.failure === NO_FAILURE
 					? { kind: "value", value: state.value }
@@ -148,12 +161,12 @@ export class ReferenceSource extends Source implements Dependent {
 
 	/** The bound member changed: its dependents are marked (its frames reach the subscribers directly). */
 	invalidate(): void {
-		for (const dependent of this.dependents) dependent.invalidate();
+		this.dependents.invalidate();
 	}
 
 	/** The bound member's document was retired: its dependents carry the flag on. */
 	sourceRetired(visited: Set<Dependent>): void {
-		for (const dependent of this.dependents) dependent.sourceRetired(visited);
+		this.dependents.sourceRetired(visited);
 	}
 
 	/**
@@ -202,13 +215,30 @@ export class ReferenceSource extends Source implements Dependent {
 	}
 
 	/**
-	 * Its target's live variant lacks the member, inside a batch: reads throw `error`; watches and subscribers get one
-	 * failure call and stay open (a later instance may bring the member back, as `[["r", value]]`).
+	 * Its target's live instance lacks the member (not granted), inside a batch: reads throw `error`; watches and
+	 * subscribers get one failure call and stay open (a later instance may bring the member back, as `[["r",
+	 * value]]`).
 	 */
 	vanish(error: ChordError, context: Context): void {
 		const state = this.#state;
 		if (state.kind === "ended") return;
-		const last = state.kind === "unbound" ? undefined : this.#lastGood();
+		this.#failWith(error, state.kind === "unbound" ? undefined : this.#lastGood(), context);
+	}
+
+	/**
+	 * An admission refused its reference's caller (slice 14 §2.2), inside a batch: it keeps no value (reads throw
+	 * `error`, a watch opened now has nothing to start at); watches and subscribers get one failure call per denial and
+	 * stay open, and derives over it fail until the next allow brings a value (`[["r", value]]`). What application code
+	 * already took from it stays with that code.
+	 */
+	deny(error: ChordError, context: Context): void {
+		const state = this.#state;
+		if (state.kind === "ended" || (state.kind === "failed" && state.error === error)) return;
+		this.#failWith(error, undefined, context);
+	}
+
+	/** Fails with `error`, keeping `last` as its last good value: one failure call, and its dependents marked. */
+	#failWith(error: ChordError, last: JsonValue | undefined, context: Context): void {
 		this.#leave();
 		this.#state = { kind: "failed", error: handedOut(error), last };
 		this.#call({ kind: "failed", error }, context);
@@ -227,7 +257,7 @@ export class ReferenceSource extends Source implements Dependent {
 		const passed = this.#passed;
 		this.#passed = undefined;
 		if (passed !== undefined) for (const subscriber of [...passed]) subscriber.end(ENDED);
-		for (const dependent of this.dependents) dependent.invalidate();
+		this.dependents.invalidate();
 	}
 
 	/** Delivers a move's frame: the diff from the watches' value to the new member's. */
@@ -255,15 +285,27 @@ export class ReferenceSource extends Source implements Dependent {
 	 */
 	#keep(failure: unknown): boolean {
 		const state = this.#state as Extract<SourceState, { readonly kind: "bound" }>;
-		const start = state.source instanceof Source ? state.source.start() : undefined;
+		const start = this.#startOf(state.source);
 		this.#leave();
-		if (start === undefined || start.kind === "value") {
-			const value = start === undefined ? state.source.value : start.value;
-			this.#state = { kind: "held", value, failure, told: failure !== NO_FAILURE };
+		if (start.kind === "value") {
+			this.#state = { kind: "held", value: start.value, failure, told: failure !== NO_FAILURE };
 			return true;
 		}
 		this.#state = { kind: "failed", error: handedOut(start.error), last: start.last };
 		return false;
+	}
+
+	/**
+	 * What the member it follows starts at: its value, or its failure with its last good value, none while its reference
+	 * has not seen the member (`unseen`; seen once, it stays seen).
+	 */
+	#startOf(source: DeriveSource): WatchStart {
+		if (!(source instanceof Source)) return { kind: "value", value: source.value };
+		const start = source.start();
+		if (start.kind === "value" || this.#unseen === undefined) return start;
+		if (!this.#unseen()) return { kind: "failed", error: start.error, last: undefined };
+		this.#unseen = undefined;
+		return start;
 	}
 
 	/** A call of its own (a move's frame, a failure) to its watches and subscribers. */

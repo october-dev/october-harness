@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { BACKGROUND_CONTEXT, type Held, statusOf, whenLive } from "@p2/app/v1";
-import { Chat } from "../../plugins/chat/contract.ts";
-import { type Session, Sessions } from "../../plugins/sessions/contract.ts";
+import { BACKGROUND_CONTEXT, type Ref, statusOf, whenLive } from "@p2/app/v1";
+import { CHAT_PARTICIPANT, Chat } from "../../plugins/chat/contract.ts";
+import { SESSIONS_OWNER, type Session, Sessions } from "../../plugins/sessions/contract.ts";
 import { Sharing } from "../../plugins/sharing/contract.ts";
 import { Workspace, WorkspaceTransfer } from "../../plugins/workspace/contract.ts";
 import { Hosts } from "../../src/runtime/server.ts";
-import { expectChord, type Fixture, failureOf, holdIn, http, startFixture, until } from "./helpers.ts";
+import { expectChord, type Fixture, failureOf, holdWith, http, startFixture, until } from "./helpers.ts";
 
 const TUNNEL = { Host: "share.test", Origin: "https://share.test" };
 
@@ -17,7 +18,7 @@ describe("workspace plugin (fake provider, temporary git repository)", () => {
 	let fixture: Fixture;
 	let session: Session;
 	let other: Session;
-	let workspace: Held<typeof Workspace>;
+	let workspace: Ref<typeof Workspace>;
 	let origin: string;
 	let hash: string;
 	const url = (path: string, id = session.id) =>
@@ -79,9 +80,10 @@ describe("workspace plugin (fake provider, temporary git repository)", () => {
 		await writeFile(join(fixture.workspace, "new.md"), "# Untracked hello\n");
 		await writeFile(join(fixture.workspace, "ignored.txt"), "hello ignored\n");
 		await writeFile(join(fixture.workspace, "clip.mp3"), "0123456789");
-		await symlink(fixture.dataDir, join(fixture.workspace, "private"));
+		// A link out of the working directory (to p2's data directory, which is no exception otherwise).
+		await symlink(fixture.dataDir, join(fixture.workspace, "outside"));
 		const browser = fixture.browser();
-		const sessions = await holdIn(browser, Sessions, {}, "owner");
+		const sessions = await holdWith(browser, Sessions, {}, ...SESSIONS_OWNER);
 		session = await sessions.create({ cwd: fixture.workspace, title: "Workspace" }, BACKGROUND_CONTEXT);
 		other = await sessions.create({ cwd: fixture.workspace, title: "Other" }, BACKGROUND_CONTEXT);
 		workspace = browser.hold(Workspace, { session: session.id, conversation: 1 }, BACKGROUND_CONTEXT);
@@ -135,30 +137,29 @@ describe("workspace plugin (fake provider, temporary git repository)", () => {
 			/Invalid/,
 		);
 		await assert.rejects(workspace.query({ kind: "file", path: ".git/config" }, BACKGROUND_CONTEXT), /Invalid/);
-		await assert.rejects(workspace.query({ kind: "list", path: "private" }, BACKGROUND_CONTEXT), /private|leaves/);
+		await assert.rejects(workspace.query({ kind: "list", path: "outside" }, BACKGROUND_CONTEXT), /leaves/);
 		await assert.rejects(workspace.query({ kind: "log", skip: -1, limit: 1000 }, BACKGROUND_CONTEXT));
 	});
 
-	it("rejects unknown conversations and sessions rooted in private application data", async () => {
+	it("rejects unknown conversations; serves a session rooted in p2's data directory like any other", async () => {
 		const browser = fixture.browser();
 		const unknown = browser.hold(Workspace, { session: session.id, conversation: 99999 }, BACKGROUND_CONTEXT);
 		// A failed open leaves its holders waiting (it would heal): the failure names the cause.
 		assert.match((await failureOf(unknown)).message, /Unknown conversation/);
 		unknown.release();
-		const privateSession = await (await holdIn(browser, Sessions, {}, "owner")).create(
-			{
-				cwd: fixture.dataDir,
-				title: "Private",
-			},
+		// Sessions work in <data>/plugins (agent plugins): the data directory is a workspace like any other.
+		mkdirSync(join(fixture.dataDir, "plugins", "counter"), { recursive: true });
+		const pluginsSession = await (await holdWith(browser, Sessions, {}, ...SESSIONS_OWNER)).create(
+			{ cwd: join(fixture.dataDir, "plugins"), title: "Plugins" },
 			BACKGROUND_CONTEXT,
 		);
-		const privateWorkspace = browser.hold(
-			Workspace,
-			{ session: privateSession.id, conversation: 1 },
-			BACKGROUND_CONTEXT,
+		const pluginsWorkspace = await holdWith(browser, Workspace, { session: pluginsSession.id, conversation: 1 });
+		const listed = await pluginsWorkspace.query({ kind: "list", path: "" }, BACKGROUND_CONTEXT);
+		assert(
+			listed.kind === "list" && listed.entries.some((entry) => entry.name === "counter"),
+			JSON.stringify(listed),
 		);
-		assert.match((await failureOf(privateWorkspace)).message, /private/);
-		privateWorkspace.release();
+		pluginsWorkspace.release();
 	});
 
 	it("answers where it is open, without a waiting or failed move", async () => {
@@ -177,7 +178,7 @@ describe("workspace plugin (fake provider, temporary git repository)", () => {
 		await until(workspace.changes, (value) => value !== undefined && value > revision!);
 	});
 
-	it("streams bytes, HEAD and media ranges; denies private paths and cross-site reads", async () => {
+	it("streams bytes, HEAD and media ranges; denies paths out of the working directory and cross-site reads", async () => {
 		const bytes = await fixture.http(url("src/hello.ts"));
 		assert.equal(bytes.status, 200, bytes.body);
 		assert.equal(bytes.body, "const hello = 'after';\n");
@@ -210,7 +211,7 @@ describe("workspace plugin (fake provider, temporary git repository)", () => {
 		assert.equal(huge.body, "File too large");
 		await rm(join(fixture.workspace, "huge.bin"));
 		assert.equal((await fixture.http(url(".git/config"))).status, 404);
-		assert.equal((await fixture.http(url("private/settings.json"))).status, 404);
+		assert.equal((await fixture.http(url("outside/settings.json"))).status, 404);
 		const transfer = fixture
 			.browser()
 			.hold(WorkspaceTransfer, { session: session.id, conversation: 1 }, BACKGROUND_CONTEXT);
@@ -237,7 +238,7 @@ describe("workspace plugin (fake provider, temporary git repository)", () => {
 		);
 		assert.equal((await upload("empty.txt", "", "src")).status, 200);
 		assert.equal((await readFile(join(fixture.workspace, "src/empty.txt"))).length, 0);
-		assert.equal((await upload("bad.txt", "x", "private")).status, 400);
+		assert.equal((await upload("bad.txt", "x", "outside")).status, 400);
 		assert.equal((await upload("../bad.txt", "x")).status, 400);
 		assert.equal((await upload("bad.txt", "x", "", {})).status, 403);
 		assert.equal((await upload("oversized.txt", Buffer.alloc(25 * 1024 * 1024 + 1))).status, 400);
@@ -278,7 +279,12 @@ describe("workspace plugin (fake provider, temporary git repository)", () => {
 	});
 
 	it("sends quoted browser review drafts as an ordinary attributed prompt", async () => {
-		const chat = await holdIn(fixture.browser(), Chat, { session: session.id, conversation: 1 }, "participant");
+		const chat = await holdWith(
+			fixture.browser(),
+			Chat,
+			{ session: session.id, conversation: 1 },
+			...CHAT_PARTICIPANT,
+		);
 		const text = `Review comments:\n\nsrc/hello.ts:1 @${hash.slice(0, 8)}\n> const hello = 'after';\nPlease use a clearer name`;
 		await chat.send({ text, requestId: "review" }, BACKGROUND_CONTEXT);
 		const view = await until(chat.view, (value) =>
@@ -298,7 +304,7 @@ it("workspace holds keep an idle worker alive, and releasing the last hold relea
 	const fixture = await startFixture({ idleMs: 100 });
 	try {
 		const browser = fixture.browser();
-		const session = await (await holdIn(browser, Sessions, {}, "owner")).create(
+		const session = await (await holdWith(browser, Sessions, {}, ...SESSIONS_OWNER)).create(
 			{
 				cwd: fixture.workspace,
 				title: "Watch lease",

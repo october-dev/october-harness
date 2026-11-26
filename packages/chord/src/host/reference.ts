@@ -1,56 +1,66 @@
 // References (§7): what `get` and `hold` return, a plain object built from the contract's members, and its binding to
 // the object: counted as a reference, it follows the object's state, parks calls while loading, keeps the
-// per-reference watches and is released once. A binding whose object a reload removed, or whose version it no longer
-// binds, waits unbound and binds again (slice 7b §6); one of an older version reads adapted members (Q10).
+// per-reference watches and event subscriptions and is released once. A binding whose object a reload removed, or
+// whose version it no longer binds, waits unbound and binds again (slice 7b §6); one of an older version reads adapted
+// members (Q10).
 
 import { BACKGROUND_CONTEXT, type Context } from "../context/index.ts";
-import type { Contract, Implementation, ParamsOf } from "../contracts/index.ts";
+import type {
+	Contract,
+	EventSubscription,
+	GrantableName,
+	Implementation,
+	KindShape,
+	ParamsOf,
+} from "../contracts/index.ts";
 import {
-	type CurrentVariants,
-	currentVariants,
-	LOCAL,
-	type MethodData,
+	type CurrentMembers,
+	currentVersion,
+	type GrantableIn,
+	grantedMembers,
+	keyOfAddress,
+	type MembersImplementation,
+	type MembersShape,
+	NO_GRANTS,
 	type ShapeOf,
 	takesNoArgs,
-	type VariantImplementation,
 } from "../contracts/internal.ts";
 import { ChordError, type FailureCause, type Principal } from "../data/index.ts";
+import { invalid, sameCause, stackless } from "../data/internal.ts";
 import { Keyed, type KeyedSlot, type SealToken, Singleton } from "../documents/internal.ts";
 import type { JsonValue } from "../json.ts";
 import { RETRY_HOPS } from "../link/internal.ts";
+import { appended, NO_ITEMS } from "../lists.ts";
+import { SmallSet } from "../small-set.ts";
 import { type Batch, Constant, type DeriveSource, Source } from "../state/internal.ts";
+import { storedText } from "../store/text.ts";
 import type { NativeWatchable, Watch, Watchable } from "../watch.ts";
 import type { PinnedKey } from "./attempt.ts";
 import { type Caller, withLinkedAbortSignal } from "./ctx.ts";
+import { type EventListener, type EventNode, type HostEvents, subscribe } from "./events.ts";
 import type { KeyedBinding } from "./members.ts";
+import { type OwnQuery, referenceQueries } from "./named-query.ts";
 import type { ChordObject, Holder, Removal } from "./object.ts";
 import { ParkedCalls } from "./parked.ts";
 import { type Ended, type Failed, LOADING, ReferenceState, type RefState } from "./ref-state.ts";
+import { ReferenceEvents, ReferenceEventTaps } from "./reference-events.ts";
 import { ReferenceKeys } from "./reference-keys.ts";
 import { ReferenceSource } from "./reference-source.ts";
 import type { UnboundRequest } from "./unbound.ts";
 
 /**
- * A reference: a local contract's members, or for a remote contract the members of the variant its object chose,
- * narrowed by `variant`; and its state, `retry()` and `release()`. Every use after release throws.
+ * A reference: a local contract's members, or a remote contract's plain members, its grantable members while its
+ * binding granted them (`undefined` otherwise, slice 15 §1.4) and `granted`, the names granted (grantable members and
+ * flags); and its state, `retry()` and `release()`. Every use after release throws.
  */
 export type Reference<C extends Contract> = ShapeOf<C>["kind"] extends "local"
 	? Implementation<C> & Lifecycle
-	: InVariants<C, never>;
+	: RemoteMembers<CurrentMembers<C>> & { readonly granted: ReadonlySet<GrantableName<C>> } & Lifecycle;
 
-/** What `host.hold` returns: a reference whose `variant` is `undefined` until its first binding. */
-export type Held<C extends Contract> = ShapeOf<C>["kind"] extends "local"
-	? Implementation<C> & Lifecycle
-	: InVariants<C, undefined>;
-
-/** A remote reference narrowed to some of its variants. */
-export type RefIn<C extends Contract, V extends string> = Extract<Reference<C>, { readonly variant: V }>;
-
-/** One member of a remote reference's union per variant; `Unbound` is what `variant` may also be. */
-type InVariants<C extends Contract, Unbound> = {
-	[V in keyof CurrentVariants<C>]: { readonly variant: V | Unbound } & VariantImplementation<CurrentVariants<C>[V]> &
-		Lifecycle;
-}[keyof CurrentVariants<C>];
+/** A remote reference's members: the plain ones always, the grantable ones optional. */
+type RemoteMembers<V extends MembersShape> = {
+	readonly [M in Exclude<keyof MembersImplementation<V>, GrantableIn<V>>]: MembersImplementation<V>[M];
+} & { readonly [M in GrantableIn<V> & keyof MembersImplementation<V>]?: MembersImplementation<V>[M] };
 
 /** What every reference has besides its members. */
 type Lifecycle = {
@@ -82,8 +92,11 @@ export interface Target {
 	stateFor(version: number, fingerprint: string): RefState;
 	/** Whether its state members have values: live once, for a remote object bound once. */
 	readonly hydrated: boolean;
-	/** The variant bound last; `undefined` for a local object and before the first binding. */
-	readonly variant: string | undefined;
+	/**
+	 * The names its binding was granted last (slice 15 §1.4): kept while it loads or failed; none for a local object,
+	 * before the first binding and while denied.
+	 */
+	readonly granted: ReadonlySet<string>;
 	/** The error of its last failure (an attempt's, or the dependencies it is parked on) while none went live since. */
 	readonly lastFailure: ChordError | undefined;
 	/** Its instance id while it activates on this host (Q5); `undefined` otherwise and over a link. */
@@ -97,8 +110,11 @@ export interface Target {
 	hold(binding: Binding): void;
 	/** `binding` was released. */
 	unhold(binding: Binding): void;
-	/** Calls a method of the live object for `caller`, bound at `version` (an older one is mapped, Q10). */
-	call(method: string, args: unknown, context: Context, caller: Caller, version: number): Promise<unknown>;
+	/**
+	 * Calls a method of the live object for `binding` (its caller, at its contract's version: an older one is mapped,
+	 * Q10); over a link the call is the binding's own, cancelled with its release.
+	 */
+	call(method: string, args: unknown, binding: Binding, context: Context): Promise<unknown>;
 	/**
 	 * What a reference of `version` follows for state member `member` now (decision "References are the only
 	 * indirection"): the live instance's member (a replica over a link), or nothing (`loading`, or `failed` with the
@@ -112,6 +128,11 @@ export interface Target {
 	/** The keyed member `member` of the live object: its ultimate slot (slice 6a §12; only local objects have any). */
 	keyedMember(member: string): KeyedSlot;
 	/**
+	 * The named query `name` of `queries` member `member` of the live object, as a consumer of `contract` sees it (slice
+	 * 14 §3.1; local objects only).
+	 */
+	queryMember(member: string, name: string, contract: Contract): OwnQuery;
+	/**
 	 * How a consumer of `version` reads keyed member `member`'s documents: mapped back to its version when older
 	 * (slice 7b §7), `undefined` when as they are; `contract_mismatch` when the provider refuses it.
 	 */
@@ -122,10 +143,15 @@ export interface Target {
 	 */
 	pinKey(member: string, key: string, version: number, context: Context): Promise<PinnedKey>;
 	/**
-	 * `ref.retry()`, as one step of `walk`: an attempt now if failed; an object parked on failed dependencies passes it
-	 * on; ignored otherwise.
+	 * `ref.retry()` from `binding`, as one step of `walk`: an attempt now if failed; an object parked on failed
+	 * dependencies passes it on; ignored otherwise.
 	 */
-	retry(walk: RetryWalk): void;
+	retry(walk: RetryWalk, binding: Binding): void;
+	/**
+	 * How many values the shared replica of state member `member` took (a remote object's; decision "References share
+	 * one wire hold"); `undefined` without one (and on this host, where members are no replicas).
+	 */
+	generationOf(member: string): number | undefined;
 	/**
 	 * The chain of activation waits from this object to `target`, both included (Q5); `undefined` when there is none.
 	 * `visited` keeps a search over shared dependencies linear in the waits.
@@ -133,18 +159,38 @@ export interface Target {
 	pathTo(target: ChordObject, visited: Set<Target>): ChordObject[] | undefined;
 }
 
-/** An instance a reference attaches to (`Target.attachable`): it keeps last values in that instance's variant. */
-export type Attachable = { readonly variant: string | undefined };
+/**
+ * An instance a reference attaches to (`Target.attachable`): it keeps last values of the members that instance was
+ * granted, and taps its event members' nodes at its version (none for a member it lacks).
+ */
+export type Attachable = {
+	readonly granted: ReadonlySet<string>;
+	eventNode(member: string, version: number): EventNode | undefined;
+};
+
+/** The instance a binding's event members tap, and the host's counter value when it bound to it. */
+type EventsAt = { readonly instance: Attachable; readonly boundAt: number };
+
+/**
+ * A binding's events, for a contract with event members only (decision "Events: fire-and-forget members"): the host's
+ * events; the instance its members tap and the counter value of its binding to it (`at`, taken whenever it attaches to
+ * another instance shown live, used or not, so a subscription made later still gets what was emitted since; none while
+ * it points at nothing); its members' subscriptions and re-exposing nodes (`taps`, made by the first use).
+ */
+type BindingEvents = { readonly host: HostEvents; at: EventsAt | undefined; taps: ReferenceEventTaps | undefined };
 
 /**
  * What a reference follows of its target for one state member (`Target.followed`): the member of the instance it
- * follows (`instance`, still changing), a member its live variant lacks (`invalid/member`), or nothing: its target loads
- * (no call) or failed (one `failed` call with the cause's error); `last` is the member of `instance`, which stopped
- * changing, that a reference attached to it takes a last value from (never one it never attached to).
+ * follows (`instance`, still changing), a member its live instance lacks (`forbidden` when not granted, else
+ * `invalid/member`), or nothing: its target loads (no call) or failed (one `failed` call with the cause's error);
+ * `last` is the member of `instance`, which stopped changing, that a reference attached to it takes a last value from
+ * (never one it never attached to). `denied`: an admission refused its caller (slice 14 §2.2): no value is kept, reads
+ * throw the error.
  */
 export type Followed =
 	| { readonly kind: "live"; readonly source: DeriveSource; readonly instance: unknown }
 	| { readonly kind: "lacking"; readonly error: ChordError }
+	| { readonly kind: "denied"; readonly error: ChordError }
 	| { readonly kind: "loading"; readonly last: DeriveSource | undefined; readonly instance: unknown }
 	| {
 			readonly kind: "failed";
@@ -219,6 +265,9 @@ const DONE: Decision = { kind: "done" };
 /** A wait for a state: checked at every change, rejected with the reference's end. */
 type Waiter = { readonly check: () => void; readonly end: (error: ChordError) => void };
 
+/** A remote reference's key to whether the last state it settled in was live (`useLive`, `TuiScope.live`). */
+export const WAS_LIVE = Symbol("chord.wasLive");
+
 /**
  * A reference's binding to its object: counted by the object as one of its references while bound, and told of each
  * change of its state. Calls run while live, park while loading (sent in order once live) and reject while failed.
@@ -235,7 +284,8 @@ export class Binding implements Holder, UnboundRequest {
 	/** How long a call made while loading waits: the reference's `readyTimeout`. */
 	readonly #parkTimeout: number;
 	#state: BindingState;
-	readonly #watches = new Set<Watch<JsonValue>>();
+	/** The watches taken through it, ended with it; made by the first. */
+	#watches: Set<Watch<JsonValue>> | undefined;
 	/**
 	 * Aborted when the reference ends: its calls' callers are rejected and their handlers' contexts aborted. Made by the
 	 * first call and dropped at the end, so a released reference keeps no error (whose stack keeps its frames).
@@ -243,12 +293,15 @@ export class Binding implements Holder, UnboundRequest {
 	#calls: AbortController | undefined;
 	/** Calls made while loading; made by the first. */
 	#parked: ParkedCalls | undefined;
-	/** Waits for a state (getters, member watches before the first binding); each checks the state at every change. */
-	readonly #waiters = new Set<Waiter>();
+	/**
+	 * Waits for a state (getters, member watches before the first binding); each checks the state at every change.
+	 * Made by the first.
+	 */
+	#waiters: Set<Waiter> | undefined;
 	/** `ref.state`, made on first access. */
 	#refState: ReferenceState | undefined;
 	/** The keys its object's factory pinned with `ref.member.at(key)`: pinned once bound, released with it. */
-	readonly #ats: KeyedMemberAt[] = [];
+	#ats: readonly KeyedMemberAt[] = NO_ITEMS;
 	/** Its state members as consumers follow them (`ReferenceSource`), by name; each made by its first use. */
 	#sources: Map<string, ReferenceSource> | undefined;
 	/** The keys of its object's keyed members it holds (key watches, `at(key)` pins); made by the first. */
@@ -257,6 +310,25 @@ export class Binding implements Holder, UnboundRequest {
 	#attached: Attachable | undefined;
 	/** Whether presence lists show it: every reference but a restart's readiness bindings (`unlist`). */
 	#listed = true;
+	/** Its events, for a contract with event members only (one slot otherwise); dropped at its end (it keeps no host). */
+	#events: BindingEvents | undefined;
+	/**
+	 * The state members it has not seen since it joined a shared remote object, each with its replica's count of values
+	 * then (decision "References share one wire hold"); one is seen once that count passes. Made at the join.
+	 */
+	#unseen: Map<string, number> | undefined;
+	/** The failure it waited with last: waiting again for the same cause shows the same state (`wait`). */
+	#waited: Failed | undefined;
+	/** Whether it was seen live or denied: from then on its grantable members are there only while granted (`#exposes`). */
+	#decided = false;
+	/** Whether the last state it settled in was live, not failed: a UI shows it while it loads again (`WAS_LIVE`). */
+	#wasLive = false;
+	/** Its grant at its version (`to`), by its target's it was read from: made when seen live, dropped by a denial. */
+	#projection: { readonly from: ReadonlySet<string>; readonly to: ReadonlySet<string> } | undefined;
+	/** Who reads its object's named queries: each told when another instance is live (`followInstance`). */
+	#instanceFollowers: SmallSet<() => void> | undefined;
+	/** The instance its followers were told of last, held weakly: an ended instance is kept by nothing here. */
+	#followedInstance: WeakRef<object> | undefined;
 
 	constructor(
 		contract: Contract,
@@ -264,6 +336,7 @@ export class Binding implements Holder, UnboundRequest {
 		dependent: ChordObject | undefined,
 		caller: Caller,
 		parkTimeout: number,
+		events: HostEvents,
 	) {
 		this.#name = contract.name;
 		this.#contract = contract;
@@ -272,21 +345,35 @@ export class Binding implements Holder, UnboundRequest {
 		this.#state = { kind: "unbound", batch, dependent };
 		const reference: Record<string, unknown> = { release: () => this.release(), retry: () => this.retry() };
 		Object.defineProperty(reference, "state", { get: () => this.#watchableState(), enumerable: true });
-		// Every member of every variant (one kind and signature per name, D11); the bound variant decides which work.
-		const methods = new Map<string, MethodData>();
-		for (const variant of currentVariants(contract).values()) {
-			for (const member of variant.state.keys()) reference[member] = new ReferenceMember(this, member);
-			for (const member of variant.keyed.keys()) reference[member] = new ReferenceKeyed(this, member);
-			for (const [member, method] of variant.methods) methods.set(member, method);
+		const { members, grantable } = currentVersion(contract);
+		// A grantable member is there while granted (slice 15 §1.4), the same object each time; the others always.
+		const expose = (member: string, value: unknown): void => {
+			if (!grantable.has(member)) reference[member] = value;
+			else {
+				const get = () => (this.#exposes(member) ? value : undefined);
+				Object.defineProperty(reference, member, { get, enumerable: true });
+			}
+		};
+		// Event bookkeeping only for a contract with event members: others pay nothing for events per binding.
+		if (members.events.size > 0) {
+			this.#events = { host: events, at: undefined, taps: undefined };
+			for (const member of members.events.keys()) expose(member, new ReferenceEvents(this, member));
 		}
-		for (const [member, method] of methods) {
+		for (const member of members.state.keys()) expose(member, new ReferenceMember(this, member));
+		for (const [member, { key }] of members.keyed) reference[member] = new ReferenceKeyed(this, member, key);
+		for (const [member, queries] of members.queries) reference[member] = referenceQueries(this, member, queries);
+		for (const [member, method] of members.methods) {
 			// A method without arguments omits them; `null` is their internal and wire form.
-			reference[member] = takesNoArgs(method)
-				? async (context: Context) => this.#call(member, null, context)
-				: async (args: unknown, context: Context) => this.#call(member, args, context);
+			expose(
+				member,
+				takesNoArgs(method)
+					? async (context: Context) => this.#call(member, null, context)
+					: async (args: unknown, context: Context) => this.#call(member, args, context),
+			);
 		}
 		if (contract.kind === "remote") {
-			Object.defineProperty(reference, "variant", { get: () => this.#variant(), enumerable: true });
+			Object.defineProperty(reference, "granted", { get: () => this.#granted(), enumerable: true });
+			Object.defineProperty(reference, WAS_LIVE, { get: () => this.#wasLive });
 		}
 		// Built from the contract's own member lists.
 		this.reference = reference as Reference<Contract>;
@@ -345,11 +432,15 @@ export class Binding implements Holder, UnboundRequest {
 	 */
 	bind(target: Target): void {
 		const state = this.#state;
-		if (state.kind !== "unbound") return;
-		this.#state = { kind: "bound", batch: state.batch, dependent: state.dependent, target };
+		if (state.kind === "unbound") this.#boundTo(target, state.batch, state.dependent);
+	}
+
+	/** Counted by `target` as a reference: its members and keys follow what `target` shows now, and it is told. */
+	#boundTo(target: Target, batch: Batch, dependent: ChordObject | undefined): void {
+		this.#state = { kind: "bound", batch, dependent, target };
 		target.hold(this);
 		// `hold` may release it at once (a presence derive): `retarget` sees that. A batch only when members move.
-		if (this.following) state.batch.within(() => this.retarget(), BACKGROUND_CONTEXT);
+		if (this.following) batch.within(() => this.retarget(), BACKGROUND_CONTEXT);
 		else this.retarget();
 		this.moved();
 	}
@@ -357,6 +448,32 @@ export class Binding implements Holder, UnboundRequest {
 	/** Whether its members or keys were used: `retarget` moves them (in a batch). */
 	get following(): boolean {
 		return this.#sources !== undefined || this.#heldKeys !== undefined;
+	}
+
+	/**
+	 * It joined a shared remote object that was bound already: `unseen` are the members it has not seen, with their
+	 * replicas' counts of values now. Until a value arrives for one, it shows no last value of it from before the join
+	 * (as on a fresh failed snapshot), whether it is read meanwhile or not. A member it holds a value of its own for (a
+	 * binding that followed another object before) keeps its history.
+	 */
+	joined(unseen: ReadonlyMap<string, number>): void {
+		for (const [member, count] of unseen) {
+			const source = this.#sources?.get(member);
+			if (source !== undefined && !source.unbound) continue;
+			this.#unseen ??= new Map();
+			this.#unseen.set(member, count);
+			source?.unseen(() => this.#seen(member));
+		}
+	}
+
+	/**
+	 * Moves to `target` keeping everything of its own (its reference, watches, subscriptions, waiters, calls, last
+	 * values, unseen members): a reference retrying alone after `too_large/part` (decision "References share one wire
+	 * hold"). Its previous target let it go already; its members and keys follow `target`, and it is told.
+	 */
+	transfer(target: Target): void {
+		const state = this.#state;
+		if (state.kind === "bound") this.#boundTo(target, state.batch, state.dependent);
 	}
 
 	/**
@@ -370,6 +487,7 @@ export class Binding implements Holder, UnboundRequest {
 		const { target } = state;
 		const { version } = this.contract;
 		const attachable = target.attachable;
+		if (this.#events !== undefined) this.#retargetEvents(this.#events, attachable);
 		if (attachable !== undefined) this.#attached = attachable;
 		// Detaching from an instance it attached to: every member keeps its last value (none before it ever attached).
 		else if (this.#attached !== undefined) this.#keepAll(this.#attached);
@@ -378,6 +496,45 @@ export class Binding implements Holder, UnboundRequest {
 		// Its last values taken: it keeps no node of that instance (GC).
 		if (attachable === undefined) this.#attached = undefined;
 		this.#heldKeys?.follow(BACKGROUND_CONTEXT);
+		this.#toldOfInstance(target.instance);
+	}
+
+	/** Tells the readers of its object's named queries of another live instance (not of none: they keep their rows). */
+	#toldOfInstance(instance: unknown): void {
+		const followers = this.#instanceFollowers;
+		if (followers === undefined || followers.size === 0) return;
+		// A live instance is an object (an attempt, a remote object's binding).
+		if (typeof instance !== "object" || instance === null || instance === this.#followedInstance?.deref()) return;
+		this.#followedInstance = new WeakRef(instance);
+		for (const moved of followers.snapshot()) moved();
+	}
+
+	/**
+	 * Calls `moved` whenever its object has another live instance than the one it was told of last (a restart's
+	 * successor: the readers of its named queries read that one's, slice 14 §3.2), until the returned release.
+	 */
+	followInstance(moved: () => void): () => void {
+		// Most references have one reader of its named queries: no `Set` for it (184 B for as long as it reads).
+		this.#instanceFollowers ??= new SmallSet();
+		const followers = this.#instanceFollowers;
+		followers.add(moved);
+		const instance: unknown = this.target?.instance;
+		if (this.#followedInstance === undefined && typeof instance === "object" && instance !== null) {
+			this.#followedInstance = new WeakRef(instance);
+		}
+		return () => void followers.delete(moved);
+	}
+
+	/**
+	 * Its event members follow `attachable` from the host's counter value now, when it is another instance than they
+	 * follow: only while it shows its object live (a failed instance's admitted commits still reach its members, never
+	 * its events; decision "Events: fire-and-forget members").
+	 */
+	#retargetEvents(events: BindingEvents, attachable: Attachable | undefined): void {
+		const instance = this.refState.kind === "live" ? attachable : undefined;
+		if (instance === events.at?.instance) return;
+		events.at = instance === undefined ? undefined : { instance, boundAt: events.host.counter };
+		events.taps?.retarget(events.at);
 	}
 
 	/**
@@ -399,17 +556,23 @@ export class Binding implements Holder, UnboundRequest {
 		}, BACKGROUND_CONTEXT);
 		// Its last values taken: it keeps no node of that instance (GC).
 		this.#attached = undefined;
+		// Unbound: no events until it binds again (then from that binding's counter value, even to the same instance).
+		const events = this.#events;
+		if (events !== undefined) {
+			events.at = undefined;
+			events.taps?.retarget(undefined);
+		}
 		this.#state = { kind: "unbound", batch: state.batch, dependent: state.dependent };
-		removal.host.rewait(this, this.contract, removal.params, removal.cause, removal.context);
+		removal.host.rewait(this, this.contract, removal);
 	}
 
 	/**
-	 * Every state member of its version, in the variant of the instance it attached to (its object may be live no more),
-	 * gets a source, read or not, so each keeps a last value while it points at nothing (no-op for one already made).
+	 * Every state member of its version the instance it attached to was granted (its object may be live no more) gets a
+	 * source, read or not, so each keeps a last value while it points at nothing (no-op for one already made).
 	 */
 	#keepAll(attached: Attachable): void {
-		const variant = currentVariants(this.contract).get(attached.variant ?? LOCAL);
-		for (const member of variant?.state.keys() ?? []) this.#memberSource(member);
+		const { state } = grantedMembers(currentVersion(this.contract), attached.granted);
+		for (const member of state.keys()) this.#memberSource(member);
 	}
 
 	/**
@@ -421,8 +584,12 @@ export class Binding implements Holder, UnboundRequest {
 		if (state.kind !== "unbound") return;
 		// Kept while it waits: its stack made text now, so it keeps none of the frames' objects (an ended instance's).
 		if (cause !== undefined) void cause.error.stack;
+		// Waiting again for the same cause (placed again and refused again) is no change: the same state, no frame.
+		const last = this.#waited;
+		const same = cause !== undefined && last !== undefined && sameCause(last.cause, cause);
 		const failure: Failed | undefined =
-			cause === undefined ? undefined : { kind: "failed", cause, retryAt: undefined };
+			cause === undefined || same ? last : { kind: "failed", cause, retryAt: undefined };
+		this.#waited = failure;
 		const { batch, dependent } = state;
 		this.#state = { kind: "waiting", batch, dependent, failure, place, leave };
 		// Unchanged while loading: nothing to tell.
@@ -457,6 +624,7 @@ export class Binding implements Holder, UnboundRequest {
 	moved(): void {
 		this.#refState?.moved();
 		const state = this.refState;
+		this.#settled(state);
 		if (state.kind === "live") {
 			this.#parked?.flush(
 				(method, args, context) => this.#send(method, args, context),
@@ -465,7 +633,7 @@ export class Binding implements Holder, UnboundRequest {
 		} else if (state.kind === "failed") {
 			this.#parked?.reject(state.cause.error);
 		}
-		for (const waiter of [...this.#waiters]) waiter.check();
+		if (this.#waiters !== undefined) for (const waiter of [...this.#waiters]) waiter.check();
 		this.dependent?.dependencyMoved();
 	}
 
@@ -490,12 +658,32 @@ export class Binding implements Holder, UnboundRequest {
 		return this.#until((state) => (done(state) ? DONE : WAIT), context);
 	}
 
-	/** Resolves when the reference is live; rejects with a broken failure's error, or its end. Getters wait for it. */
+	/**
+	 * Calls `moved` at every change of the reference's state from now on, until the returned release or the
+	 * reference's end: `until` for a wait that is never done, without its promise and its abort listener (a decision
+	 * follows each of its references so, slice 14 §2.2, and ends all its follows by one listener). Not called now: its
+	 * caller does that once it kept the release, which that first telling may need. `undefined` for a released
+	 * reference, which tells nothing.
+	 */
+	followState(moved: () => void): (() => void) | undefined {
+		if (this.#state.kind === "released") return undefined;
+		const end = (): void => this.#forget(waiter);
+		const waiter: Waiter = { check: moved, end };
+		this.#waiters ??= new Set();
+		this.#waiters.add(waiter);
+		return end;
+	}
+
+	/**
+	 * Resolves when the reference is live; rejects with a broken or denied failure's error (neither heals by waiting),
+	 * or its end. Getters wait for it.
+	 */
 	live(context: Context): Promise<void> {
 		return this.#until((state) => {
 			if (state.kind === "live") return DONE;
-			const broken = state.kind === "failed" && state.cause.kind === "broken";
-			return broken ? { kind: "failed", error: state.cause.error } : WAIT;
+			if (state.kind !== "failed") return WAIT;
+			const { kind, error } = state.cause;
+			return kind === "broken" || kind === "denied" ? { kind: "failed", error } : WAIT;
 		}, context);
 	}
 
@@ -518,9 +706,23 @@ export class Binding implements Holder, UnboundRequest {
 		if (state.kind === "released") throw state.state.error;
 		source = new ReferenceSource(state.batch, this);
 		this.#sources.set(member, source);
+		if (this.#unseen?.has(member) === true) source.unseen(() => this.#seen(member));
 		// New, nothing follows it yet: placing it needs no batch.
 		if (state.kind === "bound") place(source, state.target.followed(member, this.contract.version), this.#attached);
 		return source;
+	}
+
+	/**
+	 * Whether member `member`, unseen at its join, took a value since (its replica's count of values passed the one
+	 * recorded then, also across rebinds and a private retry's copies): from then on it is seen for good.
+	 */
+	#seen(member: string): boolean {
+		const count = this.#unseen?.get(member);
+		if (count === undefined) return true;
+		const generation = this.target?.generationOf(member);
+		if (generation === undefined || generation <= count) return false;
+		this.#unseen!.delete(member);
+		return true;
 	}
 
 	/** What a read of a member that never had a value throws: `released`, the failure's error, or `not_ready`. */
@@ -533,9 +735,54 @@ export class Binding implements Holder, UnboundRequest {
 		return new ChordError({ code: "not_ready", message: `${this.label}: not live yet` });
 	}
 
+	/**
+	 * Subscribes `listener` to event member `member` at once, bound or not: it gets what this reference receives while
+	 * it is bound to an instance that has the member (granted it). Rejects `released` once released, and an aborted
+	 * `context`'s reason.
+	 */
+	subscribeEvents(member: string, listener: EventListener, context: Context): Promise<EventSubscription> {
+		const state = this.#state;
+		if (state.kind === "released") return Promise.reject(state.state.error);
+		const taps = this.#taps();
+		return subscribe(
+			// Its contract has event members (`member` is one) and it is not released: it has its events.
+			this.#events!.host,
+			listener,
+			context,
+			(subscription) => taps.subscribe(member, subscription),
+			(subscription) => this.#events?.taps?.unsubscribe(member, subscription),
+		);
+	}
+
+	/**
+	 * Feeds `node` (an object's member re-exposing event member `member`) what this reference receives, until
+	 * `unforwardEvents`; nothing for a released reference.
+	 */
+	forwardEvents(member: string, node: EventNode): void {
+		if (this.#state.kind !== "released") this.#taps().forward(member, node);
+	}
+
+	/** Stops feeding `node`. */
+	unforwardEvents(member: string, node: EventNode): void {
+		this.#events?.taps?.unforward(member, node);
+	}
+
+	/** Its event taps, made by the first use at its version, tapped on the instance it points at. */
+	#taps(): ReferenceEventTaps {
+		// Asked only for an event member of its contract, while it is not released: it has its events.
+		const events = this.#events!;
+		events.taps ??= new ReferenceEventTaps(this.contract.version, events.at);
+		return events.taps;
+	}
+
 	/** The keyed member `member`'s slot (slice 6a §12), as `member` resolves a state member. */
 	keyedSlot(member: string): KeyedSlot {
 		return this.#target().keyedMember(member);
+	}
+
+	/** The named query `name` of `queries` member `member` of the live object, as `keyedSlot` resolves a keyed one. */
+	queryMember(member: string, name: string): OwnQuery {
+		return this.#target().queryMember(member, name, this.contract);
 	}
 
 	/** How this reference reads keyed member `member`'s documents (`Target.keyedMapping`), as `keyedSlot` resolves. */
@@ -625,8 +872,10 @@ export class Binding implements Holder, UnboundRequest {
 			watch.end({ kind: "ended" });
 			throw this.#state.state.error;
 		}
-		this.#watches.add(watch);
-		void watch.closed.then(() => this.#watches.delete(watch));
+		this.#watches ??= new Set();
+		const watches = this.#watches;
+		watches.add(watch);
+		void watch.closed.then(() => watches.delete(watch));
 		return watch;
 	}
 
@@ -639,7 +888,7 @@ export class Binding implements Holder, UnboundRequest {
 			throw new Error(`${this.#name}: ${member}.at(key) is valid only in the factory`);
 		}
 		const at = new KeyedMemberAt(this, member, key);
-		this.#ats.push(at);
+		this.#ats = appended(this.#ats, at);
 		return at;
 	}
 
@@ -667,7 +916,7 @@ export class Binding implements Holder, UnboundRequest {
 	retry(walk: RetryWalk = retryWalk()): void {
 		const state = this.#state;
 		if (state.kind === "bound") {
-			state.target.retry(walk);
+			state.target.retry(walk, this);
 			return;
 		}
 		if (state.kind !== "refused") return;
@@ -699,12 +948,17 @@ export class Binding implements Holder, UnboundRequest {
 		this.#contract = undefined;
 		if (previous.kind === "waiting") previous.leave();
 		for (const at of this.#ats) at.release();
+		// Its subscriptions end and its event members untap (taken out first: a stopping subscription finds none).
+		const eventTaps = this.#events?.taps;
+		this.#events = undefined;
+		eventTaps?.end();
 		// Its members' and keys' watches end, derives over them are marked; their instance subscriptions go.
 		const sources = this.#sources;
 		const keys = this.#heldKeys;
 		this.#sources = undefined;
 		this.#heldKeys = undefined;
 		this.#attached = undefined;
+		this.#unseen = undefined;
 		if (previous.kind !== "released" && (sources !== undefined || keys !== undefined)) {
 			const end = (): void => {
 				for (const source of sources?.values() ?? []) source.end(error);
@@ -719,10 +973,10 @@ export class Binding implements Holder, UnboundRequest {
 		this.#calls = undefined;
 		this.#parked?.reject(error);
 		this.#parked = undefined;
-		for (const watch of this.#watches) watch.end({ kind: "ended" });
+		if (this.#watches !== undefined) for (const watch of this.#watches) watch.end({ kind: "ended" });
 		this.#refState?.released(ended);
 		// Each removes itself; promise reactions run later.
-		for (const waiter of this.#waiters) waiter.end(error);
+		if (this.#waiters !== undefined) for (const waiter of this.#waiters) waiter.end(error);
 		// An ended dependency breaks a parked dependent (it cannot come back).
 		if (previous.kind !== "released") previous.dependent?.dependencyMoved();
 	}
@@ -750,7 +1004,7 @@ export class Binding implements Holder, UnboundRequest {
 		const { target } = this.#state as Extract<BindingState, { readonly kind: "bound" }>;
 		this.#calls ??= new AbortController();
 		const linked = withLinkedAbortSignal(this.#calls.signal, context);
-		return target.call(method, args, linked.context, this.caller, this.contract.version).finally(linked.release);
+		return target.call(method, args, this, linked.context).finally(linked.release);
 	}
 
 	/**
@@ -762,7 +1016,7 @@ export class Binding implements Holder, UnboundRequest {
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		const signal = context.abortSignal;
 		const settle = (done: () => void): void => {
-			this.#waiters.delete(waiter);
+			this.#forget(waiter);
 			signal?.removeEventListener("abort", abort);
 			done();
 		};
@@ -775,11 +1029,20 @@ export class Binding implements Holder, UnboundRequest {
 			end: (error) => settle(() => reject(error)),
 		};
 		const abort = (): void => settle(() => reject(signal?.reason));
+		this.#waiters ??= new Set();
 		this.#waiters.add(waiter);
 		signal?.addEventListener("abort", abort, { once: true });
 		if (signal?.aborted) abort();
 		else waiter.check();
 		return promise;
+	}
+
+	/** `waiter` waits no more; the set goes with its last one (a getter's wait is over once its reference is live). */
+	#forget(waiter: Waiter): void {
+		const waiters = this.#waiters;
+		if (waiters === undefined) return;
+		waiters.delete(waiter);
+		if (waiters.size === 0) this.#waiters = undefined;
 	}
 
 	#watchableState(): ReferenceState {
@@ -796,15 +1059,61 @@ export class Binding implements Holder, UnboundRequest {
 		return this.#refState;
 	}
 
-	#variant(): string | undefined {
+	/**
+	 * Whether grantable member `member` is there: granted, once it was live or denied; every one before, so a factory
+	 * wires a dependency that has not bound yet (slice 15 §1.4: `forbidden` once it binds without the grant).
+	 */
+	#exposes(member: string): boolean {
+		const granted = this.#granted();
+		return this.#decided ? granted.has(member) : true;
+	}
+
+	/** Its grant, read through: a rebind changes it in its batch, before `moved`; none before it; throws once released. */
+	#granted(): ReadonlySet<string> {
 		const state = this.#state;
 		if (state.kind === "released") throw state.state.error;
-		return state.kind === "bound" ? state.target.variant : undefined;
+		if (state.kind === "bound") this.#settled(this.refState);
+		return this.#projection?.to ?? NO_GRANTS;
+	}
+
+	/** Takes what `state` says: live, its target's grant at its version; denied, none; failed, it is live no more. */
+	#settled(state: RefState): void {
+		if (state.kind === "failed") {
+			this.#wasLive = false;
+			if (state.cause.kind === "denied") [this.#decided, this.#projection] = [true, undefined];
+		}
+		if (state.kind !== "live") return;
+		// At its own version (an older consumer has only its version's names), the same set while its target's is.
+		const granted = this.#state.kind === "bound" ? this.#state.target.granted : NO_GRANTS;
+		if (this.#projection?.from !== granted) {
+			const { grants } = currentVersion(this.contract);
+			// One pass, each name tested once. Most bindings are of the target's version: every name is theirs, the
+			// target's set is handed on and no list is made; an older one's set starts at its first missing name.
+			let kept: Set<string> | undefined;
+			let seen = 0;
+			for (const name of granted) {
+				if (grants.includes(name)) {
+					if (kept !== undefined) kept.add(name);
+					else seen++;
+					continue;
+				}
+				if (kept !== undefined) continue;
+				kept = new Set();
+				// The names before the first missing one were all kept.
+				let at = 0;
+				for (const before of granted) {
+					if (at++ === seen) break;
+					kept.add(before);
+				}
+			}
+			this.#projection = { from: granted, to: kept ?? granted };
+		}
+		this.#wasLive = this.#decided = true;
 	}
 
 	/** The error of this reference's release by its holder (`released`, no reason). */
 	#released(): ChordError {
-		return new ChordError({ code: "released", message: `${this.#name}: released` });
+		return stackless({ code: "released", message: `${this.#name}: released` });
 	}
 }
 
@@ -832,14 +1141,31 @@ class ReferenceMember {
 	}
 }
 
-/** A keyed member of a reference (slice 6a §12): reads by key behave as calls (they wait while loading). */
+/**
+ * A keyed member of a reference (slice 6a §12): reads by key behave as calls (they wait while loading). A host-keyed
+ * one takes addresses of its kind (checked: a trust boundary for JavaScript callers) and reads the provider's slot by
+ * their canonical keys.
+ */
 class ReferenceKeyed {
 	readonly #binding: Binding;
 	readonly #member: string;
+	/** The host kind the member's keys are addresses of; `undefined` for string keys. */
+	readonly kind: (KindShape & { readonly kind: string }) | undefined;
 
-	constructor(binding: Binding, member: string) {
+	constructor(binding: Binding, member: string, kind: (KindShape & { readonly kind: string }) | undefined) {
 		this.#binding = binding;
 		this.#member = member;
+		this.kind = kind;
+	}
+
+	/** The provider slot's key of a key the consumer gave: an address's canonical key, or the string itself. */
+	#key(key: unknown): string {
+		const kind = this.kind;
+		// A string-keyed member's keys are strings (its type).
+		if (kind === undefined) return key as string;
+		const stored = keyOfAddress(kind, key);
+		if (stored === undefined) throw invalid("args", `${this.#member}: expected an address of ${kind.kind}`);
+		return storedText(stored, `${this.#member}: key`);
 	}
 
 	/** The provider's slot: the ultimate provider's, through re-exposures (rule 22). */
@@ -849,10 +1175,11 @@ class ReferenceKeyed {
 
 	/** This member as another object re-exposing it has it: its keys held through this reference. */
 	get keyed(): KeyedBinding {
-		return { kind: "reexposed", binding: this.#binding, member: this.#member };
+		return { kind: "reexposed", binding: this.#binding, member: this.#member, key: this.kind?.kind };
 	}
 
-	async get(key: string, context: Context): Promise<JsonValue | undefined> {
+	async get(raw: unknown, context: Context): Promise<JsonValue | undefined> {
+		const key = this.#key(raw);
 		await this.#binding.hydrated(context);
 		const slot = this.slot;
 		const map = this.#binding.keyedMapping(this.#member);
@@ -864,7 +1191,8 @@ class ReferenceKeyed {
 	 * A watch of the document at `key` across the object's attempts (it holds the key through the object), `undefined`
 	 * when absent; it ends with this reference.
 	 */
-	async watch(key: string, context: Context): Promise<Watch<JsonValue> | undefined> {
+	async watch(raw: unknown, context: Context): Promise<Watch<JsonValue> | undefined> {
+		const key = this.#key(raw);
 		await this.#binding.firstValues(context);
 		const slot = this.slot;
 		if ((await slot.get(key, ownAccess(slot), context)) === undefined) return undefined;
@@ -886,9 +1214,9 @@ class ReferenceKeyed {
 		return this.#binding.follow(watch);
 	}
 
-	at(key: string): Watchable<JsonValue> {
+	at(key: unknown): Watchable<JsonValue> {
 		// The pinned key's values are the member's documents.
-		return this.#binding.at(this.#member, key) as unknown as Watchable<JsonValue>;
+		return this.#binding.at(this.#member, this.#key(key)) as unknown as Watchable<JsonValue>;
 	}
 }
 
@@ -993,6 +1321,9 @@ function place(source: ReferenceSource, followed: Followed, attached: unknown): 
 			return;
 		case "lacking":
 			source.vanish(followed.error, BACKGROUND_CONTEXT);
+			return;
+		case "denied":
+			source.deny(followed.error, BACKGROUND_CONTEXT);
 			return;
 		case "loading":
 			if (source.unbound && followed.last !== undefined && followed.instance === attached)

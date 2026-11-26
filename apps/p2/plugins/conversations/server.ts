@@ -116,7 +116,7 @@ export default defineFacet((host) => {
 		};
 
 		return {
-			query: async ({ source, requestId, origin, query }, ctx) => {
+			query: async ({ source, requestId, query }, ctx) => {
 				const sender = await catalog.get({ id: source }, ctx);
 				if (sender.archivedAt !== null) throw forbidden("The sending session is archived");
 				const send = (to: string, message: string, followUp: boolean | undefined) =>
@@ -131,7 +131,6 @@ export default defineFacet((host) => {
 									requestId,
 									message,
 									followUp,
-									...(origin ? { origin } : {}),
 								},
 								ctx,
 							),
@@ -212,13 +211,10 @@ export default defineFacet((host) => {
 		const broker = self.get(ConversationBroker, {});
 		const hosts = self.get(Hosts, {});
 		return {
-			variant: "worker",
-			members: {
-				query: async ({ requestId, origin, query }, ctx) => {
-					const current = hosts.workers.value[principal.session];
-					if (!current?.running || current.generation !== principal.generation) throw forbidden("stale worker");
-					return broker.query({ source: principal.session, requestId, ...(origin ? { origin } : {}), query }, ctx);
-				},
+			query: async ({ requestId, query }, ctx) => {
+				const current = hosts.workers.value[principal.session];
+				if (!current?.running || current.generation !== principal.generation) throw forbidden("stale worker");
+				return broker.query({ source: principal.session, requestId, query }, ctx);
 			},
 		};
 	});

@@ -10,13 +10,13 @@ import { after, before, describe, it } from "node:test";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationView, EntryDraft, LiveState } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT, follow } from "@p2/app/v1";
-import { Chat } from "../../plugins/chat/contract.ts";
+import { CHAT_PARTICIPANT, Chat } from "../../plugins/chat/contract.ts";
 import { Models } from "../../plugins/models/contract.ts";
-import { Sessions, SessionTransfer } from "../../plugins/sessions/contract.ts";
+import { SESSIONS_OWNER, Sessions, SessionTransfer } from "../../plugins/sessions/contract.ts";
 import type { Host } from "../../src/runtime/chord.ts";
 import { bigSessionEntries } from "../fixtures/big-session.ts";
-import { Browser, browserTests } from "./browser.ts";
-import { type Fixture, holdIn, startFixture, until } from "./helpers.ts";
+import { Browser, browserTests, COMPOSER } from "./browser.ts";
+import { type Fixture, holdWith, startFixture, until } from "./helpers.ts";
 import { type ProbeReport, RENDER_PROBE } from "./render-probe.ts";
 
 const live = (view: ConversationView | null | undefined) => view?.docs["pi.live"] as LiveState | undefined;
@@ -126,7 +126,7 @@ describe("transcript stability", { skip: !browserTests }, () => {
 	let owner: Host;
 	const url = (path: string) => `http://127.0.0.1:${fixture.server.port}${path}`;
 	const seeded = async (title: string, entries: EntryDraft[]) => {
-		const session = await (await holdIn(owner, Sessions, {}, "owner")).create(
+		const session = await (await holdWith(owner, Sessions, {}, ...SESSIONS_OWNER)).create(
 			{ cwd: fixture.workspace, title },
 			BACKGROUND_CONTEXT,
 		);
@@ -160,13 +160,15 @@ describe("transcript stability", { skip: !browserTests }, () => {
 	});
 
 	it("renders only the new and changed rows, and keeps the others' DOM, while turns arrive and stream", async () => {
-		const session = await seeded("Long", bigSessionEntries(800, 400));
-		const chat = await holdIn(owner, Chat, { session, conversation: 1 }, "participant");
+		// Long, yet well below the faux model's compaction threshold (128k less the reserve): a blocking compaction
+		// would hold the streamed answer back. 800 entries came within 450 tokens of it.
+		const session = await seeded("Long", bigSessionEntries(760, 400));
+		const chat = await holdWith(owner, Chat, { session, conversation: 1 }, ...CHAT_PARTICIPANT);
 		const stop = follow(chat.view, () => {});
 		try {
 			await browser.open(url(`/s/${session}`));
 			await browser.wait(
-				`document.querySelector('.composer textarea') && document.querySelectorAll('[data-row]').length > 3`,
+				`document.querySelector('${COMPOSER}') && document.querySelectorAll('[data-row]').length > 3`,
 			);
 			await sleep(1_500);
 
@@ -218,12 +220,12 @@ describe("transcript stability", { skip: !browserTests }, () => {
 
 	it("a run going Working… → wheel → words → wheel → answer shifts nothing", async () => {
 		const session = await seeded("Steps", bigSessionEntries(40, 400));
-		const chat = await holdIn(owner, Chat, { session, conversation: 1 }, "participant");
+		const chat = await holdWith(owner, Chat, { session, conversation: 1 }, ...CHAT_PARTICIPANT);
 		const stop = follow(chat.view, () => {});
 		try {
 			await browser.open(url(`/s/${session}`));
 			await browser.wait(
-				`document.querySelector('.composer textarea') && document.querySelectorAll('[data-row]').length > 3`,
+				`document.querySelector('${COMPOSER}') && document.querySelectorAll('[data-row]').length > 3`,
 			);
 			await sleep(1_500);
 			// Thinking first (`steps`, then a plain echo), words first (`tool`): every first part takes the working
@@ -250,7 +252,7 @@ describe("transcript stability", { skip: !browserTests }, () => {
 					// The turn's rows after the person's message: the artifact where it was made, between the two wheels.
 					assert.deepEqual(
 						await browser.evaluate<string[]>(
-							`(() => { const rows=[...document.querySelectorAll('[data-row]')]; const at=rows.findIndex((row)=>row.dataset.row===${message}); return rows.slice(at+1).map((row)=>row.querySelector('[data-testid=activity]')?'activity':row.querySelector('.inline-artifact')?'inline':row.querySelector('.assistant')?'answer':row.dataset.row); })()`,
+							`(() => { const rows=[...document.querySelectorAll('[data-row]')]; const at=rows.findIndex((row)=>row.dataset.row===${message}); return rows.slice(at+1).map((row)=>row.querySelector('[data-testid=activity]')?'activity':row.querySelector('.artifact-inline')?'inline':row.querySelector('.assistant')?'answer':row.dataset.row); })()`,
 						),
 						["activity", "inline", "activity", "answer"],
 					);
@@ -281,9 +283,7 @@ describe("transcript stability", { skip: !browserTests }, () => {
 	it("shows a mixed turn and incoming messages (screenshots)", { skip: !SCREENSHOTS }, async () => {
 		const session = await seeded("Mixed", mixedEntries());
 		await browser.open(url(`/s/${session}`));
-		await browser.wait(
-			`document.querySelector('.composer textarea') && document.querySelectorAll('[data-row]').length > 5`,
-		);
+		await browser.wait(`document.querySelector('${COMPOSER}') && document.querySelectorAll('[data-row]').length > 5`);
 		await sleep(1_000);
 		await browser.evaluate("(document.querySelector('.scroller').scrollTop = 0, true)");
 		await sleep(600);

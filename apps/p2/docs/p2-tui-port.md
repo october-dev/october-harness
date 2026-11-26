@@ -279,7 +279,7 @@ Nested keys are shown as pi spells them.
 | `externalEditor` | **G**, launcher only | never sent to the worker |
 | `images.autoResize`, `images.blockImages` | server | Attachment policy is the server's. Show read-only. |
 | `defaultProvider/defaultModel`, `defaultThinkingLevel`, `modelThinkingLevels`, `thinkingBudgets`, `enabledModels` | server | p2 has `defaultModel`/`thinkingLevel` (`P2/src/runtime/settings.ts`); the others are **new** or (c) |
-| `steeringMode`, `followUpMode`, `transport`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs`, `retry.*`, `compaction.*` (incl. `modelOverrides`), `cacheWarming`, `showCacheMissNotices` | server | p2 has a subset (`P2/src/runtime/settings.ts`). Read-only display. |
+| `steeringMode`, `followUpMode`, `transport`, `httpIdleTimeoutMs`, `websocketConnectTimeoutMs`, `retry.*`, `compaction.*` (incl. `modelOverrides`), `cacheWarming`, `notices.*` | server | p2 has a subset (`P2/src/runtime/settings.ts`). Read-only display. |
 | `defaultTools`, `codemode.*`, `shellPath`, `shellCommandPrefix`, `npmCommand` | server / env | Tool loadout and shell are server or env configuration (`P2/plugins/envs`). Not TUI settings. |
 | warning toggles, `enableInstallTelemetry`, `defaultProjectTrust`, `treeFilterMode`, `branchSummary.*`, `sessionDir`, `httpProxy` | (c) | No equivalent concept in p2. |
 
@@ -1159,13 +1159,13 @@ Requests are debounced (~80 ms), aborted when superseded, and inserted as `@path
 | Web feature | Source | TUI exposure |
 | --- | --- | --- |
 | Shell, navigation, drawer | `P2/plugins/web-shell/web.tsx`, `P2/src/web/AppLayout.tsx`, `P2/src/web/navigation.ts` | Screens + overlays; Ctrl+R and `/resume` instead of a sidebar |
-| Sessions grouped by env:cwd, pinned, busy, children | `P2/src/web/Drawer.tsx` | Session selector (1.9, 1.17) |
+| Sessions grouped by env:cwd, pinned, busy, children | `P2/plugins/sessions/sidebar/` | Session selector (1.9, 1.17) |
 | New session (env + directory browser, model, first prompt) | `P2/src/web/new-session.tsx`, `P2/plugins/envs/DirectoryPicker.tsx` | `/new` overlay (`Envs.envs`, `Envs.listDirectory`) |
 | Session options (rename, pin, archive/restore, relocate) | `P2/plugins/sessions/web.tsx` (Session sheet) | `/name`, `sessions.pin`, `sessions.archive`, `sessions.relocate` |
-| Search, archived | `P2/plugins/search`, `P2/src/web/Drawer.tsx` | Session selector (1.17) |
+| Search, archived | `P2/plugins/search`, `P2/plugins/sessions/sidebar/ListPage.tsx` | Session selector (1.17) |
 | Transcript, tool cards | `P2/src/web/Chat.tsx`, `P2/src/web/Markdown.tsx`, `P2/src/web/Code.tsx` | 1.3, 1.4 |
 | Composer (steer/follow-up, stop, queue edit, attachments, drag/drop) | `P2/plugins/chat/web.tsx:83-200`, `P2/src/web/composer-state.tsx` | Editor, pending area, attachments via **L:pasteImage/attach** shown as chips in a `composer:attachments` widget |
-| Model/thinking sheet | `P2/src/web/ModelPicker.tsx` | 1.7 |
+| Model/thinking (footer links, command menu pages) | `P2/plugins/chat/commands.tsx` | 1.7 |
 | Cost, context, cache, viewers | `P2/src/web/CostPanel.tsx`, `P2/src/web/SessionStats.tsx` | Footer and `/session` (1.16); viewers from `SessionMetrics.clients` |
 | Owner notices, dev reload, worker retry | `P2/src/web/OwnerNotices.tsx`, `WorkerControl.retry` | Notification widget; `/retry-worker`; `/reload` (owner) |
 | Logs | `P2/plugins/logs/web.tsx` | `/logs` overlay |
