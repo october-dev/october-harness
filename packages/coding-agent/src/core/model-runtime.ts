@@ -708,7 +708,7 @@ export class ModelRuntime implements Models {
 		return check ? { configured: true, source: "environment", label: check.source } : { configured: false };
 	}
 
-	/** Credential literals already loaded by the persistent store, without resolving or refreshing any. */
+	/** @internal Credential literals already loaded by the persistent store, for trace redaction. */
 	collectSecretValues(): string[] {
 		const store = this.credentials.getPersistentStore();
 		return store instanceof DefaultAuthStorage ? store.getSecretLiterals() : [];

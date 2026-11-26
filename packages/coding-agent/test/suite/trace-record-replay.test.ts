@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
@@ -13,7 +13,8 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ENV_AGENT_DIR } from "../../src/config.ts";
 import type { ExtensionAPI } from "../../src/core/extensions/index.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { parseTrace, type Trace, type TraceRecord, type TraceRecordOf } from "../../src/core/trace/format.ts";
@@ -678,6 +679,55 @@ describe("trace redaction in sessions", () => {
 		expect(text).not.toContain("late-secret-4821");
 		const prompt = ofType(trace, "message").find((record) => (record.message as AgentMessage).role === "user");
 		expect(getMessageText(prompt?.message)).toBe("my key is <redacted>, keep it safe");
+	});
+
+	it("redacts MCP header and env values configured in settings and mcp.json", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-trace-agent-"));
+		tempDirs.push(agentDir);
+		const marker = join(agentDir, "command-ran");
+		vi.stubEnv(ENV_AGENT_DIR, agentDir);
+		vi.stubEnv("TRACE_MCP_HEADER", "mcpjson-template-6043");
+		writeFileSync(
+			join(agentDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					files: { command: "files-server", env: { PLAIN_VALUE: "mcpjson-literal-7154" } },
+					docs: {
+						url: "https://example.com/mcp",
+						headers: { "X-Custom-Auth": "$TRACE_MCP_HEADER", "X-Command": `!touch ${marker}` },
+						oauth: { clientId: "client", clientSecret: "mcpjson-client-8265" },
+					},
+				},
+			}),
+		);
+		const configured = [
+			"settings-header-4821",
+			"settings-bearer-5932",
+			"settings-env-6043",
+			"mcpjson-template-6043",
+			"mcpjson-literal-7154",
+			"mcpjson-client-8265",
+		];
+		const { harness, recorder, path } = await tracedHarness({
+			tools: [echoTool()],
+			settings: {
+				mcpServers: {
+					remote: {
+						transport: "http",
+						url: "https://example.com/mcp",
+						// Neither header name looks like a credential.
+						headers: { "X-Custom-Auth": "settings-header-4821", "X-Forward": "Bearer settings-bearer-5932" },
+					},
+					local: { transport: "stdio", command: "local-server", env: { REGION_SELECTOR: "settings-env-6043" } },
+				},
+			},
+		});
+		harness.setResponses([toolTurn(["echo", configured.join(" "), "call-1"]), fauxAssistantMessage("done")]);
+		await harness.session.prompt("read the MCP configuration");
+		const { text } = readClosed(recorder, path);
+
+		for (const value of configured) expect(text).not.toContain(value);
+		expect(existsSync(marker)).toBe(false);
 	});
 
 	it("removes secrets split across model frames and tool updates, even when unrelated auth resolves mid-tool", async () => {

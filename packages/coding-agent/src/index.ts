@@ -278,7 +278,6 @@ export {
 	createPowerShellTool,
 	createReadOnlyTools,
 	createReadTool,
-	createTraceReplay,
 	createWriteTool,
 	formatTraceTimeline,
 	type PromptTemplate,
@@ -300,7 +299,6 @@ export {
 	type TraceReplayEvent,
 	type TraceReplayMismatch,
 	type TraceReplayResult,
-	type TraceRunReplay,
 	type TraceToolDefinition,
 	UnsupportedTraceVersionError,
 } from "./core/sdk.ts";

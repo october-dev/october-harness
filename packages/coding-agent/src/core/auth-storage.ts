@@ -512,9 +512,9 @@ export class AuthStorage implements CredentialStore {
 	}
 
 	/**
-	 * Credential values already loaded in memory, for redaction: API keys, OAuth tokens, and
-	 * credential-named values of a credential's `env`. Resolves `$ENV` templates but never reloads
-	 * storage, executes `!command` values, or refreshes OAuth tokens.
+	 * @internal Credential values already loaded in memory, for trace redaction: API keys, OAuth
+	 * tokens, and credential-named values of a credential's `env`. Resolves `$ENV` templates but never
+	 * reloads storage, executes `!command` values, or refreshes OAuth tokens.
 	 */
 	getSecretLiterals(): string[] {
 		const literals: string[] = [];

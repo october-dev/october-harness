@@ -56,7 +56,7 @@ replay: 2 runs, 4 model responses, 4 tool calls, 0 mismatches
 
 Timeline lines contain record types, correlation IDs, and short summaries, never payload content. The exit code is `0` only for a complete trace that replays with no mismatches, and `1` for an invalid, incomplete, or mismatched trace. `--replay-trace` reads nothing but the trace file: it runs before settings, extensions, credentials, and migrations are loaded, and it cannot be combined with `--trace`, `--export`, `--import`, or prompt messages.
 
-From the SDK, `readTrace(path)` or `parseTrace(text)` validates a trace and `replayTrace(trace)` replays it. `createTraceReplay(trace, runId)` returns the adapters for one run if you want to drive your own `Agent`.
+From the SDK, `readTrace(path)` or `parseTrace(text)` validates a trace and `replayTrace(trace)` replays it.
 
 A synthetic example is in [`test/fixtures/trace/synthetic.trace.jsonl`](../test/fixtures/trace/synthetic.trace.jsonl): a text turn, a tool call, two parallel tools with interleaved updates, and a call blocked by an extension.
 
@@ -133,8 +133,10 @@ Before a record is written, Pi replaces with `<redacted>`:
 
 - stored API keys, OAuth access and refresh tokens, and credential-named `env` values of stored credentials already loaded from `auth.json` (`!command` values are never executed for tracing);
 - the API key, credential headers (whole value and the part after the scheme), and credential-named environment values resolved for each request, including values a header hook moves to another header;
-- values of environment variables whose names contain `api_key`, `key`, `secret`, `token`, `password`, `pass`, `passphrase`, `private`, `credential`, `authorization`, or `cookie` as a word (for example `SERVICE_KEY` or `SSH_PRIVATE_KEY`), and values passed as `secrets` to `TraceRecorder.open()`, at any length;
-- the value of an explicitly named credential in text, such as `Authorization: Basic YTpi`, `"password": "..."`, or `SERVICE_KEY=...`. A quoted value is removed up to its closing quote, including spaces, punctuation, and escaped quotes, also when the assignment sits inside another field's value (`log: password="..."`, `note="password='...'"`);
+- MCP server `headers`, `env`, and `oauth.clientSecret` values (and the credential after `Bearer`) configured in settings `mcpServers` and in the global and trusted project `mcp.json`, whatever the header or variable is named. `$ENV` references in `mcp.json` are expanded; `!command` values are never executed for tracing;
+- values of environment variables whose names contain `api_key`, `key`, `secret`, `token`, `password`, `pass`, `passphrase`, `private`, `credential`, `authorization`, or `cookie` as a word (for example `SERVICE_KEY` or `SSH_PRIVATE_KEY`), or end in `password`, `passwd`, or `pwd` (for example `PGPASSWORD` or `MYSQL_PWD`, but not the working directories `PWD` and `OLDPWD`), and values passed as `secrets` to `TraceRecorder.open()`, at any length;
+- the value of an explicitly named credential in text, such as `Authorization: Basic YTpi`, `"password": "..."`, `SERVICE_KEY=...`, or `_authToken=...` in `.npmrc`. A quoted value is removed up to its closing quote, including spaces, punctuation, and escaped quotes, also when the assignment sits inside another field's value (`log: password="..."`, `note="password='...'"`);
+- the body of a PEM block such as `-----BEGIN OPENSSH PRIVATE KEY-----`, up to its END line or, for output cut off before it, to the end of the text;
 - `Bearer` tokens of eight or more characters, bare `Basic` values that decode to `user:password` (auth schemes in any letter case, such as `bearer` or `BASIC`), and user info and credential-named query parameters in URLs;
 - any value stored under a credential-named key in messages, tool arguments, results, and details.
 

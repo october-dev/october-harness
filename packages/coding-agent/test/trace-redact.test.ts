@@ -132,6 +132,44 @@ describe("trace redaction", () => {
 		);
 	});
 
+	it("registers database client passwords named without a separator, but not working directories", () => {
+		const target = new TraceRedactor();
+		target.addEnv({
+			PGPASSWORD: "pg-secret-4821",
+			MYSQL_PWD: "mysql-secret-4821",
+			PWD: "/home/user/project",
+			OLDPWD: "/home/user",
+		});
+		expect(target.redactString("pg-secret-4821 mysql-secret-4821 /home/user/project /home/user")).toBe(
+			`${REDACTED} ${REDACTED} /home/user/project /home/user`,
+		);
+		expect(redactor().redactString("PGPASSWORD=pg-secret MYSQL_PWD=my-secret PWD=/srv")).toBe(
+			`PGPASSWORD=${REDACTED} MYSQL_PWD=${REDACTED} PWD=/srv`,
+		);
+	});
+
+	it("redacts npmrc auth tokens named with a leading underscore", () => {
+		expect(redactor().redactString("//registry.npmjs.org/:_authToken=npm_abcdef123456\nsave-exact=true")).toBe(
+			`//registry.npmjs.org/:_authToken=${REDACTED}\nsave-exact=true`,
+		);
+	});
+
+	it("redacts PEM block bodies, including a block cut off before its END line", () => {
+		const begin = "-----BEGIN OPENSSH PRIVATE KEY-----";
+		const end = "-----END OPENSSH PRIVATE KEY-----";
+		expect(redactor().redactString(`cat id_ed25519:\n${begin}\nb3BlbnNzaC1rZXktdjEAAAAA\nQyNTUxOQ\n${end}\ndone`)).toBe(
+			`cat id_ed25519:\n${begin}${REDACTED}${end}\ndone`,
+		);
+		expect(redactor().redactString("head:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA")).toBe(
+			`head:\n-----BEGIN RSA PRIVATE KEY-----${REDACTED}`,
+		);
+		const fragments = ["-----BEGIN EC PRIVATE KEY-----\nMHcC", "AQEEI\n-----END EC PRIVATE KEY-----"];
+		expect(redactor().redactFragments(fragments)).toEqual([
+			`-----BEGIN EC PRIVATE KEY-----${REDACTED}`,
+			`${REDACTED}-----END EC PRIVATE KEY-----`,
+		]);
+	});
+
 	it("redacts short SDK secrets and short sensitive environment values, but not numbers or schema literals", () => {
 		const target = redactor(["7"]);
 		target.addEnv({ SERVICE_PASSWORD: "true", GITHUB_TOKEN: "1", HOME: "/home/user" });

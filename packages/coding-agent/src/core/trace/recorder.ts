@@ -27,10 +27,12 @@ import {
 	type Model,
 	uuidv7,
 } from "@earendil-works/pi-ai";
-import { APP_NAME, VERSION } from "../../config.ts";
+import { APP_NAME, getAgentDir, VERSION } from "../../config.ts";
+import { collectMcpSecretValues, loadMcpConfig } from "../../extensions/mcp/config.ts";
 import type { AgentSession, AgentSessionEvent } from "../agent-session.ts";
 import type { ExtensionHandlerObserver } from "../extensions/index.ts";
 import type { RequestAuthNotification } from "../model-runtime.ts";
+import { isCommandConfigValue, resolveConfigValue } from "../resolve-config-value.ts";
 import {
 	TRACE_FORMAT,
 	TRACE_FORMAT_VERSION,
@@ -108,6 +110,26 @@ export function unwrapTracedStreamFn(fn: StreamFn): StreamFn {
  */
 export function traceAuxiliaryStreamFn(fn: StreamFn): StreamFn {
 	return auxiliaryEntryPoints.get(fn) ?? fn;
+}
+
+/**
+ * Values configured for MCP servers in settings (`mcpServers`) and in the global and, when trusted,
+ * project `mcp.json`. `$ENV` templates in `mcp.json` are expanded; `!command` values are never run.
+ */
+function configuredMcpSecrets(session: AgentSession): string[] {
+	const settingsServers = Object.values(session.settingsManager.getSettings().mcpServers ?? {});
+	const { servers } = loadMcpConfig({
+		agentDir: getAgentDir(),
+		cwd: session.sessionManager.getCwd(),
+		projectTrusted: session.settingsManager.isProjectTrusted(),
+	});
+	return [
+		...collectMcpSecretValues(settingsServers),
+		...collectMcpSecretValues(
+			servers.map((server) => server.config),
+			(value) => (isCommandConfigValue(value) ? undefined : resolveConfigValue(value)),
+		),
+	];
 }
 
 function modelRef(model: Model<Api>): TraceModelRef {
@@ -250,6 +272,7 @@ export class TraceRecorder {
 		const attachment: Attachment = { session, sessionId: session.sessionId, release: [] };
 		try {
 			for (const secret of session.modelRuntime.collectSecretValues()) this.redactor.addSecret(secret);
+			for (const secret of configuredMcpSecrets(session)) this.redactor.addSecret(secret);
 			attachment.release.push(session.subscribe((event) => this.observe(() => this.onSessionEvent(event))));
 			attachment.release.push(
 				session.modelRuntime.onRequestAuth((notification) => this.observe(() => this.onRequestAuth(notification))),

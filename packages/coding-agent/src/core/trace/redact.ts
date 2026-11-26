@@ -73,7 +73,7 @@ const ENVELOPE_KEYS = new Set([
  * `name:` or `name=`, optionally quoted. Only the name and separator are consumed, so a name inside
  * another field's value (`log: password=...`, `note="password=..."`) is still found.
  */
-const NAMED = /\b([A-Za-z][\w-]*)\\?["']?\s*([:=])\s*/gi;
+const NAMED = /\b([A-Za-z_][\w-]*)\\?["']?\s*([:=])\s*/gi;
 /**
  * The value after a credential name, matched at that position: an escaped-quoted value (group 2)
  * runs to its escaped closing quote, a quoted value (group 4) to its closing quote honoring
@@ -87,6 +87,11 @@ const SCHEME_PREFIX = /^(?:Bearer|Basic|Token|Digest)\s+/i;
 const BEARER = /\bBearer\s+([A-Za-z0-9._~+/-]+=*)/gi;
 const BASIC = /\bBasic\s+([A-Za-z0-9+/]+={0,2})(?![\w+/=])/gi;
 const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>`]+/gi;
+/**
+ * A PEM block such as `-----BEGIN OPENSSH PRIVATE KEY-----`. Its body (group 2) runs to the matching
+ * END line, or to the end of the text when output was cut off before it.
+ */
+const PEM_BLOCK = /-----BEGIN ([A-Z0-9][A-Z0-9 ]*)-----([\s\S]*?)(?:-----END \1-----|$)/dg;
 const QUERY_PARAMETER = /[?&]([^=&#\s]+)=([^&#\s]*)/g;
 
 function mergeRanges(ranges: Range[]): Range[] {
@@ -175,6 +180,10 @@ export class TraceRedactor {
 		}
 		for (const match of text.matchAll(BEARER)) {
 			if (match[1].length >= 8) pushTail(match, match[1]);
+		}
+		for (const match of text.matchAll(PEM_BLOCK)) {
+			const [start, end] = match.indices?.[2] ?? [0, 0];
+			if (end > start) ranges.push([start, end]);
 		}
 		// A bare Basic credential is recognized by decoding to `user:password`.
 		for (const match of text.matchAll(BASIC)) {

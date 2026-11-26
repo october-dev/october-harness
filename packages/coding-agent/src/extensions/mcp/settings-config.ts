@@ -82,18 +82,40 @@ export function parseMcpServers(value: unknown): Map<string, McpServerSettings> 
 	return new Map(Object.entries(value).map(([name, config]) => [name, parseServer(name, config)]));
 }
 
-/** Redact configured environment/header values from transport and server errors. */
-export function createSecretRedactor(servers: ReadonlyMap<string, McpServerSettings>): (message: string) => string {
+/** The fields of a settings or `mcp.json` server entry that may hold credentials. */
+export interface McpSecretFields {
+	env?: Record<string, string>;
+	headers?: Record<string, string>;
+	oauth?: { clientSecret?: string };
+}
+
+/**
+ * Secret values configured for MCP servers: every `env` and `headers` value, `oauth.clientSecret`, and
+ * the credential after a `Bearer` scheme, each of at least 4 characters. `resolve` maps a configured
+ * value to the value sent, or to undefined to skip it, such as a `!command` that must not run.
+ */
+export function collectMcpSecretValues(
+	servers: Iterable<McpSecretFields>,
+	resolve: (value: string) => string | undefined = (value) => value,
+): string[] {
 	const secrets = new Set<string>();
-	for (const server of servers.values()) {
-		const values =
-			server.transport === "stdio" ? Object.values(server.env ?? {}) : Object.values(server.headers ?? {});
-		for (const value of values) {
-			if (value.length >= 4) secrets.add(value);
-			const bearer = /^Bearer\s+(\S+)$/iu.exec(value);
+	for (const server of servers) {
+		const configured = [...Object.values(server.env ?? {}), ...Object.values(server.headers ?? {})];
+		if (server.oauth?.clientSecret !== undefined) configured.push(server.oauth.clientSecret);
+		for (const value of configured) {
+			const resolved = resolve(value);
+			if (!resolved) continue;
+			if (resolved.length >= 4) secrets.add(resolved);
+			const bearer = /^Bearer\s+(\S+)$/iu.exec(resolved);
 			if (bearer?.[1] && bearer[1].length >= 4) secrets.add(bearer[1]);
 		}
 	}
+	return [...secrets];
+}
+
+/** Redact configured environment/header values from transport and server errors. */
+export function createSecretRedactor(servers: ReadonlyMap<string, McpServerSettings>): (message: string) => string {
+	const secrets = collectMcpSecretValues(servers.values());
 	return (message) => {
 		let redacted = message;
 		for (const secret of secrets) redacted = redacted.split(secret).join("[REDACTED]");

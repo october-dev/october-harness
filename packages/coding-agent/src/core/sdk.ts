@@ -157,12 +157,10 @@ export {
 } from "./trace/format.ts";
 export { TraceRecorder, type TraceRecorderOptions } from "./trace/recorder.ts";
 export {
-	createTraceReplay,
 	replayTrace,
 	type TraceReplayEvent,
 	type TraceReplayMismatch,
 	type TraceReplayResult,
-	type TraceRunReplay,
 } from "./trace/replay.ts";
 
 export {

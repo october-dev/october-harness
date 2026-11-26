@@ -233,4 +233,4 @@ function editMcpServers(
 	writeFileSync(path, `${JSON.stringify(parsed, null, indent)}\n`);
 }
 
-export { createSecretRedactor, parseMcpServers } from "./settings-config.ts";
+export { collectMcpSecretValues, createSecretRedactor, parseMcpServers } from "./settings-config.ts";

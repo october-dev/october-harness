@@ -84,7 +84,8 @@ describe("--replay-trace", () => {
 		expect(readdirSync(agentDir)).toEqual([]);
 	});
 
-	it("exits 1 for mismatched, incomplete, unsupported, and malformed traces", async () => {
+	// Five CLI spawns from source at several seconds each exceed the default 30s timeout.
+	it("exits 1 for mismatched, incomplete, unsupported, and malformed traces", { timeout: 120_000 }, async () => {
 		const { cwd, agentDir } = workspace();
 		const lines = readFileSync(fixturePath, "utf-8").trim().split("\n");
 
@@ -124,7 +125,8 @@ describe("--replay-trace", () => {
 		expect(malformed.stderr).toContain("line 2");
 	});
 
-	it("rejects conflicting flags before doing anything", async () => {
+	// Five CLI spawns from source at several seconds each exceed the default 30s timeout.
+	it("rejects conflicting flags before doing anything", { timeout: 120_000 }, async () => {
 		const { cwd, agentDir } = workspace();
 		for (const extra of [
 			["--trace", join(cwd, "t.jsonl")],
