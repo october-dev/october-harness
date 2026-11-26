@@ -60,9 +60,28 @@ describe("October default packages", () => {
 		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual({ added: DEFAULT_SOURCES, upgraded: [] });
 		expect(settings.getGlobalSettings().packages).toEqual(["npm:some-user-package", ...DEFAULT_SOURCES]);
 		expect(settings.getOctoberDefaultPackagesVersion()).toBe(OCTOBER_DEFAULT_PACKAGES_VERSION);
+		expect(settings.getExtensionPaths()).toEqual(["-builtin:mcp"]);
 
 		expect(seedOctoberDefaultPackages(settings, ONLINE)).toEqual({ added: [], upgraded: [] });
 		expect(settings.getGlobalSettings().packages).toHaveLength(DEFAULT_SOURCES.length + 1);
+	});
+
+	it("configures existing default adapters while respecting explicit choices and removed adapters", () => {
+		const adapter = DEFAULT_SOURCES.find((source) => source.startsWith("npm:pi-mcp-adapter@"))!;
+		for (const [packages, extensions, expected] of [
+			[[adapter], [], ["-builtin:mcp"]],
+			[[adapter], ["+builtin:mcp"], ["+builtin:mcp"]],
+			[[{ source: adapter, extensions: [] }], [], []],
+			[[], [], []],
+		] as const) {
+			const settings = SettingsManager.inMemory({
+				packages: packages.map((pkg) => (typeof pkg === "string" ? pkg : { ...pkg, extensions: [] })),
+				extensions: [...extensions],
+				octoberDefaultPackagesVersion: 2,
+			});
+			seedOctoberDefaultPackages(settings, ONLINE);
+			expect(settings.getExtensionPaths()).toEqual(expected);
+		}
 	});
 
 	it("keeps a package the user already configured at another version", () => {

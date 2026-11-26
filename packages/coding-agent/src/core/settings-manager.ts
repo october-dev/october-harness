@@ -1037,7 +1037,7 @@ export class SettingsManager {
 
 	getQuietStartup(): QuietStartup {
 		const value = this.settings.quietStartup;
-		return value === true || value === "header" ? value : SETTINGS_DEFAULTS.quietStartup;
+		return value ?? SETTINGS_DEFAULTS.quietStartup;
 	}
 
 	setQuietStartup(quiet: QuietStartup): void {

@@ -309,7 +309,6 @@ interface PackageCommandOptions {
 	command: PackageCommand;
 	source?: string;
 	updateTarget?: UpdateTarget;
-	showExtensionsSkippedNote: boolean;
 	local: boolean;
 	force: boolean;
 	projectTrustOverride?: boolean;
@@ -570,7 +569,6 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 	}
 
 	let updateTarget: UpdateTarget | undefined;
-	let showExtensionsSkippedNote = false;
 	if (command === "update") {
 		if (allFlag && (selfFlag || extensionsFlag || modelsFlag || extensionFlagSource)) {
 			conflictingOptions =
@@ -620,7 +618,6 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			updateTarget = { type: "extensions" };
 		} else {
 			updateTarget = { type: "self" };
-			showExtensionsSkippedNote = true;
 		}
 	}
 
@@ -628,7 +625,6 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		command,
 		source,
 		updateTarget,
-		showExtensionsSkippedNote,
 		local,
 		force,
 		projectTrustOverride,
@@ -758,12 +754,13 @@ async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
 	return plan;
 }
 
-async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
-	console.log(chalk.dim(`Updating ${APP_NAME} with ${command.display}...`));
+async function runSelfUpdate(command: SelfUpdateCommand, quietNpm = false): Promise<void> {
+	console.log(chalk.dim(quietNpm ? `Updating ${APP_NAME}...` : `Updating ${APP_NAME} with ${command.display}...`));
 	for (const step of command.steps ?? [command]) {
 		await new Promise<void>((resolve, reject) => {
 			const child = spawnProcess(step.command, step.args, {
-				stdio: "inherit",
+				stdio: quietNpm ? ["inherit", "ignore", "inherit"] : "inherit",
+				env: quietNpm ? { ...process.env, npm_config_loglevel: "error" } : process.env,
 			});
 			child.on("error", (error) => {
 				reject(error);
@@ -1153,11 +1150,6 @@ export async function handlePackageCommand(
 
 			case "update": {
 				const target = options.updateTarget ?? { type: "self" };
-				if (options.showExtensionsSkippedNote) {
-					console.log(
-						chalk.dim(`Extensions are skipped. Run ${APP_NAME} update --extensions to update extensions.`),
-					);
-				}
 				if (updateTargetIncludesExtensions(target)) {
 					const updateSource = target.type === "extensions" ? target.source : undefined;
 					await packageManager.update(updateSource);
@@ -1252,7 +1244,7 @@ export async function handlePackageCommand(
 						if (installMethod === "npm") {
 							prepareWindowsNpmSelfUpdate();
 						}
-						await runSelfUpdate(selfUpdateCommand);
+						await runSelfUpdate(selfUpdateCommand, installMethod === "npm" && !selfUpdateNpmCommand);
 					} catch (error: unknown) {
 						const message = error instanceof Error ? error.message : "Unknown package command error";
 						console.error(chalk.red(`Error: ${formatPackageManagerPermissionError(message)}`));
@@ -1264,12 +1256,6 @@ export async function handlePackageCommand(
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
-					// October release artifacts are the source for managed installations.
-					if (installMethod === "npm") {
-						console.log();
-						console.log(chalk.yellow(`This npm installation of ${APP_NAME} does not pin its dependencies.`));
-						console.log(chalk.yellow(`Managed release artifacts: ${MANAGED_RELEASES_URL}`));
-					}
 				}
 				return true;
 			}

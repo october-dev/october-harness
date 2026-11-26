@@ -46,6 +46,7 @@ export const OCTOBER_DEFAULT_PACKAGES: ReadonlyArray<OctoberDefaultPackage> = [
 ];
 
 export const OCTOBER_DEFAULT_PACKAGES_VERSION = Math.max(
+	3, // Configure MCP ownership for existing profiles with the bundled adapter.
 	...OCTOBER_DEFAULT_PACKAGES.map((entry) => Math.max(entry.since, entry.pinnedIn)),
 );
 
@@ -112,7 +113,22 @@ export function seedOctoberDefaultPackages(
 		(entry) => entry.since > seededVersion && !configured.has(npmPackageName(entry.source)),
 	).map((entry) => entry.source);
 
-	if (result.added.length > 0 || result.upgraded.length > 0) settings.setPackages([...packages, ...result.added]);
+	const defaults = [...packages, ...result.added];
+	if (result.added.length > 0 || result.upgraded.length > 0) settings.setPackages(defaults);
+	// The adapter writes this same global preference at first launch. Set it before loading
+	// extensions so the two implementations don't both register /mcp during that launch.
+	const hasDefaultAdapter = defaults.some((pkg) => {
+		const source = packageSource(pkg);
+		return (
+			(typeof pkg === "string" || pkg.extensions === undefined) &&
+			npmPackageName(source) === "pi-mcp-adapter" &&
+			isOctoberDefaultPackageSource(source)
+		);
+	});
+	const extensions = settings.getGlobalSettings().extensions ?? [];
+	if (hasDefaultAdapter && !extensions.some((path) => path.replace(/^[+!-]/, "") === "builtin:mcp")) {
+		settings.setExtensionPaths([...extensions, "-builtin:mcp"]);
+	}
 	settings.setOctoberDefaultPackagesVersion(OCTOBER_DEFAULT_PACKAGES_VERSION);
 	return result;
 }

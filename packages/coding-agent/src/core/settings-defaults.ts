@@ -25,7 +25,7 @@ export const SETTINGS_DEFAULTS = {
 		},
 	},
 	hideThinkingBlock: false,
-	quietStartup: false,
+	quietStartup: "header",
 	defaultProjectTrust: "ask",
 	collapseChangelog: false,
 	enableInstallTelemetry: false,

@@ -1114,13 +1114,16 @@ export async function main(args: string[], options?: MainOptions) {
 	// Seed October's default packages only when a session will load extensions, so help, model
 	// listing, and package/config commands never trigger the first-run package install.
 	if (!parsed.help && parsed.listModels === undefined && !parsed.noExtensions) {
+		// Extensions use this manifest to find the October profile and its settings.
+		process.env.PI_PACKAGE_DIR ||= getPackageDir();
 		const seededPackages = seedOctoberDefaultPackages(startupSettingsManager);
-		if (seededPackages.added.length > 0) {
+		await startupSettingsManager.flush();
+		if (parsed.verbose && seededPackages.added.length > 0) {
 			console.error(
 				`${APP_NAME}: added default packages ${seededPackages.added.join(", ")}. They install automatically; remove any with \`${APP_NAME} remove <source>\`.`,
 			);
 		}
-		if (seededPackages.upgraded.length > 0) {
+		if (parsed.verbose && seededPackages.upgraded.length > 0) {
 			console.error(
 				`${APP_NAME}: updated default packages ${seededPackages.upgraded.map(({ from, to }) => `${from} -> ${to}`).join(", ")}. They install automatically.`,
 			);
@@ -1209,9 +1212,8 @@ export async function main(args: string[], options?: MainOptions) {
 	const shellRunner = await resolveShellRunner(startupSettingsManager.getShellRunnerSettings(), sessionCwd);
 	// Interactive mode installs and refreshes packages again on /reload, /new, /resume and /fork while the TUI
 	// draws on the terminal, where git and npm output would corrupt its screen (#11264). Their output is
-	// captured, and until the TUI starts each install is announced on stderr instead.
-	const packageCommandOutput = appMode === "interactive" ? "capture" : "inherit";
-	let announcePackageInstalls = packageCommandOutput === "capture";
+	// captured. Print and RPC sessions also need clean output.
+	let announcePackageInstalls = parsed.verbose === true;
 	const onPackageProgress = (event: ProgressEvent) => {
 		if (announcePackageInstalls && event.type === "start" && event.message) {
 			console.error(chalk.dim(event.message));
@@ -1272,7 +1274,7 @@ export async function main(args: string[], options?: MainOptions) {
 					}
 				: undefined,
 			resourceLoaderOptions: {
-				packageCommandOutput,
+				packageCommandOutput: "capture",
 				onPackageProgress,
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
