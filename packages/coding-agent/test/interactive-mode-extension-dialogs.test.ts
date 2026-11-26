@@ -1,11 +1,17 @@
 import { type Component, Container, Text } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type {
+	CapabilityPreflightDecision,
+	CapabilityPreflightItem,
+} from "../src/core/extensions/capability-preflight.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 type DialogContext = {
 	extensionDialogs: Component[];
 	editorContainer: Container;
+	chatContainer: Container;
+	dialogBackgroundComponent: Component | undefined;
 	editor: Component & { getText(): string; setText(text: string): void };
 	focused: Component | undefined;
 	ui: {
@@ -35,6 +41,7 @@ type DialogMethods = {
 		factory: ((tui: unknown, theme: unknown, keybindings: unknown) => Component) | undefined,
 	): void;
 	resetExtensionUI(): void;
+	discloseExtensionCapabilities(items: CapabilityPreflightItem[]): Promise<CapabilityPreflightDecision[]>;
 };
 
 function createContext(): DialogContext & DialogMethods {
@@ -49,6 +56,8 @@ function createContext(): DialogContext & DialogMethods {
 	const context: DialogContext = {
 		extensionDialogs: [],
 		editorContainer: new Container(),
+		chatContainer: new Container(),
+		dialogBackgroundComponent: undefined,
 		editor,
 		focused: undefined,
 		ui: {
@@ -310,5 +319,62 @@ describe("InteractiveMode extension dialogs", () => {
 		await expect(confirmed).resolves.toBe(true);
 		expect(context.focused).toBe(customEditor);
 		expect(context.editorContainer.children).toEqual([customEditor]);
+	});
+
+	// #7: disclosure prints the full pending set and declaration to the scrollable
+	// transcript before each short choice.
+	it("prints disclosure details to the transcript before each choice", async () => {
+		const context = createContext();
+		const item = (identity: string): CapabilityPreflightItem => ({
+			path: `/extensions/${identity}.ts`,
+			reason: "installed",
+			identity,
+			disclosure: { status: "declared", manifest: { manifestVersion: 1, shell: true }, source: "test" },
+			fingerprint: `fp-${identity}`,
+			summary: `${identity}: shell. Disclosure only; this is not a sandbox.`,
+			details: `${identity}: shell. Disclosure only.\n\nSource: test\n{\n  "shell": true\n}`,
+		});
+		const transcript = () => context.chatContainer.children.flatMap((child) => child.render(80) ?? []).join("\n");
+		const pending = context.discloseExtensionCapabilities([item("one"), item("two")]);
+
+		expect(transcript()).toContain("Pending extensions:");
+		expect(transcript()).toContain("one");
+		expect(transcript()).toContain("two");
+		expect(visible(context)).toContain("Load and remember");
+		context.focused?.handleInput?.("\r");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(visible(context)).toContain("Load and remember");
+		context.focused?.handleInput?.("\x1b");
+		await expect(pending).resolves.toEqual([
+			{ path: "/extensions/one.ts", accept: true },
+			{ path: "/extensions/two.ts", accept: false },
+		]);
+		expect(transcript()).toContain('"shell": true');
+	});
+
+	// #7: a dialog closing mid-reload restores the busy background, not the editor,
+	// so input during deferred loading cannot reach a half-reloaded session.
+	it("restores the reload background instead of the editor when a dialog closes mid-reload", async () => {
+		const context = createContext();
+		const reloadBox = new Container();
+		reloadBox.addChild(new Text("Reloading...", 1, 0));
+		context.dialogBackgroundComponent = reloadBox;
+
+		const confirmed = context.showExtensionConfirm("Disclosure?", "details here");
+		expect(visible(context)).toContain("Disclosure?");
+		context.focused?.handleInput?.("\r");
+		await expect(confirmed).resolves.toBe(true);
+
+		expect(context.focused).toBe(reloadBox);
+		expect(context.editorContainer.children).toEqual([reloadBox]);
+		context.focused?.handleInput?.("x");
+		expect(context.editor.getText()).toBe("");
+
+		context.dialogBackgroundComponent = undefined;
+		const again = context.showExtensionConfirm("Next?", "more");
+		context.focused?.handleInput?.("\r");
+		await expect(again).resolves.toBe(true);
+		expect(context.focused).toBe(context.editor);
 	});
 });
