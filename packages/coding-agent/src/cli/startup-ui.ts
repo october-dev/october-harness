@@ -2,6 +2,7 @@ import {
 	ProcessTerminal,
 	setCapabilityOverrides,
 	setKeybindings,
+	Text,
 	type TUI,
 	TuiMainScreen,
 } from "@earendil-works/pi-tui";
@@ -9,7 +10,9 @@ import { existsSync } from "fs";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, getAgentDir, getSettingsPath, PACKAGE_NAME } from "../config.ts";
 import { areExperimentalFeaturesEnabled } from "../core/experimental.ts";
 import { KeybindingsManager } from "../core/keybindings.ts";
+import type { ModelRuntime } from "../core/model-runtime.ts";
 import { DefaultPackageManager, type ResolvedResource } from "../core/package-manager.ts";
+import type { PortableModelChoice } from "../core/session-portable.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { ExtensionInputComponent } from "../modes/interactive/components/extension-input.ts";
 import { ExtensionSelectorComponent } from "../modes/interactive/components/extension-selector.ts";
@@ -17,6 +20,7 @@ import {
 	FirstTimeSetupComponent,
 	type FirstTimeSetupResult,
 } from "../modes/interactive/components/first-time-setup.ts";
+import { ModelSelectorComponent } from "../modes/interactive/components/model-selector.ts";
 import { SYSTEM_THEME_NAME } from "../modes/interactive/theme/system-theme.ts";
 import {
 	getTerminalTheme,
@@ -175,6 +179,37 @@ export async function showStartupSelector<T>(
 		ui.addChild(selector);
 		ui.setFocus(selector);
 		startStartupTui(ui, settingsManager);
+	});
+}
+
+export async function showStartupModelSelector(
+	settings: SettingsManager,
+	report: readonly string[],
+	runtime: ModelRuntime,
+): Promise<PortableModelChoice | undefined> {
+	const ui = await createStartupTui(settings);
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = async (model?: PortableModelChoice) => {
+			if (settled) return;
+			settled = true;
+			selector.dispose();
+			await clearStartupTui(ui);
+			ui.stop();
+			resolve(model);
+		};
+		const selector = new ModelSelectorComponent(
+			ui,
+			undefined,
+			runtime,
+			[],
+			(model) => void finish({ provider: model.provider, modelId: model.id }),
+			() => void finish(),
+		);
+		ui.addChild(new Text([...report, "Choose a replacement model"].join("\n"), 0, 0));
+		ui.addChild(selector);
+		ui.setFocus(selector);
+		startStartupTui(ui, settings);
 	});
 }
 

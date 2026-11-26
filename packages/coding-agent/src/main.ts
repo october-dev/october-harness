@@ -33,12 +33,13 @@ import { runAuthLogout } from "./cli/auth-logout.ts";
 import { createProcessLoginTerminal } from "./cli/auth-terminal.ts";
 import { createCapabilityPreflightHost } from "./cli/capability-preflight.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
-import { runDoctorCommand } from "./cli/doctor.ts";
+import { ReadOnlySettingsStorage, runDoctorCommand } from "./cli/doctor.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
 import { loadLocalModelsCommand } from "./cli/local-models.lazy.ts";
 import { handleOctoberLoginCommand } from "./cli/october-login.ts";
+import { importPortableForCli, inspectPortableFileForCli } from "./cli/portable-import.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
@@ -68,8 +69,9 @@ import {
 import { assertValidSessionId, getDefaultSessionDirPath, SessionManager } from "./core/session-manager.ts";
 import {
 	exportPortableSession,
+	formatPortableCompatibilityReport,
 	formatPortableSessionDiagnostics,
-	importPortableSession,
+	SessionImportSelectionRequiredError,
 } from "./core/session-portable.ts";
 import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
@@ -79,6 +81,7 @@ import { formatTraceTimeline, readTrace } from "./core/trace/format.ts";
 import { TraceRecorder } from "./core/trace/recorder.ts";
 import { replayTrace } from "./core/trace/replay.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { getBranchSelection } from "./core/virtual-models.ts";
 import { createBuiltInExtensions } from "./extensions/index.ts";
 import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
 import { OCTOBER_PROVIDER_ID } from "./extensions/october/auth.ts";
@@ -408,6 +411,14 @@ function validateForkFlags(parsed: Args): void {
  * because a hard exit can drop pending writes when stdout/stderr are non-blocking pipes.
  */
 function validateImportFlags(parsed: Args): boolean {
+	if (parsed.importModel !== undefined && parsed.import === undefined) {
+		console.error(chalk.red("Error: --import-model requires --import"));
+		return false;
+	}
+	if (parsed.importReport !== undefined && parsed.import !== undefined) {
+		console.error(chalk.red("Error: --import-report cannot be combined with --import"));
+		return false;
+	}
 	if (parsed.import === undefined) return true;
 
 	const conflictingFlags = [
@@ -485,6 +496,15 @@ function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string,
 	}
 }
 
+function resolveSessionDirectory(parsed: Args, settings: SettingsManager): string | undefined {
+	const envSessionDir = process.env[ENV_SESSION_DIR];
+	return (
+		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
+		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
+		settings.getSessionDir()
+	);
+}
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -496,13 +516,20 @@ export async function createSessionManager(
 	}
 
 	if (parsed.import) {
-		// A path only: commitPortableImport() creates the directory after validation succeeds.
-		// Errors propagate to main(), which reports them and ends with process.exitCode.
-		const importedPath = importPortableSession(parsed.import, {
+		// Validation, the model check, and any model choice run before the file is written. Errors propagate
+		// to main(), which reports them and ends with process.exitCode.
+		const imported = await importPortableForCli(parsed.import, {
 			cwd,
 			sessionDir: sessionDir ?? getDefaultSessionDirPath(cwd),
+			flags: parsed,
+			interactive: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY) === "interactive",
+			settingsManager,
 		});
-		return SessionManager.open(importedPath, sessionDir);
+		if (!imported) {
+			console.log(chalk.dim("Import cancelled."));
+			process.exit(0);
+		}
+		return imported;
 	}
 
 	if (parsed.fork) {
@@ -806,6 +833,8 @@ async function runTraceReplay(parsed: Args): Promise<number> {
 		parsed.trace !== undefined ? "--trace" : undefined,
 		parsed.export !== undefined ? "--export" : undefined,
 		parsed.import !== undefined ? "--import" : undefined,
+		parsed.importReport !== undefined ? "--import-report" : undefined,
+		parsed.importModel !== undefined ? "--import-model" : undefined,
 		parsed.messages.length > 0 || parsed.fileArgs.length > 0 ? "prompt messages" : undefined,
 	].filter((flag): flag is string => flag !== undefined);
 	if (conflictingFlags.length > 0) {
@@ -857,12 +886,16 @@ export async function main(args: string[], options?: MainOptions) {
 			process.exitCode = await runTraceReplay(parsed);
 			return;
 		}
-		if (parsed.trace !== undefined && (parsed.export !== undefined || parsed.import !== undefined)) {
-			console.error(
-				chalk.red(
-					`Error: --trace cannot be combined with ${parsed.export !== undefined ? "--export" : "--import"}`,
-				),
-			);
+		const importOrExport =
+			parsed.export !== undefined
+				? "--export"
+				: parsed.import !== undefined
+					? "--import"
+					: parsed.importReport !== undefined
+						? "--import-report"
+						: undefined;
+		if (parsed.trace !== undefined && importOrExport) {
+			console.error(chalk.red(`Error: --trace cannot be combined with ${importOrExport}`));
 			process.exitCode = 1;
 			return;
 		}
@@ -889,11 +922,6 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	if (process.platform === "win32") {
-		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
-	}
-	cleanupManagedInstall();
-
 	let cwd: string;
 	try {
 		cwd = process.cwd();
@@ -906,6 +934,35 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		process.exit(1);
 	}
+	const parsed = parseArgs(args);
+	if (parsed.importReport !== undefined) {
+		if (parsed.diagnostics.some((d) => d.type === "error")) {
+			reportDiagnostics(parsed.diagnostics, "text");
+			process.exitCode = 1;
+			return;
+		}
+		if (!validateImportFlags(parsed)) {
+			process.exitCode = 1;
+			return;
+		}
+		// Writes nothing. Exit 1 when the import would be blocked, so scripts can gate on it.
+		try {
+			const settings = SettingsManager.fromStorage(new ReadOnlySettingsStorage(cwd, getAgentDir()));
+			const reportSessionDir = resolveSessionDirectory(parsed, settings) ?? getDefaultSessionDirPath(cwd);
+			const report = await inspectPortableFileForCli(parsed.importReport, cwd, reportSessionDir, parsed);
+			for (const line of formatPortableCompatibilityReport(report)) console.log(line);
+			process.exitCode = report.blocking ? 1 : 0;
+		} catch (error: unknown) {
+			console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+			process.exitCode = 1;
+		}
+		return;
+	}
+	if (process.platform === "win32") {
+		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
+	}
+	cleanupManagedInstall();
+
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const bootstrapExtensionFactories = [
@@ -944,7 +1001,6 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		reportDiagnostics(parsed.diagnostics, parsed.mode === "json" ? "json" : "text");
 		if (parsed.diagnostics.some((d) => d.type === "error")) {
@@ -1074,11 +1130,7 @@ export async function main(args: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
-	const envSessionDir = process.env[ENV_SESSION_DIR];
-	const sessionDir =
-		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
-		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
-		startupSettingsManager.getSessionDir();
+	const sessionDir = resolveSessionDirectory(parsed, startupSettingsManager);
 	let sessionManager: SessionManager;
 	try {
 		sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
@@ -1086,6 +1138,9 @@ export async function main(args: string[], options?: MainOptions) {
 		// Only --import failures are reported here; other errors keep their existing handling.
 		if (!parsed.import) throw error;
 		console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+		if (error instanceof SessionImportSelectionRequiredError) {
+			for (const line of formatPortableCompatibilityReport(error.report)) console.error(chalk.dim(line));
+		}
 		process.exitCode = 1;
 		return;
 	}
@@ -1152,6 +1207,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager,
 		sessionStartEvent,
 		projectTrustContext,
+		model: importedModel,
 	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
@@ -1257,14 +1313,24 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
 
+		const restoredImport =
+			isInitialRuntime && parsed.import
+				? getBranchSelection(sessionManager.getBranch(), (provider, id) => modelRuntime.getModel(provider, id))
+				: undefined;
+		const importSelection =
+			importedModel ?? (restoredImport && modelRuntime.getModel(restoredImport.provider, restoredImport.modelId));
+		const keyProvider = parsed.model
+			? sessionOptions.model?.provider
+			: (importSelection?.provider ?? sessionOptions.model?.provider);
+		if (importSelection) sessionOptions.model = importSelection;
 		if (parsed.apiKey) {
-			if (!sessionOptions.model) {
+			if (!keyProvider) {
 				diagnostics.push({
 					type: "error",
 					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 				});
 			} else {
-				await modelRuntime.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
+				await modelRuntime.setRuntimeApiKey(keyProvider, parsed.apiKey);
 			}
 		}
 

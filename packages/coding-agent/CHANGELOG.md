@@ -11,6 +11,11 @@
 - Added read-only SDK and RPC access to the locked October permission explanation through `AgentSession.getPermissionInfo()` and `get_permissions` ([#63](https://github.com/october-dev/october-harness/pull/63) by [@flam3z3122](https://github.com/flam3z3122)).
 - Added a capability preflight before the first load of a project-owned or newly installed extension. Each choice names the current extension while the pending set and full declaration stay scrollable; manifest text is cleaned before display, and Skip lasts for the process. `/capabilities` shows the remembered manifests after installation. The manifest remains disclosure metadata, not a sandbox. ([#7](https://github.com/october-dev/october-harness/issues/7))
 - Added pause and resume for automatic public Bus inbox delivery. `/inbox pause`, `/inbox resume`, and `/inbox status`, plus `AgentSession.getTeamInboxDispatch()` / `setTeamInboxDispatch()` and the RPC commands `get_team_inbox` and `set_team_inbox`, stop new peer batches without a model call. Unread messages stay pending, an in-flight peer turn may settle, and the choice is restored with the session. The team status line and `/cockpit` show it ([#46](https://github.com/october-dev/october-harness/issues/46)).
+- Added portable session compatibility inspection through `--import-report`, RPC and the SDK ([#64](https://github.com/october-dev/october-harness/pull/64) by [@SKeasyy](https://github.com/SKeasyy)).
+
+### Changed
+
+- A portable import with an unavailable next-turn model requires a replacement. Interactive users can choose a model or cancel. Headless imports fail before writing a session ([#64](https://github.com/october-dev/october-harness/pull/64) by [@SKeasyy](https://github.com/SKeasyy)).
 
 ### Fixed
 

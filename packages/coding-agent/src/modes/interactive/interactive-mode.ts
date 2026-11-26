@@ -131,7 +131,12 @@ import {
 	sessionEntryToContextMessages,
 	type UsageEntry,
 } from "../../core/session-manager.ts";
-import { formatPortableSessionDiagnostics, SessionImportError } from "../../core/session-portable.ts";
+import {
+	formatPortableCompatibilityReport,
+	formatPortableSessionDiagnostics,
+	type PortableModelChoice,
+	SessionImportError,
+} from "../../core/session-portable.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import { getSourcePackageKey, type SourceInfo } from "../../core/source-info.ts";
@@ -6865,7 +6870,30 @@ export class InteractiveMode {
 
 		try {
 			this.clearStatusIndicator();
-			const result = await this.runtimeHost.importFromJsonl(inputPath);
+			const result = await this.runtimeHost.importFromJsonl(inputPath, undefined, {
+				chooseModel: async (report) => {
+					this.showStatus([...formatPortableCompatibilityReport(report), "Choose a replacement model"].join("\n"));
+					return new Promise<PortableModelChoice | undefined>((resolve) => {
+						this.showSelector((done) => {
+							const selector = new ModelSelectorComponent(
+								this.ui,
+								undefined,
+								this.session.modelRuntime,
+								[],
+								(model) => {
+									done();
+									resolve({ provider: model.provider, modelId: model.id });
+								},
+								() => {
+									done();
+									resolve(undefined);
+								},
+							);
+							return { component: selector, focus: selector, dispose: () => selector.dispose() };
+						});
+					});
+				},
+			});
 			if (result.cancelled) {
 				this.showStatus("Import cancelled");
 				return;

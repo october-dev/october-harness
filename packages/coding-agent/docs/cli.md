@@ -51,7 +51,9 @@ October resolves `@path` from the current working directory. The working directo
 | `--mode json` | Run the supplied prompts, write JSONL events to stdout, then exit |
 | `--mode rpc` | Read JSONL commands from stdin and write responses and events to stdout until shutdown |
 | `--export <input> [output]` | Export a session file to HTML and exit; derive the destination when `output` is omitted. An `output` ending in `.jsonl` writes a [portable session](session-format.md#portable-sessions) instead and prints what it left out to stderr |
-| `--import <portable.jsonl>` | Import a portable session as a new session in the current directory and continue it. Cannot be combined with `--session`, `--session-id`, `--continue`, `--resume`, `--fork`, `--no-session`, or `--export` |
+| `--import <portable.jsonl>` | Import a portable session as a new session in the current directory and continue it. Cannot be combined with `--session`, `--session-id`, `--continue`, `--resume`, `--fork`, `--no-session`, or `--export`. If the session's next-turn model is not available, a terminal shows a model picker. Without a terminal the import fails with a [compatibility report](session-format.md#compatibility-report) and writes nothing |
+| `--import-model <provider/id>` | Selects the imported session’s model, taking precedence over `--model` and the file’s selection. Requires `--import`. The CLI accepts only models it can verify; choose extension models through RPC or the SDK |
+| `--import-report <portable.jsonl>` | Print how a portable session compares with this harness and exit. Writes nothing. Exits 1 when the import would be blocked. Cannot be combined with `--import` |
 | `--trace <file>` | Record a redacted local [execution trace](traces.md) of every agent run to a new file. Cannot be combined with `--export` or `--import` |
 | `--replay-trace <file>` | Validate a trace, print its timeline, replay it offline without providers or tools, and exit `0` only when it is complete and matches. Runs before any settings or extensions load |
 

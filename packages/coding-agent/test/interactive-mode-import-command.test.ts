@@ -78,7 +78,9 @@ describe("InteractiveMode /import parsing", () => {
 			"Import session",
 			"Replace current session with path/to/session.jsonl?",
 		);
-		expect(importFromJsonl).toHaveBeenCalledWith("path/to/session.jsonl");
+		expect(importFromJsonl).toHaveBeenCalledWith("path/to/session.jsonl", undefined, {
+			chooseModel: expect.any(Function),
+		});
 		expect(showError).not.toHaveBeenCalled();
 		expect(showStatus).toHaveBeenCalledWith("Session imported from: path/to/session.jsonl");
 	});
@@ -106,7 +108,9 @@ describe("InteractiveMode /import parsing", () => {
 
 		await interactiveModePrototype.handleImportCommand.call(context, "/import john's/session.jsonl");
 
-		expect(importFromJsonl).toHaveBeenCalledWith("john's/session.jsonl");
+		expect(importFromJsonl).toHaveBeenCalledWith("john's/session.jsonl", undefined, {
+			chooseModel: expect.any(Function),
+		});
 		expect(showError).not.toHaveBeenCalled();
 		expect(showStatus).toHaveBeenCalledWith("Session imported from: john's/session.jsonl");
 	});

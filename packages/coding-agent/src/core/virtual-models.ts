@@ -129,30 +129,39 @@ export function getBranchSelection(
 	branch: readonly SessionEntry[],
 	getModel: (provider: string, modelId: string) => Model<Api> | undefined,
 ): { provider: string; modelId: string } | undefined {
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const entry = branch[i];
-		if (entry.type === "model_change") {
-			return { provider: entry.provider, modelId: entry.modelId };
-		}
-		if (entry.type === "message" && entry.message.role === "assistant" && !isVirtualModel(entry.message)) {
-			const response = { provider: entry.message.provider, modelId: entry.message.model };
-			const change = findLastModelChange(branch, i);
-			const model = change && getModel(change.provider, change.modelId);
-			return change && model && isVirtualModel(model) ? change : response;
-		}
-	}
-	return undefined;
+	return selectBranchModel(
+		branch,
+		(entry) => {
+			if (entry.type === "model_change")
+				return { kind: "selection", provider: entry.provider, modelId: entry.modelId };
+			if (entry.type === "message" && entry.message.role === "assistant" && !isVirtualModel(entry.message)) {
+				return { kind: "response", provider: entry.message.provider, modelId: entry.message.model };
+			}
+			return undefined;
+		},
+		(provider, id) => {
+			const model = getModel(provider, id);
+			return model !== undefined && isVirtualModel(model);
+		},
+	);
 }
 
-function findLastModelChange(
-	branch: readonly SessionEntry[],
-	before: number,
+/** Resolve the same branch history for native entries and validated portable records. */
+export function selectBranchModel<T>(
+	entries: readonly T[],
+	read: (entry: T) => { kind: "selection" | "response"; provider: string; modelId: string } | undefined,
+	isVirtual: (provider: string, modelId: string) => boolean,
 ): { provider: string; modelId: string } | undefined {
-	for (let i = before - 1; i >= 0; i--) {
-		const entry = branch[i];
-		if (entry.type === "model_change") return { provider: entry.provider, modelId: entry.modelId };
+	let response: { provider: string; modelId: string } | undefined;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = read(entries[i]);
+		if (!entry) continue;
+		const { provider, modelId } = entry;
+		if (entry.kind === "selection")
+			return response && !isVirtual(provider, modelId) ? response : { provider, modelId };
+		response ??= { provider, modelId };
 	}
-	return undefined;
+	return response;
 }
 
 /** Latest router state a session branch stores for a virtual model. */
