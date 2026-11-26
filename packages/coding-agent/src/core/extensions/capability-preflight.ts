@@ -132,7 +132,9 @@ export function formatCapabilityDisclosureTitle(items: readonly CapabilityPrefli
 		"",
 		`${identity}: ${categories}`,
 		"",
-		"Full declaration printed above; scroll to review before choosing.",
+		current?.disclosure.status === "unclassified"
+			? "Package list above; scroll to review before choosing."
+			: "Full declaration printed above; scroll to review before choosing.",
 	].join("\n");
 }
 

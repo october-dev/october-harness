@@ -6,7 +6,6 @@ import {
 	type CapabilityPreflightHandler,
 	type CapabilityPreflightHost,
 	type CapabilityPreflightItem,
-	formatCapabilityDisclosureDetails,
 	formatCapabilityDisclosureTitle,
 } from "../core/extensions/capability-preflight.ts";
 import { writeRawStdout } from "../core/output-guard.ts";
@@ -19,12 +18,19 @@ async function discloseStartupCapabilities(
 	settingsManager: SettingsManager,
 ): Promise<CapabilityPreflightDecision[]> {
 	const decisions: CapabilityPreflightDecision[] = [];
+	const overview = ["Pending extensions:", ...items.map((item, index) => `  ${index + 1}. ${item.identity}`)];
+	if (items.some((item) => item.disclosure.status === "unclassified")) {
+		overview.push(
+			"Extensions without a capability manifest have unknown capabilities and run with October's permissions.",
+		);
+	}
+	console.error(overview.join("\n"));
 	for (let index = 0; index < items.length; index++) {
 		const item = items[index];
 		if (!item) continue;
 		// The full declaration stays in terminal scrollback; the selector title stays short
 		// so its beginning is not pushed out of view.
-		console.error(formatCapabilityDisclosureDetails(items, index));
+		if (item.disclosure.status !== "unclassified") console.error(item.details);
 		const selected = await showStartupSelector(settingsManager, formatCapabilityDisclosureTitle(items, index), [
 			{ label: CAPABILITY_LOAD_CHOICE, value: true },
 			{ label: CAPABILITY_SKIP_CHOICE, value: false },

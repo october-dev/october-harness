@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Startup prints the extension list and missing-manifest warning once per review. Each extension still has its own Load or Skip choice.
+
 ## [1.6.1-october.1] - 2026-11-26
 
 ### New Features
