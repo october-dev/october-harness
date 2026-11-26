@@ -7,6 +7,7 @@ interface CodingAgentPackageJson {
 	exports: {
 		".": { import: string; types: string };
 		"./rpc-entry": { import: string };
+		"./testing": { import: string; types: string };
 	};
 }
 
@@ -20,5 +21,7 @@ describe("package distribution entrypoints", () => {
 		expect(packageJson.main).toBe("./dist/index.js");
 		expect(packageJson.exports["."].import).toBe("./dist/index.js");
 		expect(packageJson.exports["./rpc-entry"].import).toBe("./dist/bundle/rpc-entry.js");
+		expect(packageJson.exports["./testing"].import).toBe("./dist/testing.js");
+		expect(packageJson.exports["./testing"].types).toBe("./dist/testing.d.ts");
 	});
 });

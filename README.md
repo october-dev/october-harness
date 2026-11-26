@@ -1,19 +1,42 @@
 <div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/header/logo-dark.svg">
+    <img src="assets/header/logo-light.svg" alt="October Harness" width="640">
+  </picture>
+  <br>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/header/tagline-dark.svg">
+    <img src="assets/header/tagline-light.svg" alt="October's open, multiplayer-first coding harness." width="560">
+  </picture>
+</div>
 
-<img src="assets/october-banner.svg" alt="OCTOBER" width="880">
+---
 
-<h1>October Harness</h1>
+<p>
+  <a href="#five-minute-quickstart"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-start-dark.svg"><img src="assets/header/button-start-light.svg" alt="Quickstart" height="40" align="top"></picture></a>
+  <a href="https://www.npmjs.com/package/@october-dev/october"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-npm-dark.svg"><img src="assets/header/button-npm-light.svg" alt="npm" height="40" align="top"></picture></a>
+  <a href="#two-harnesses-one-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-bus-dark.svg"><img src="assets/header/button-bus-light.svg" alt="October Bus" height="40" align="top"></picture></a>
+  <a href="#extensions-and-customization"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-extend-dark.svg"><img src="assets/header/button-extend-light.svg" alt="Extensions" height="40" align="top"></picture></a>
+  <a href="#contributing-and-upstream-sync"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-contribute-dark.svg"><img src="assets/header/button-contribute-light.svg" alt="Contribute" height="40" align="top"></picture></a>
+  <a href="#two-harnesses-one-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/callout-dark.svg"><img src="assets/header/callout-light.svg" alt="Works alone, or with every agent on the October Bus." height="40" align="top"></picture></a>
+</p>
 
-<p><strong>October's open, multiplayer-first coding harness.</strong></p>
+---
+
+<div align="center">
 
 Fast in a terminal. Extensible as a runtime. Native to October Bus.
 
-[![npm](https://img.shields.io/npm/v/@october-dev/october?style=flat-square&color=7C6CF0)](https://www.npmjs.com/package/@october-dev/october)
+[![npm](https://img.shields.io/npm/v/@october-dev/october?style=flat-square&color=F7820E)](https://www.npmjs.com/package/@october-dev/october)
 [![License](https://img.shields.io/badge/license-MIT-1C1B18?style=flat-square)](LICENSE)
 [![October Bus](https://img.shields.io/badge/October%20Bus-native-28B8D8?style=flat-square)](https://github.com/october-dev/october-bus)
 [![Upstream](https://img.shields.io/badge/forked%20from-pi-6F6C66?style=flat-square)](https://github.com/earendil-works/pi)
 
 </div>
+
+<p align="center">
+  <img src="assets/header/bus-demo.svg" width="760" alt="Two October Harness agents coordinating over October Bus: the planner finds the builder, sends a durable review request, the builder claims the task and sends a correlated reply.">
+</p>
 
 ---
 

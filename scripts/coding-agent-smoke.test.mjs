@@ -31,7 +31,10 @@ function createFixture(t, { importUndeclared = false } = {}) {
 			type: "module",
 			main: "./dist/index.js",
 			types: "./dist/index.d.ts",
-			exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } },
+			exports: {
+				".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
+				"./testing": { types: "./dist/testing.d.ts", import: "./dist/testing.js" },
+			},
 			files: ["dist"],
 			bin: { october: "dist/cli.js" },
 		},
@@ -43,9 +46,12 @@ export class SessionManager { static inMemory() {} }
 export class ModelRuntime { static create() {} }
 `,
 			"dist/index.d.ts": "export {};\n",
+			"dist/testing.js": 'export * from "./bundle/testing.js";\n',
+			"dist/testing.d.ts": "export declare function createExtensionTestHarness(): void;\n",
 			"dist/cli.js": 'import "./bundle/cli-runtime.js";\n',
 			"dist/bundle/cli-runtime.js": 'console.log("1.0.0");\n',
 			"dist/bundle/cli.js": 'console.log("1.0.0");\n',
+			"dist/bundle/testing.js": "export function createExtensionTestHarness() {}\n",
 		},
 	);
 	const artifactSet = produceArtifactSet({ build: false, outDir: join(root, "artifacts"), repoRoot, source: null });
@@ -69,6 +75,15 @@ test("rejects an SDK that bypasses the merged workspace bundle", (t) => {
 	writeFileSync(join(directory, "node_modules", codingAgentName, "dist/index.js"),
 		'export function createAgentSession() {}\nexport { SessionManager, ModelRuntime } from "./bundle/index.js";\n');
 	assert.throws(() => smokeTestCodingAgent(directory), /SDK must use this release's bundled workspace code/);
+});
+
+test("rejects a testing entry that bypasses the merged workspace bundle", (t) => {
+	const directory = createFixture(t);
+	writeFileSync(
+		join(directory, "node_modules", codingAgentName, "dist/testing.js"),
+		"export function createExtensionTestHarness() {}\n",
+	);
+	assert.throws(() => smokeTestCodingAgent(directory), /testing entry must use this release's bundled workspace code/);
 });
 
 // #9132: smoke-test the public SDK, not just a bundled CLI that hides missing imports.

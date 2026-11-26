@@ -12,6 +12,7 @@ import { mcpNamespace } from "@earendil-works/pi-mcp";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { createJiti } from "jiti";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../config.ts";
+import { cleanDisplayLine } from "../../utils/ansi.ts";
 import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
@@ -24,6 +25,7 @@ import type { ModelRouteRequest, VirtualModelDefinition } from "../virtual-model
 import { readCapabilityManifest } from "./capabilities.ts";
 import type {
 	EntryRenderer,
+	ExecBashOptions,
 	Extension,
 	ExtensionAPI,
 	ExtensionFactory,
@@ -181,6 +183,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
+		execBash: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
 		getSettings: notInitialized,
@@ -426,6 +429,11 @@ function createExtensionAPI(
 			return execCommand(command, args, options?.cwd ?? cwd, options);
 		},
 
+		execBash(command: string, options?: ExecBashOptions) {
+			assertActive();
+			return runtime.execBash(command, options);
+		},
+
 		getActiveTools(): string[] {
 			assertActive();
 			return runtime.getActiveTools();
@@ -656,9 +664,12 @@ async function loadExtension(
 	// Read and validate the capability manifest before any extension code runs (#7).
 	const capabilities = readCapabilityManifest(resolvedPath);
 	if (capabilities.status === "invalid") {
+		// Field names and paths are extension-supplied: clean the composed error before display.
 		return {
 			extension: null,
-			error: `Invalid capability manifest for ${extensionPath} (${capabilities.source}): ${capabilities.errors.join("; ")}`,
+			error: cleanDisplayLine(
+				`Invalid capability manifest for ${extensionPath} (${capabilities.source}): ${capabilities.errors.join("; ")}`,
+			),
 		};
 	}
 

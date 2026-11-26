@@ -87,6 +87,9 @@ describe("ExtensionRunner", () => {
 		setSessionName: () => {},
 		getSessionName: () => undefined,
 		setLabel: () => {},
+		execBash: async () => {
+			throw new Error("execBash is not available in this test");
+		},
 		getActiveTools: () => [],
 		getAllTools: () => [],
 		getSettings: () => ({}),

@@ -277,9 +277,9 @@ Only the model the next turn uses can block the import. That is the file's last 
 | Tool names in past calls and results | `available`, `missing`, `unknown` | No. A portable file carries no tool loadout, so the destination's own tools run the next turn |
 | Custom message types | `available` (a renderer is registered), `missing` (the message uses the default display), `unknown` | No |
 
-`unknown` means the destination cannot decide yet. The CLI checks only the built-in catalog and `models.json` before a runtime exists. It reports a model from an extension as `unknown`, which blocks, and every tool and custom message type as `unknown`. RPC and SDK check against the loaded runtime and can see extension models.
+`unknown` means the destination cannot decide yet. CLI inspection reads stored credentials, cached catalogs and `models.json`, and registers the built-in October and llama.cpp providers. Built-in tool names are recognized. Models, tools and renderers supplied by unloaded extensions can be `unknown`. RPC and SDK check against the loaded runtime and can see extension models.
 
-A blocked import needs a replacement model:
+A blocked import requires a replacement model. An explicit replacement also applies to compatible files. The CLI uses `--import-model` first, then `--model`, then the saved selection. The interactive `/import` command offers a searchable picker when a replacement is required. Cancelling preserves the current session.
 
 | Entry point | How to choose |
 |-------------|---------------|

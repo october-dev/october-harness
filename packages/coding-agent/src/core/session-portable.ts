@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type TObject, type TProperties, type TSchema, Type } from "typebox";
 import { Check, Errors } from "typebox/value";
+import { cleanDisplayLine } from "../utils/ansi.ts";
 import { resolvePath } from "../utils/paths.ts";
 import {
 	assertValidSessionId,
@@ -19,7 +20,7 @@ import {
 	type SessionHeader,
 	SessionManager,
 } from "./session-manager.ts";
-import { isVirtualModel } from "./virtual-models.ts";
+import { isVirtualModel, selectBranchModel } from "./virtual-models.ts";
 
 export const PORTABLE_SESSION_MARKER = 1;
 
@@ -940,31 +941,6 @@ function modelKey(record: JsonRecord): ModelKey {
 	return { provider: record.provider as string, modelId: record.modelId as string };
 }
 
-function findLastModelChange(entries: readonly JsonRecord[], before: number): ModelKey | undefined {
-	for (let index = before - 1; index >= 0; index--) {
-		if (entries[index].type === "model_change") return modelKey(entries[index]);
-	}
-	return undefined;
-}
-
-/**
- * The model the next turn uses. Mirrors getBranchSelection() in virtual-models.ts: the last model
- * selection wins, unless a physical response comes later and no virtual selection holds.
- */
-function nextTurnModel(entries: readonly JsonRecord[], isVirtual: (key: ModelKey) => boolean): ModelKey | undefined {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index];
-		if (entry.type === "model_change") return modelKey(entry);
-		const message = entry.message;
-		if (entry.type !== "message" || !isRecord(message) || message.role !== "assistant") continue;
-		if (isVirtualModel({ api: message.api as string })) continue;
-		const response = { provider: message.provider as string, modelId: message.model as string };
-		const change = findLastModelChange(entries, index);
-		return change && isVirtual(change) ? change : response;
-	}
-	return undefined;
-}
-
 interface CountedModel extends ModelKey {
 	count: number;
 }
@@ -976,6 +952,7 @@ interface CountedModel extends ModelKey {
 export function inspectPortableImport(
 	prepared: PreparedPortableImport,
 	capabilities: PortableCapabilities,
+	selected?: PortableModelChoice,
 ): PortableCompatibilityReport {
 	const entries = prepared.entries;
 	const models = new Map<string, CountedModel>();
@@ -1012,7 +989,25 @@ export function inspectPortableImport(
 		}
 	}
 
-	const next = nextTurnModel(entries, (key) => capabilities.isVirtualModel(key.provider, key.modelId));
+	const next =
+		selected ??
+		selectBranchModel(
+			entries,
+			(entry) => {
+				if (entry.type === "model_change") return { kind: "selection", ...modelKey(entry) };
+				const message = entry.message;
+				if (
+					entry.type === "message" &&
+					isRecord(message) &&
+					message.role === "assistant" &&
+					!isVirtualModel({ api: message.api as string })
+				) {
+					return { kind: "response", provider: message.provider as string, modelId: message.model as string };
+				}
+				return undefined;
+			},
+			(provider, id) => capabilities.isVirtualModel(provider, id),
+		);
 	const requirementId = next ? `${next.provider}\0${next.modelId}` : undefined;
 	const toModelReference = (entry: CountedModel): PortableModelReference => ({
 		provider: entry.provider,
@@ -1020,7 +1015,8 @@ export function inspectPortableImport(
 		status: capabilities.model(entry.provider, entry.modelId),
 		count: entry.count,
 	});
-	const requirement = requirementId !== undefined ? models.get(requirementId) : undefined;
+	const requirement =
+		requirementId !== undefined ? (models.get(requirementId) ?? (next && { ...next, count: 0 })) : undefined;
 	const named = (counts: Map<string, number>, lookup: (name: string) => PortableReferenceStatus) =>
 		Array.from(counts, ([name, count]) => ({ name, status: lookup(name), count }));
 
@@ -1088,7 +1084,7 @@ export function formatPortableCompatibilityReport(report: PortableCompatibilityR
 	if (findings.length === 0) lines.push("All other references are available.");
 	else lines.push("Other references:", ...findings);
 	lines.push(report.blocking ? "Blocked: choose a replacement model." : "Not blocked.");
-	return lines;
+	return lines.map(cleanDisplayLine);
 }
 
 /** True when the first non-blank line of a file is a header carrying the portable marker. */

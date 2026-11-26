@@ -273,7 +273,7 @@ function checkAssets(context: DoctorContext): DoctorCheck {
  * `settings.json.lock` directory next to each one; doctor must not, least of all in an untrusted
  * project. The SettingsManager parser and migrations still apply.
  */
-class ReadOnlySettingsStorage implements SettingsStorage {
+export class ReadOnlySettingsStorage implements SettingsStorage {
 	readonly paths: Readonly<Record<SettingsScope, string>>;
 
 	constructor(cwd: string, agentDir: string) {
@@ -292,7 +292,7 @@ class ReadOnlySettingsStorage implements SettingsStorage {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code !== "ENOENT" && !(scope === "project" && code === "ENOTDIR")) throw error;
 		}
-		if (fn(current) !== undefined) throw new Error(`${APP_NAME} doctor does not write settings`);
+		if (fn(current) !== undefined) throw new Error(`Read-only inspection cannot write settings`);
 	}
 }
 
@@ -488,16 +488,17 @@ function checkOctoberSession(session: ManagedOctoberSessionSnapshot | undefined)
 	};
 }
 
-async function createDoctorModelRuntime(
-	context: DoctorContext,
-	authValid: boolean,
-	session: ManagedOctoberSessionSnapshot | undefined,
+export async function createInspectionModelRuntime(
+	agentDir: string,
+	authValid = true,
+	session = inspectManagedOctoberSession(process.env),
+	timeoutMs = 5_000,
 ): Promise<ModelRuntime> {
 	const sessionToken = sessionAccessToken(session);
 	const runtime = await ModelRuntime.create({
-		credentials: authValid ? new ReadOnlyAuthStorage(join(context.agentDir, "auth.json")) : AuthStorage.inMemory(),
-		modelsPath: join(context.agentDir, "models.json"),
-		modelsStore: await readCachedCatalogs(context.agentDir),
+		credentials: authValid ? new ReadOnlyAuthStorage(join(agentDir, "auth.json")) : AuthStorage.inMemory(),
+		modelsPath: join(agentDir, "models.json"),
+		modelsStore: await readCachedCatalogs(agentDir),
 		allowModelNetwork: false,
 		refreshOnCreate: false,
 		// Installed before any provider is registered, so no refresh can reach the managed resolver.
@@ -507,7 +508,7 @@ async function createDoctorModelRuntime(
 	// loading any extension, so the same model IDs resolve here as in a session.
 	runtime.registerProvider(OCTOBER_PROVIDER_ID, createOctoberProviderConfig());
 	runtime.registerNativeProvider(createLlamaProvider().provider);
-	await runtime.refresh({ allowNetwork: false, signal: AbortSignal.timeout(Math.max(context.timeoutMs, 5_000)) });
+	await runtime.refresh({ allowNetwork: false, signal: AbortSignal.timeout(Math.max(timeoutMs, 5_000)) });
 	return runtime;
 }
 
@@ -1053,7 +1054,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 	// Model checks use global settings only: the defaults every project starts from.
 	let defaultModel: Model<Api> | undefined;
 	try {
-		const runtime = await createDoctorModelRuntime(context, auth.valid, session);
+		const runtime = await createInspectionModelRuntime(context.agentDir, auth.valid, session, context.timeoutMs);
 		const result = await checkDefaultModel(runtime, settings.global, session);
 		defaultModel = result.model;
 		checks.push(result.check, await checkEnabledModels(context, runtime, settings.global));

@@ -1,5 +1,6 @@
 import { constants, copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, join, parse } from "node:path";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
@@ -51,6 +52,8 @@ export type CreateAgentSessionRuntimeFactory = (options: {
 	cwd: string;
 	agentDir: string;
 	sessionManager: SessionManager;
+	/** Explicit portable import selection, including a compatible imported model. */
+	model?: Model<Api>;
 	sessionStartEvent?: SessionStartEvent;
 	projectTrustContext?: ProjectTrustContext;
 }) => Promise<CreateAgentSessionRuntimeResult>;
@@ -403,28 +406,42 @@ export class AgentSessionRuntime {
 			replacement = await choice.chooseModel(report);
 			if (!replacement) return { cancelled: true };
 		}
-		const replacementModel = replacement ? this.checkReplacement(replacement, capabilities) : undefined;
+		const selected = replacement ?? report.requirement;
+		const model = selected && this.checkReplacement(selected, capabilities);
+		if (model && !(await this.services.modelRuntime.checkAuth(model.provider))) {
+			throw new SessionImportError(`No credentials for ${model.provider}/${model.id}`);
+		}
 
 		const beforeResult = await this.emitBeforeSwitch("resume", prepared.destination);
-		if (beforeResult.cancelled) {
-			return beforeResult;
-		}
+		if (beforeResult.cancelled) return beforeResult;
 
 		const previousSessionFile = this.session.sessionFile;
 		commitPortableImport(prepared);
-		const sessionManager = SessionManager.open(prepared.destination, sessionDir);
-		await this.teardownCurrent("resume", sessionManager.getSessionFile());
-		this.apply(
-			await this.createRuntime({
+		let candidate: CreateAgentSessionRuntimeResult | undefined;
+		try {
+			const sessionManager = SessionManager.open(prepared.destination, sessionDir);
+			if (replacement) sessionManager.appendModelChange(replacement.provider, replacement.modelId);
+			candidate = await this.createRuntime({
 				cwd: this.cwd,
 				agentDir: this.services.agentDir,
 				sessionManager,
+				model,
 				sessionStartEvent: { type: "session_start", reason: "resume", previousSessionFile },
-			}),
-		);
-		if (replacementModel) {
-			await this.session.setModel(replacementModel);
+			});
+			// SDK factories may force a default. Finalize the import while the previous host still works.
+			if (
+				model &&
+				(candidate.session.model?.provider !== model.provider || candidate.session.model.id !== model.id)
+			) {
+				await candidate.session.setModel(model);
+			}
+		} catch (error) {
+			candidate?.session.dispose();
+			rmSync(prepared.destination, { force: true });
+			throw error;
 		}
+		await this.teardownCurrent("resume", prepared.destination);
+		this.apply(candidate);
 		await this.finishSessionReplacement();
 		return { cancelled: false };
 	}
@@ -470,13 +487,17 @@ export class AgentSessionRuntime {
 	 * @throws {SessionImportFileNotFoundError} When the input path does not exist.
 	 * @throws {MissingSessionCwdError} When the imported session cwd cannot be resolved and no override is provided.
 	 */
-	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
+	async importFromJsonl(
+		inputPath: string,
+		cwdOverride?: string,
+		choice?: PortableImportChoice,
+	): Promise<{ cancelled: boolean }> {
 		const resolvedPath = resolvePath(inputPath);
 		if (!existsSync(resolvedPath)) {
 			throw new SessionImportFileNotFoundError(resolvedPath);
 		}
 		if (isPortableSessionFile(resolvedPath)) {
-			return this.importPortable(resolvedPath);
+			return this.importPortable(resolvedPath, choice);
 		}
 
 		const sessionDir = this.session.sessionManager.getSessionDir();

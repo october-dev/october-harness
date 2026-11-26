@@ -1811,6 +1811,19 @@ export interface ExtensionAPI {
 	/** Execute a shell command. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 
+	/**
+	 * Run a shell command through the session: the configured shell path and command prefix,
+	 * the session-selected shell runner (host, Docker, or SDK-supplied), and the session's
+	 * cancellation tracking. Esc aborts the command and kills its process tree while the
+	 * session is idle; while the agent streams, Esc first aborts the agent turn.
+	 *
+	 * A rejecting runner rejects instead of falling back to the host. The result is recorded
+	 * on the session but excluded from model context. Output is bounded without failing the
+	 * command; `fullOutputPath` keeps the complete output when truncation applied. There is
+	 * no live progress; use `onChunk` to receive output chunks while the command runs.
+	 */
+	execBash(command: string, options?: ExecBashOptions): Promise<BashResult>;
+
 	/** Get the names of the active tools, which are the tools declared to the model. */
 	getActiveTools(): string[];
 
@@ -2198,6 +2211,14 @@ export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
+/** Options for {@link ExtensionAPI.execBash}. */
+export interface ExecBashOptions {
+	/** Receives sanitized output chunks while the command runs. */
+	onChunk?: (chunk: string) => void;
+}
+
+export type ExecBashHandler = (command: string, options?: ExecBashOptions) => Promise<BashResult>;
+
 /**
  * Shared state created by loader, used during registration and runtime.
  * Contains flag values (defaults set during registration, CLI values set after).
@@ -2244,6 +2265,7 @@ export interface ExtensionActions {
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;
+	execBash: ExecBashHandler;
 	getActiveTools: GetActiveToolsHandler;
 	getAllTools: GetAllToolsHandler;
 	getSettings: GetSettingsHandler;

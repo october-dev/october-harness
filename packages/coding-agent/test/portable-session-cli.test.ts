@@ -12,12 +12,15 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
+import { importPortableForCli } from "../src/cli/portable-import.ts";
+import * as startupUi from "../src/cli/startup-ui.ts";
 import { ENV_AGENT_DIR } from "../src/config.ts";
 import { getDefaultSessionDirPath, SessionManager } from "../src/core/session-manager.ts";
 import { formatPortableSessionDiagnostics, serializePortableSession } from "../src/core/session-portable.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { OCTOBER_DEFAULT_MODEL_ID } from "../src/extensions/october/provider.ts";
 import { createSessionManager } from "../src/main.ts";
 import { buildPortableFixture } from "./fixtures/portable-session-fixture.ts";
 
@@ -27,6 +30,8 @@ const sourceResolverUrl = pathToFileURL(resolve(__dirname, "../src/experimental/
 const tempDirs: string[] = [];
 
 afterEach(() => {
+	vi.unstubAllEnvs();
+	vi.restoreAllMocks();
 	for (const dir of tempDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -64,16 +69,20 @@ async function runCli(
 }
 
 /** A native session file holding the canonical fixture, as the CLI would have stored it. */
-function writeNativeFixture(): { path: string; sessionId: string } {
+function writeNativeFixture(useOctober = false): { path: string; sessionId: string } {
 	const sourceCwd = createTempDir("pi-portable-cli-source-");
 	const sessionDir = join(sourceCwd, "sessions");
 	const source = SessionManager.create(sourceCwd, sessionDir);
-	buildPortableFixture(source, join(createTempDir("pi-portable-cli-bash-"), "bash.log"));
+	buildPortableFixture(
+		source,
+		join(createTempDir("pi-portable-cli-bash-"), "bash.log"),
+		useOctober ? { provider: "october", model: OCTOBER_DEFAULT_MODEL_ID, api: "openai-completions" } : undefined,
+	);
 	return { path: source.getSessionFile()!, sessionId: source.getSessionId() };
 }
 
-function writePortableFixture(): { path: string; sessionId: string } {
-	const native = writeNativeFixture();
+function writePortableFixture(useOctober = false): { path: string; sessionId: string } {
+	const native = writeNativeFixture(useOctober);
 	const path = join(createTempDir("pi-portable-cli-file-"), "portable.jsonl");
 	writeFileSync(path, serializePortableSession(SessionManager.open(native.path)).jsonl);
 	return { path, sessionId: native.sessionId };
@@ -98,7 +107,8 @@ function createCliDirs(prefix: string): { cwd: string; agentDir: string } {
 describe("CLI portable sessions", () => {
 	// Regression test for #2.
 	it("imports with --import into the CLI cwd and session dir", async () => {
-		const portable = writeModelFreePortableFile();
+		vi.stubEnv("OCTOBER_INFERENCE_TOKEN", "fixture-token");
+		const portable = writePortableFixture(true);
 		const cwd = createTempDir("pi-portable-cli-cwd-");
 		const sessionDir = join(cwd, "sessions");
 
@@ -114,6 +124,61 @@ describe("CLI portable sessions", () => {
 		expect(readdirSync(sessionDir)).toHaveLength(1);
 		expect(sm.getSessionFile()).toBe(join(sessionDir, readdirSync(sessionDir)[0]));
 		expect(sm.getHeader()).not.toHaveProperty("portable");
+	});
+
+	// Regression for #49. Use the read-only built-in October provider and an explicit throwaway credential.
+	it("inspects and imports the October model with an explicit CLI key and honors the configured destination", async () => {
+		const { cwd, agentDir } = createCliDirs("pi-portable-selection-");
+		vi.stubEnv(ENV_AGENT_DIR, agentDir);
+		const portable = writePortableFixture();
+		const model = `october/${OCTOBER_DEFAULT_MODEL_ID}`;
+		const sessionDir = join(cwd, "custom");
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir }));
+		const flags = ["--model", model, "--api-key", "test-key"];
+		const report = await runCli(["--import-report", portable.path, ...flags], cwd, agentDir);
+		expect(report.stdout).toContain(`Next turn model: ${model} (available)`);
+		expect(report.code).toBe(0);
+		expect(readdirSync(agentDir)).toEqual(["settings.json"]);
+		const session = await createSessionManager(
+			parseArgs(["--import", portable.path, ...flags]),
+			cwd,
+			sessionDir,
+			SettingsManager.inMemory(),
+		);
+		expect(SessionManager.open(session.getSessionFile()!).getBranch().at(-1)).toMatchObject({
+			type: "model_change",
+			provider: "october",
+			modelId: OCTOBER_DEFAULT_MODEL_ID,
+		});
+		const conflict = await runCli(["--import-report", portable.path, ...flags], cwd, agentDir);
+		expect(conflict.code).toBe(1);
+		expect(conflict.stderr).toContain(portable.sessionId);
+	});
+
+	it("cancels or persists the startup pick before session creation", async () => {
+		const { cwd, agentDir } = createCliDirs("pi-portable-picker-");
+		vi.stubEnv(ENV_AGENT_DIR, agentDir);
+		vi.stubEnv("OCTOBER_INFERENCE_TOKEN", "fixture-token");
+		const portable = writePortableFixture();
+		const options = {
+			cwd,
+			sessionDir: join(cwd, "sessions"),
+			interactive: true,
+			settingsManager: SettingsManager.inMemory(),
+			flags: {},
+		};
+		const picker = vi
+			.spyOn(startupUi, "showStartupModelSelector")
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce({ provider: "october", modelId: OCTOBER_DEFAULT_MODEL_ID });
+		expect(await importPortableForCli(portable.path, options)).toBeUndefined();
+		expect(existsSync(options.sessionDir)).toBe(false);
+		const session = await importPortableForCli(portable.path, options);
+		expect(picker).toHaveBeenCalledTimes(2);
+		expect(SessionManager.open(session!.getSessionFile()!).getBranch().at(-1)).toMatchObject({
+			type: "model_change",
+			modelId: OCTOBER_DEFAULT_MODEL_ID,
+		});
 	});
 
 	it("fails a blocked --import headless with the report, and writes nothing", { timeout: 60_000 }, async () => {
@@ -144,7 +209,7 @@ describe("CLI portable sessions", () => {
 			expect(result.stdout).toContain("Next turn model: faux-provider/faux-model (unknown)");
 			expect(result.stdout).toContain("Blocked: choose a replacement model.");
 			// Unknown tools and custom message types are reported with remediation, and never block.
-			expect(result.stdout).toContain("history tool read");
+			expect(result.stdout).not.toContain("history tool read");
 			expect(result.stdout).toContain("custom message review-note (1)");
 			expect(existsSync(getDefaultSessionDirPath(cwd, agentDir))).toBe(false);
 			expect(readdirSync(agentDir).sort()).toEqual(agentDirBefore);

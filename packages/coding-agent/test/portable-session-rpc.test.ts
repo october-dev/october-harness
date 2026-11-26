@@ -66,7 +66,7 @@ async function startRpc(
 	additionalExtensions: Array<(pi: ExtensionAPI) => void> = [],
 ) {
 	const cwd = createTempDir("pi-portable-rpc-");
-	const faux = registerFauxProvider();
+	const faux = registerFauxProvider({ models: [{ id: "factory-default" }, { id: "import-selection" }] });
 	cleanups.push(() => faux.unregister());
 	const sessionStarts: SessionStartEvent[] = [];
 	const extension = (pi: ExtensionAPI) => {
@@ -139,7 +139,7 @@ async function startRpc(
 	const portableModel: PortableFixtureModel = {
 		api: faux.api,
 		provider: faux.getModel().provider,
-		model: faux.getModel().id,
+		model: "import-selection",
 	};
 	return { runtime, send, cwd, sessionStarts, portableModel };
 }

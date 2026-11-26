@@ -55,7 +55,7 @@ See the checked [sessions example](../examples/sdk/11-sessions.ts) for creating,
 
 `session.dispose()` aborts active work, invalidates extension contexts, disconnects from the agent, and removes event listeners. Call it when the session is no longer needed.
 
-`AgentSessionRuntime` adds `newSession()`, `switchSession()`, `fork()`, `inspectPortableImport()`, `importPortable()`, and `importFromJsonl()`. Each operation replaces the active `AgentSession` and recreates services for the target working directory. `inspectPortableImport(path)` returns a [compatibility report](session-format.md#compatibility-report) and writes nothing. `importPortable(path, { model, chooseModel })` throws `SessionImportSelectionRequiredError` before writing when the file's next-turn model is unavailable and neither `model` nor `chooseModel` supplies a replacement; `chooseModel` returning `undefined` cancels.
+`AgentSessionRuntime` adds `newSession()`, `switchSession()`, `fork()`, `inspectPortableImport()`, `importPortable()`, and `importFromJsonl()`. The session-changing operations replace the active `AgentSession` and recreate services for the target working directory. `inspectPortableImport(path)` returns a [compatibility report](session-format.md#compatibility-report) and writes nothing. `importPortable(path, { model, chooseModel })` throws `SessionImportSelectionRequiredError` before writing when the file's next-turn model is unavailable and neither `model` nor `chooseModel` supplies a replacement; `chooseModel` returning `undefined` cancels.
 
 To move a session between machines or entry points, use [portable sessions](session-format.md#portable-sessions). `session.exportToJsonl(path)` writes the active branch and returns `{ path, diagnostics }`. `runtime.importPortable(path)` accepts only portable files and imports into the runtime's cwd. `runtime.importFromJsonl(path)` accepts both: portable files go through `importPortable()`, and other session files are copied into the session directory unchanged and opened with their header cwd. Without a runtime, `importPortableSession(path, { cwd, sessionDir })` writes the native session and returns its path for `SessionManager.open()`.
 
@@ -64,6 +64,8 @@ After a runtime replacement, subscriptions belong to the old `AgentSession` and 
 ## Prompting
 
 `prompt()` handles extension commands and expands file-based prompt templates before ordinary user messages enter the agent. For an accepted agent run, it resolves after the run finishes, including automatic retries.
+
+`session.getTeamInboxDispatch()` reports whether automatic public Bus inbox delivery is active. `session.setTeamInboxDispatch(paused)` pauses or resumes it without a model call and stores the choice on the session. Both report `available: false` until the public Bus extension has started; setting the choice then throws. Pausing leaves unread peer messages pending. It does not acknowledge or discard them, and peer messages cannot clear the pause. A turn that already started may settle normally. Interactive and RPC sessions start the next queued batch only after resume. The same control is `/inbox pause`, `/inbox resume`, and `/inbox status`.
 
 A prompt sent while the session is already streaming must specify whether it should steer the current run or follow it. Calling `prompt()` without that choice rejects rather than guessing.
 
@@ -114,6 +116,8 @@ Use `DefaultResourceLoader` when you want standard discovery with selected overr
 <a id="inlineextension"></a>
 
 Inline extension factories can be supplied through `DefaultResourceLoader`. Give one an `InlineExtension` name only when it needs a stable name in diagnostics and startup output. A named inline extension with `replaceable: true` is left out when another extension registers a tool, command, or flag with a name it registers during loading, instead of both loading with a conflict. The CLI's built-in codemode, tool search, and MCP extensions are replaceable. A named entry with `builtin: true` is not an inline extension: it supplies the code of the `builtin:<name>` extension, which loads like a configured extension file. It loads by default, is listed in `october config`, and is disabled by `-builtin:<name>` in the `extensions` setting or by `noExtensions`; `additionalExtensionPaths: ["builtin:<name>"]` loads it explicitly. It loads after project trust is resolved, so it cannot handle `project_trust`. The CLI's built-in extensions use it.
+
+For tests of inline extension factories with deterministic model responses, use the [Public Extension Testing Kit](extension-testing.md). It uses the standard extension runtime without calling a real model provider.
 
 <a id="codemode-mcp"></a>
 

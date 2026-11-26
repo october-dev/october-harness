@@ -1,3 +1,5 @@
+import { getAgentDir } from "../config.ts";
+import { registerCapabilityInspection } from "../core/extensions/capability-preflight.ts";
 import type { InlineExtension } from "../core/extensions/types.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
 import codemodeExtension from "./codemode/index.ts";
@@ -33,5 +35,10 @@ export function createBuiltInExtensions(
 			builtin: true,
 		},
 		{ name: "october", factory: octoberExtension, hidden: true },
+		{
+			name: "capability-preflight",
+			factory: (pi) => registerCapabilityInspection(pi, getAgentDir()),
+			hidden: true,
+		},
 	];
 }

@@ -31,6 +31,8 @@ An extension runs inside the October process with the same operating-system perm
 
 See [examples/extensions/](../examples/extensions/) for working implementations.
 
+For deterministic tests of extension factories and tools, see the [Public Extension Testing Kit](extension-testing.md).
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -61,6 +63,7 @@ See [examples/extensions/](../examples/extensions/) for working implementations.
 - [Custom UI](#custom-ui)
 - [Error Handling](#error-handling)
 - [Mode Behavior](#mode-behavior)
+- [Testing Extensions](#testing-extensions)
 - [Examples Reference](#examples-reference)
 
 <a id="create-an-extension"></a>
@@ -340,6 +343,12 @@ Declaring the same extension in both places is an error.
 Unknown fields are rejected, so typos surface instead of being ignored. An omitted field means *not declared*; declare an empty list or `false` to state that the extension uses none.
 
 A manifest is disclosure metadata written by the extension author. It is not a sandbox and does not prove what the code does. See [Security](security.md#extension-capability-manifests).
+
+Before a project-owned or newly installed extension loads for the first time, October shows that manifest. An extension with no manifest is described as unclassified, not as safe. Each choice names the current extension by its package source and entry path, or by its project-relative file path; the whole pending set and the full declaration print where they can scroll, so no choice is made blind. Manifest text is cleaned before display: terminal escapes and control characters never reach the screen.
+
+In the interactive terminal you choose "Load and remember" or "Skip" for each one; skipping continues without that extension and never runs its code. Pressing Esc counts as Skip. A skip lasts for the rest of the process, so `/new`, `/fork`, `/resume`, and `/reload` do not ask again; restart October (or change the manifest) to be asked again. Another process accepting the same manifest does not undo your Skip. Reloads and session switches disclose through the running terminal UI.
+
+Outside the interactive terminal there is no prompt: print, JSON, and RPC runs print the same summary and remember it automatically, which suppresses the next terminal prompt for that manifest. Package and config commands (`list`, `config`, `install`, `remove`) disclose the same way before loading. `--help` and `--list-models` acknowledge without ever prompting. `/capabilities` prints the remembered summaries in the interactive terminal, and `/capabilities <name>` prints one full manifest. Remembering a manifest does not sandbox the extension. A changed manifest is shown again.
 
 <a id="understand-the-lifecycle"></a>
 
@@ -1938,7 +1947,18 @@ const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 // result.stdout, result.stderr, result.code, result.killed, result.truncated
 ```
 
-Options: `signal` and `timeout` terminate the command, `cwd` sets the working directory, and `maxBuffer` limits stdout and stderr combined (default 256 MiB). When output exceeds `maxBuffer`, pi terminates the command and returns the output up to the limit with `truncated: true`, `killed: true`, and a nonzero `code`. `killed` is true whenever pi terminated the command: timeout, abort, or `maxBuffer`. A command that ignores SIGTERM gets SIGKILL after 5 seconds.
+Options: `signal` and `timeout` terminate the command, `cwd` sets the working directory, and `maxBuffer` limits stdout and stderr combined (default 256 MiB). When output exceeds `maxBuffer`, pi terminates the command and returns the output up to the limit with `truncated: true`, `killed: true`, and a nonzero `code`. `killed` is true whenever pi terminated the command: timeout, abort, or `maxBuffer`. A command that dies from a signal reports a nonzero `code`, whether pi or something else sent it. A command that ignores SIGTERM gets SIGKILL after 5 seconds.
+
+### pi.execBash(command, options?)
+
+Run a shell command through the session: the configured shell path and command prefix, the session-selected shell runner (host, Docker, or SDK-supplied), and the session's cancellation tracking. Esc aborts the command and kills its process tree while the session is idle; while the agent streams, Esc first aborts the agent turn. Progress display is the caller's job: pass `onChunk` to receive sanitized output chunks while the command runs. Prefer this over `pi.exec` for user-facing commands; use `pi.exec` for harness-internal probes such as `git`.
+
+```typescript
+const result = await pi.execBash("npm test");
+// result.output, result.exitCode, result.cancelled, result.truncated, result.fullOutputPath
+```
+
+Options: `onChunk` receives sanitized output chunks while the command runs. A rejecting runner rejects instead of falling back to the host. The result is recorded on the session but excluded from model context. Output is bounded without failing the command; `fullOutputPath` keeps the complete output when truncation applied.
 
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
 
@@ -3303,8 +3323,11 @@ const highlighted = highlightCode(code, lang);
 
 Use `ctx.mode === "tui"` before TUI-specific features (`custom()`, component factories, terminal input). Use `ctx.hasUI` before dialog and notification methods that work in both TUI and RPC modes.
 
-<a id="use-examples-as-the-implementation-reference"></a>
+## Testing Extensions
 
+The [Public Extension Testing Kit](extension-testing.md) provides a deterministic faux model and October's standard extension runtime for testing extension factories, tools, events, blocking, cancellation, and cleanup from a separate extension project.
+
+<a id="use-examples-as-the-implementation-reference"></a>
 ## Examples Reference
 
 All examples in [examples/extensions/](../examples/extensions/).

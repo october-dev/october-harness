@@ -13,6 +13,17 @@ import { canonicalizePath, isLocalPath, isPathWithin, pathsEqual, resolvePath } 
 import { stripBom } from "../utils/text.ts";
 import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
+	acknowledgeCapabilities,
+	CAPABILITY_SKIP_RECOVERY_HINT,
+	CAPABILITY_SKIP_WARNING_PREFIX,
+	type CapabilityPreflightDecision,
+	type CapabilityPreflightHandler,
+	planCapabilityPreflight,
+	readCapabilityPreflightStore,
+	recordCapabilityInspection,
+	rememberCapabilityDecline,
+} from "./extensions/capability-preflight.ts";
+import {
 	clearExtensionCache,
 	createExtensionRuntime,
 	loadExtensionFromFactory,
@@ -350,6 +361,11 @@ export interface DefaultResourceLoaderOptions {
 	};
 	systemPromptOverride?: (base: string | undefined) => string | undefined;
 	appendSystemPromptOverride?: (base: string[]) => string[];
+	/**
+	 * Called before project-owned or newly installed extension code loads, when that manifest
+	 * has not been remembered. Return `accept: false` to skip the extension without an error.
+	 */
+	capabilityPreflight?: CapabilityPreflightHandler;
 }
 
 export class DefaultResourceLoader implements ResourceLoader {
@@ -390,6 +406,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	};
 	private systemPromptOverride?: (base: string | undefined) => string | undefined;
 	private appendSystemPromptOverride?: (base: string[]) => string[];
+	private capabilityPreflight?: CapabilityPreflightHandler;
 
 	private extensionsResult: LoadExtensionsResult;
 	private skills: Skill[];
@@ -445,6 +462,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.agentsFilesOverride = options.agentsFilesOverride;
 		this.systemPromptOverride = options.systemPromptOverride;
 		this.appendSystemPromptOverride = options.appendSystemPromptOverride;
+		this.capabilityPreflight = options.capabilityPreflight;
 
 		this.extensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
 		this.skills = [];
@@ -744,8 +762,17 @@ export class DefaultResourceLoader implements ResourceLoader {
 			resolvedPaths.installFailures,
 			cliExtensionPaths.installFailures,
 		);
-		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
-		mergeExtensionWarnings(extensionsResult, [...installWarnings, ...packageWarnings]);
+		const gated = await this.applyCapabilityPreflight(extensionPaths, metadataByPath);
+		const extensionsResult = await loadExtensionsCached(gated.paths, this.cwd, this.eventBus);
+		extensionsResult.errors.push(...gated.errors);
+		mergeExtensionWarnings(extensionsResult, [
+			...installWarnings,
+			...packageWarnings,
+			...gated.skipped.map((skipped) => ({
+				path: skipped.path,
+				warning: `${CAPABILITY_SKIP_WARNING_PREFIX} ${skipped.summary} ${CAPABILITY_SKIP_RECOVERY_HINT}`,
+			})),
+		]);
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
 		}
@@ -759,6 +786,70 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return extensionsResult;
 	}
 
+	/**
+	 * Disclosure runs before `loadExtensionsCached`, so declined extensions never import their code.
+	 * With no handler, loading is unchanged. Declines are reported as skipped, never as load
+	 * errors, and remembered for the process so the final pass does not prompt again. Accepted
+	 * paths keep their original order, so disclosure never changes extension precedence.
+	 */
+	private async applyCapabilityPreflight(
+		paths: string[],
+		metadataByPath: Map<string, PathMetadata>,
+	): Promise<{
+		paths: string[];
+		errors: Array<{ path: string; error: string }>;
+		skipped: Array<{ path: string; summary: string }>;
+	}> {
+		if (!this.capabilityPreflight) return { paths, errors: [], skipped: [] };
+		const store = readCapabilityPreflightStore(this.agentDir);
+		const plan = planCapabilityPreflight(paths, metadataByPath, store.acknowledgements, { cwd: this.cwd });
+		try {
+			recordCapabilityInspection(this.agentDir, plan.considered);
+		} catch {
+			// Inspection history is best-effort. A full disk must not skip the disclosure decision.
+		}
+		const readyPaths = new Set(plan.ready);
+		const skipped: Array<{ path: string; summary: string }> = plan.skipped.map((item) => ({
+			path: item.path,
+			summary: item.summary,
+		}));
+		if (plan.pending.length === 0) {
+			return { paths: paths.filter((entryPath) => readyPaths.has(entryPath)), errors: [], skipped };
+		}
+		let decisions: CapabilityPreflightDecision[] = [];
+		try {
+			decisions = await this.capabilityPreflight(plan.pending);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return {
+				paths: paths.filter((entryPath) => readyPaths.has(entryPath)),
+				errors: plan.pending.map((item) => ({
+					path: item.path,
+					error: `Capability preflight failed before loading extension code: ${message}`,
+				})),
+				skipped,
+			};
+		}
+		const accepted = new Set(decisions.filter((decision) => decision.accept).map((decision) => decision.path));
+		const acceptedItems = plan.pending.filter((item) => accepted.has(item.path));
+		for (const item of plan.pending) {
+			if (!accepted.has(item.path)) {
+				rememberCapabilityDecline(getResourcePathKey(resolvePath(item.path)), item.fingerprint);
+				skipped.push({ path: item.path, summary: item.summary });
+			}
+		}
+		try {
+			if (acceptedItems.length > 0) acknowledgeCapabilities(this.agentDir, acceptedItems);
+		} catch {
+			// Remembering the choice failed. The extension still loads for this process.
+		}
+		return {
+			paths: paths.filter((entryPath) => readyPaths.has(entryPath) || accepted.has(entryPath)),
+			errors: [],
+			skipped,
+		};
+	}
+
 	private resolveExtensionLoadPath(path: string): string {
 		return isSyntheticPath(path) ? path : resolvePath(path, this.cwd, { normalizeUnicodeSpaces: true });
 	}
@@ -770,11 +861,18 @@ export class DefaultResourceLoader implements ResourceLoader {
 	/** Load extension paths: files from disk and `builtin:<name>` paths from the built-in extensions. */
 	private async loadExtensionPaths(paths: string[], runtime?: ExtensionRuntime): Promise<LoadExtensionsResult> {
 		const isBuiltinPath = (path: string) => path.startsWith(BUILTIN_PATH_PREFIX);
-		const result = await loadExtensionsCached(
+		const gated = await this.applyCapabilityPreflight(
 			paths.filter((path) => !isBuiltinPath(path)),
-			this.cwd,
-			this.eventBus,
-			runtime,
+			this.resourceMetadataByPath,
+		);
+		const result = await loadExtensionsCached(gated.paths, this.cwd, this.eventBus, runtime);
+		result.errors.push(...gated.errors);
+		mergeExtensionWarnings(
+			result,
+			gated.skipped.map((skipped) => ({
+				path: skipped.path,
+				warning: `${CAPABILITY_SKIP_WARNING_PREFIX} ${skipped.summary} ${CAPABILITY_SKIP_RECOVERY_HINT}`,
+			})),
 		);
 		for (const path of paths.filter(isBuiltinPath)) {
 			const builtin = this.builtinExtensions.get(path.slice(BUILTIN_PATH_PREFIX.length));

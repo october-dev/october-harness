@@ -31,8 +31,9 @@ import {
 import { runAuthLogin } from "./cli/auth-login.ts";
 import { runAuthLogout } from "./cli/auth-logout.ts";
 import { createProcessLoginTerminal } from "./cli/auth-terminal.ts";
+import { createCapabilityPreflightHost } from "./cli/capability-preflight.ts";
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
-import { runDoctorCommand } from "./cli/doctor.ts";
+import { ReadOnlySettingsStorage, runDoctorCommand } from "./cli/doctor.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -77,6 +78,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { resolveShellRunner } from "./core/shell-runner.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { getBranchSelection } from "./core/virtual-models.ts";
 import { createBuiltInExtensions } from "./extensions/index.ts";
 import { loadMcpCommand } from "./extensions/mcp/cli.lazy.ts";
 import { OCTOBER_PROVIDER_ID } from "./extensions/october/auth.ts";
@@ -87,6 +89,7 @@ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, setThemeJsonValidator, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { validateThemeJson } from "./modes/interactive/theme/theme-schema.ts";
 import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import { cleanDisplayLine } from "./utils/ansi.ts";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
 
@@ -490,6 +493,15 @@ function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string,
 	}
 }
 
+function resolveSessionDirectory(parsed: Args, settings: SettingsManager): string | undefined {
+	const envSessionDir = process.env[ENV_SESSION_DIR];
+	return (
+		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
+		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
+		settings.getSessionDir()
+	);
+}
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -506,7 +518,7 @@ export async function createSessionManager(
 		const imported = await importPortableForCli(parsed.import, {
 			cwd,
 			sessionDir: sessionDir ?? getDefaultSessionDirPath(cwd),
-			model: parsed.importModel,
+			flags: parsed,
 			interactive: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY) === "interactive",
 			settingsManager,
 		});
@@ -837,11 +849,6 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	if (process.platform === "win32") {
-		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
-	}
-	cleanupManagedInstall();
-
 	let cwd: string;
 	try {
 		cwd = process.cwd();
@@ -854,6 +861,35 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		process.exit(1);
 	}
+	const parsed = parseArgs(args);
+	if (parsed.importReport !== undefined) {
+		if (parsed.diagnostics.some((d) => d.type === "error")) {
+			reportDiagnostics(parsed.diagnostics, "text");
+			process.exitCode = 1;
+			return;
+		}
+		if (!validateImportFlags(parsed)) {
+			process.exitCode = 1;
+			return;
+		}
+		// Writes nothing. Exit 1 when the import would be blocked, so scripts can gate on it.
+		try {
+			const settings = SettingsManager.fromStorage(new ReadOnlySettingsStorage(cwd, getAgentDir()));
+			const reportSessionDir = resolveSessionDirectory(parsed, settings) ?? getDefaultSessionDirPath(cwd);
+			const report = await inspectPortableFileForCli(parsed.importReport, cwd, reportSessionDir, parsed);
+			for (const line of formatPortableCompatibilityReport(report)) console.log(line);
+			process.exitCode = report.blocking ? 1 : 0;
+		} catch (error: unknown) {
+			console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+			process.exitCode = 1;
+		}
+		return;
+	}
+	if (process.platform === "win32") {
+		cleanupWindowsSelfUpdateQuarantine(getPackageDir());
+	}
+	cleanupManagedInstall();
+
 	const agentDir = getAgentDir();
 	const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const bootstrapExtensionFactories = [
@@ -892,7 +928,6 @@ export async function main(args: string[], options?: MainOptions) {
 		return;
 	}
 
-	const parsed = parseArgs(args);
 	if (parsed.diagnostics.length > 0) {
 		reportDiagnostics(parsed.diagnostics, parsed.mode === "json" ? "json" : "text");
 		if (parsed.diagnostics.some((d) => d.type === "error")) {
@@ -910,20 +945,6 @@ export async function main(args: string[], options?: MainOptions) {
 	// --export exits before the other session flag checks, so check its --import conflict first.
 	if (!validateImportFlags(parsed)) {
 		process.exitCode = 1;
-		return;
-	}
-
-	if (parsed.importReport !== undefined) {
-		// Writes nothing. Exit 1 when the import would be blocked, so scripts can gate on it.
-		try {
-			const reportSessionDir = parsed.sessionDir ? normalizePath(parsed.sessionDir) : getDefaultSessionDirPath(cwd);
-			const report = await inspectPortableFileForCli(parsed.importReport, cwd, reportSessionDir);
-			for (const line of formatPortableCompatibilityReport(report)) console.log(line);
-			process.exitCode = report.blocking ? 1 : 0;
-		} catch (error: unknown) {
-			console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
-			process.exitCode = 1;
-		}
 		return;
 	}
 
@@ -1008,11 +1029,7 @@ export async function main(args: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// sessionDir lookup during session selection.
-	const envSessionDir = process.env[ENV_SESSION_DIR];
-	const sessionDir =
-		(parsed.sessionDir ? normalizePath(parsed.sessionDir) : undefined) ??
-		(envSessionDir ? expandTildePath(envSessionDir) : undefined) ??
-		startupSettingsManager.getSessionDir();
+	const sessionDir = resolveSessionDirectory(parsed, startupSettingsManager);
 	let sessionManager: SessionManager;
 	try {
 		sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
@@ -1069,6 +1086,12 @@ export async function main(args: string[], options?: MainOptions) {
 			: undefined;
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
+	// Like project trust, capability disclosure never prompts for metadata commands. The host is
+	// shared by every runtime, and the interactive UI backs it once the TUI has started.
+	const capabilityPreflightHost = createCapabilityPreflightHost({
+		settingsManager: startupSettingsManager,
+		getMode: () => trustPromptMode,
+	});
 
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
 	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
@@ -1083,6 +1106,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager,
 		sessionStartEvent,
 		projectTrustContext,
+		model: importedModel,
 	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
@@ -1144,6 +1168,7 @@ export async function main(args: string[], options?: MainOptions) {
 				systemPrompt: parsed.systemPrompt,
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories,
+				capabilityPreflight: (items) => capabilityPreflightHost.disclose(items),
 			},
 		});
 		const { settingsManager, modelRuntime, resourceLoader } = services;
@@ -1153,11 +1178,12 @@ export async function main(args: string[], options?: MainOptions) {
 			...collectSettingsDiagnostics(settingsManager),
 			...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
 				type: "error" as const,
-				message: `Failed to load extension "${path}": ${error}`,
+				// Paths and load errors are extension-supplied: clean them at composition.
+				message: `Failed to load extension "${cleanDisplayLine(path)}": ${cleanDisplayLine(error)}`,
 			})),
 			...(resourceLoader.getExtensions().warnings ?? []).map(({ path, warning }) => ({
 				type: "warning" as const,
-				message: `Extension package "${path}": ${warning}`,
+				message: `Extension "${cleanDisplayLine(path)}": ${cleanDisplayLine(warning)}`,
 			})),
 		];
 
@@ -1186,14 +1212,24 @@ export async function main(args: string[], options?: MainOptions) {
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
 
+		const restoredImport =
+			isInitialRuntime && parsed.import
+				? getBranchSelection(sessionManager.getBranch(), (provider, id) => modelRuntime.getModel(provider, id))
+				: undefined;
+		const importSelection =
+			importedModel ?? (restoredImport && modelRuntime.getModel(restoredImport.provider, restoredImport.modelId));
+		const keyProvider = parsed.model
+			? sessionOptions.model?.provider
+			: (importSelection?.provider ?? sessionOptions.model?.provider);
+		if (importSelection) sessionOptions.model = importSelection;
 		if (parsed.apiKey) {
-			if (!sessionOptions.model) {
+			if (!keyProvider) {
 				diagnostics.push({
 					type: "error",
 					message: "--api-key requires a model to be specified via --model, --provider/--model, or --models",
 				});
 			} else {
-				await modelRuntime.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
+				await modelRuntime.setRuntimeApiKey(keyProvider, parsed.apiKey);
 			}
 		}
 
@@ -1324,6 +1360,7 @@ export async function main(args: string[], options?: MainOptions) {
 			shellRunnerNotice,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
+			capabilityPreflightHost,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

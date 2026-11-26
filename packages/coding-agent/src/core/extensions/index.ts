@@ -70,6 +70,8 @@ export type {
 	// Message and Entry Rendering
 	EntryRenderer,
 	EntryRenderOptions,
+	ExecBashHandler,
+	ExecBashOptions,
 	ExecOptions,
 	ExecResult,
 	ExecuteToolOptions,

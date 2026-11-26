@@ -193,7 +193,7 @@ The Docker shell runner keeps October on the host and runs each shell command in
 
 The first milestone isolates shell execution only:
 
-- Routed: the built-in `bash` tool, and `!`, `!!` and RPC `bash` commands that no extension handles.
+- Routed: the built-in `bash` tool, `!`, `!!` and RPC `bash` commands that no extension handles, and extension `pi.execBash()` calls.
 - Not routed: `read`, `write`, `edit`, `grep`, `find`, `ls`, the October process itself, `pi.exec`, tools supplied through the SDK `baseToolsOverride`, and extension tools.
 - Extension-owned: a `user_bash` extension that returns its own operations or result decides where those commands run. Such routes are outside this policy.
 - The `powershell` tool is disabled while any runner other than `host` is configured.

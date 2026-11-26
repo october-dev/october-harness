@@ -1,12 +1,6 @@
-/**
- * CLI import of portable sessions. Runs before any runtime exists, so the destination is checked against the
- * built-in catalog and models.json only. A model that is not there is `unknown`, since an extension may provide
- * it, and an unknown model blocks the import. Tools and renderers are always unknown here. SDK and RPC imports
- * check against the loaded runtime instead.
- */
-
-import { ReadOnlyAuthStorage } from "../core/auth-storage.ts";
-import { ModelRuntime } from "../core/model-runtime.ts";
+import { getAgentDir } from "../config.ts";
+import { resolveCliModel } from "../core/model-resolver.ts";
+import type { ModelRuntime } from "../core/model-runtime.ts";
 import { SessionManager } from "../core/session-manager.ts";
 import {
 	commitPortableImport,
@@ -20,8 +14,11 @@ import {
 	SessionImportSelectionRequiredError,
 } from "../core/session-portable.ts";
 import type { SettingsManager } from "../core/settings-manager.ts";
+import { allToolNames } from "../core/tools/index.ts";
 import { isVirtualModel } from "../core/virtual-models.ts";
-import { showStartupSelector } from "./startup-ui.ts";
+import type { Args } from "./args.ts";
+import { createInspectionModelRuntime } from "./doctor.ts";
+import { showStartupModelSelector } from "./startup-ui.ts";
 
 /** Parse `provider/id`. Splits at the first slash, since model ids may contain slashes. */
 export function parseModelChoice(value: string): PortableModelChoice {
@@ -32,14 +29,31 @@ export function parseModelChoice(value: string): PortableModelChoice {
 	return { provider: value.slice(0, separator), modelId: value.slice(separator + 1) };
 }
 
-async function createCliCapabilities(): Promise<{ modelRuntime: ModelRuntime; capabilities: PortableCapabilities }> {
-	// No network, no refresh, and read-only credentials: the default store creates auth.json on first read,
-	// and inspection must not write anything.
-	const modelRuntime = await ModelRuntime.create({
-		credentials: new ReadOnlyAuthStorage(),
-		allowModelNetwork: false,
-		refreshOnCreate: false,
-	});
+type ModelFlags = Pick<Args, "model" | "provider" | "apiKey" | "importModel">;
+
+async function createCliCapabilities(flags: ModelFlags) {
+	const modelRuntime = await createInspectionModelRuntime(getAgentDir());
+	const cliModel = flags.model
+		? resolveCliModel({
+				cliProvider: flags.provider,
+				cliModel: flags.model,
+				inlineApiKey: Boolean(flags.apiKey),
+				modelRuntime,
+			})
+		: undefined;
+	if (cliModel?.error) throw new SessionImportError(cliModel.error);
+	const selected = cliModel?.model;
+	const replacement = flags.importModel
+		? parseModelChoice(flags.importModel)
+		: selected
+			? { provider: selected.provider, modelId: selected.id }
+			: undefined;
+	if (flags.apiKey) {
+		const provider = selected?.provider ?? replacement?.provider;
+		if (!provider) throw new SessionImportError("--api-key requires --model or --import-model");
+		await modelRuntime.setRuntimeApiKey(provider, flags.apiKey);
+	}
+	const knownTools: ReadonlySet<string> = allToolNames;
 	const capabilities: PortableCapabilities = {
 		model: (provider, modelId) => {
 			if (!modelRuntime.getModel(provider, modelId)) return "unknown";
@@ -49,10 +63,10 @@ async function createCliCapabilities(): Promise<{ modelRuntime: ModelRuntime; ca
 			const model = modelRuntime.getModel(provider, modelId);
 			return model !== undefined && isVirtualModel(model);
 		},
-		tool: () => "unknown",
+		tool: (name) => (knownTools.has(name) ? "available" : "unknown"),
 		renderer: () => "unknown",
 	};
-	return { modelRuntime, capabilities };
+	return { modelRuntime, capabilities, replacement };
 }
 
 /** Compare a portable file with the destination. Reads the file and the model catalog only. */
@@ -60,17 +74,17 @@ export async function inspectPortableFileForCli(
 	inputPath: string,
 	cwd: string,
 	sessionDir: string,
+	flags: ModelFlags,
 ): Promise<PortableCompatibilityReport> {
 	const prepared = preparePortableImport(inputPath, { cwd, sessionDir });
-	const { capabilities } = await createCliCapabilities();
-	return inspectPortableImport(prepared, capabilities);
+	const { capabilities, replacement } = await createCliCapabilities(flags);
+	return inspectPortableImport(prepared, capabilities, replacement);
 }
 
 export interface PortableImportForCliOptions {
 	cwd: string;
 	sessionDir: string;
-	/** Replacement chosen with --import-model, as provider/id. */
-	model?: string;
+	flags: ModelFlags;
 	/** True when a terminal can show the model picker. Otherwise a blocked import fails. */
 	interactive: boolean;
 	settingsManager: SettingsManager;
@@ -81,13 +95,8 @@ async function chooseReplacementInTerminal(
 	modelRuntime: ModelRuntime,
 	settingsManager: SettingsManager,
 ): Promise<PortableModelChoice | undefined> {
-	const options = modelRuntime.getAvailableSnapshot().map((model) => ({
-		label: `${model.provider}/${model.id}`,
-		value: { provider: model.provider, modelId: model.id },
-	}));
-	if (options.length === 0) throw new SessionImportSelectionRequiredError(report);
-	const title = [...formatPortableCompatibilityReport(report), "Choose a replacement model"].join("\n");
-	return showStartupSelector(settingsManager, title, options);
+	if (modelRuntime.getAvailableSnapshot().length === 0) throw new SessionImportSelectionRequiredError(report);
+	return showStartupModelSelector(settingsManager, formatPortableCompatibilityReport(report), modelRuntime);
 }
 
 /**
@@ -103,10 +112,10 @@ export async function importPortableForCli(
 	options: PortableImportForCliOptions,
 ): Promise<SessionManager | undefined> {
 	const prepared = preparePortableImport(inputPath, { cwd: options.cwd, sessionDir: options.sessionDir });
-	const { modelRuntime, capabilities } = await createCliCapabilities();
+	const { modelRuntime, capabilities, replacement: explicit } = await createCliCapabilities(options.flags);
 	const report = inspectPortableImport(prepared, capabilities);
 
-	let replacement = options.model !== undefined ? parseModelChoice(options.model) : undefined;
+	let replacement = explicit;
 	if (!replacement && report.blocking) {
 		if (!options.interactive) throw new SessionImportSelectionRequiredError(report);
 		replacement = await chooseReplacementInTerminal(report, modelRuntime, options.settingsManager);

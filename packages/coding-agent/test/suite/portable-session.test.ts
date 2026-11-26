@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Message, ToolResultMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../../src/cli/args.ts";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -164,7 +164,7 @@ describe("AgentSessionRuntime portable import", () => {
 	async function createRuntimeForTest(extensionFactory: ExtensionFactory = () => {}, options = { persisted: true }) {
 		const tempDir = createTempDir("pi-portable-runtime-");
 		const sessionDir = join(tempDir, "sessions");
-		const faux = registerFauxProvider();
+		const faux = registerFauxProvider({ models: [{ id: "factory-default" }, { id: "import-selection" }] });
 		faux.setResponses([fauxAssistantMessage("one")]);
 		cleanups.push(() => faux.unregister());
 
@@ -223,7 +223,7 @@ describe("AgentSessionRuntime portable import", () => {
 		const portableModel: PortableFixtureModel = {
 			api: faux.api,
 			provider: faux.getModel().provider,
-			model: faux.getModel().id,
+			model: "import-selection",
 		};
 		return { runtime, tempDir, sessionDir, portableModel };
 	}
@@ -384,6 +384,35 @@ describe("AgentSessionRuntime portable import", () => {
 				modelId: portableModel.model,
 			}),
 		);
+	});
+
+	// Regression coverage for #64.
+	it("keeps the old session and writes nothing when credentials disappear after inspection", async () => {
+		const { runtime, sessionDir, portableModel } = await createRuntimeForTest();
+		const current = runtime.session;
+		const before = listFiles(sessionDir);
+		const portable = writePortableFixture(portableModel);
+		expect(runtime.inspectPortableImport(portable.path).blocking).toBe(false);
+		const check = vi.spyOn(runtime.services.modelRuntime, "checkAuth").mockResolvedValueOnce(undefined);
+		try {
+			await expect(runtime.importPortable(portable.path)).rejects.toThrow("No credentials");
+			expect(runtime.session).toBe(current);
+			expect(listFiles(sessionDir)).toEqual(before);
+		} finally {
+			check.mockRestore();
+		}
+	});
+
+	// Regression coverage for #64.
+	it("persists a replacement across reopening an import containing only model metadata", async () => {
+		const { runtime, sessionDir, portableModel } = await createRuntimeForTest();
+		const source = SessionManager.inMemory(createTempDir("pi-portable-metadata-"));
+		source.appendModelChange("retired-provider", "retired-model");
+		const path = writePortableFile(source);
+		const model = { provider: portableModel.provider, modelId: portableModel.model };
+		await runtime.importPortable(path, { chooseModel: async () => model });
+		const reopened = SessionManager.open(runtime.session.sessionFile!, sessionDir);
+		expect(reopened.buildSessionContext().model).toEqual(model);
 	});
 
 	it("rejects a replacement that is not registered here, before writing", async () => {
