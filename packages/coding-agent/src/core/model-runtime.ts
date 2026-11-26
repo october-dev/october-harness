@@ -148,6 +148,20 @@ export interface ModelRuntimeAuthOverrides extends AuthOperationOptions {
 	minOAuthValidityMs?: number;
 }
 
+/**
+ * Auth values used for one provider request. `resolved` is sent before header transforms and
+ * `final` after them, so a transform that moves a credential is still observed.
+ */
+export interface RequestAuthNotification {
+	phase: "resolved" | "final";
+	provider: string;
+	apiKey?: string;
+	headers?: ProviderHeaders;
+	env?: Record<string, string>;
+}
+
+export type RequestAuthListener = (notification: RequestAuthNotification) => void;
+
 export type CredentialSynchronizationOperation = "login" | "logout" | "setRuntimeApiKey" | "removeRuntimeApiKey";
 
 /** Credentials changed successfully, but the local model/auth snapshot could not be synchronized. */
@@ -212,6 +226,7 @@ export class ModelRuntime implements Models {
 	private readonly providerAvailabilitySeq = new Map<string, number>();
 	private availabilityError: string | undefined;
 	private readonly credentialOperations = new Map<string, Promise<unknown>>();
+	private readonly requestAuthListeners = new Set<RequestAuthListener>();
 
 	private constructor(
 		credentials: RuntimeCredentials,
@@ -693,6 +708,32 @@ export class ModelRuntime implements Models {
 		return check ? { configured: true, source: "environment", label: check.source } : { configured: false };
 	}
 
+	/** @internal Credential literals already loaded by the persistent store, for trace redaction. */
+	collectSecretValues(): string[] {
+		const store = this.credentials.getPersistentStore();
+		return store instanceof DefaultAuthStorage ? store.getSecretLiterals() : [];
+	}
+
+	/** Observe the auth values of each prepared provider request. Returns an unsubscribe function. */
+	onRequestAuth(listener: RequestAuthListener): () => void {
+		this.requestAuthListeners.add(listener);
+		return () => this.requestAuthListeners.delete(listener);
+	}
+
+	private notifyRequestAuth(notification: RequestAuthNotification): void {
+		for (const listener of this.requestAuthListeners) {
+			try {
+				listener({
+					...notification,
+					headers: notification.headers ? { ...notification.headers } : undefined,
+					env: notification.env ? { ...notification.env } : undefined,
+				});
+			} catch {
+				// Observers must not change request preparation.
+			}
+		}
+	}
+
 	private async prepareRequest<
 		TModel extends AnyModel,
 		TOptions extends ProviderRequestOptions<TModel> & ModelsRequestTransforms,
@@ -724,6 +765,7 @@ export class ModelRuntime implements Models {
 
 		const { transformHeaders, ...rawProviderOptions } = options ?? {};
 		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions<TModel>;
+		const apiKey = providerOptions.apiKey ?? resolution.auth.apiKey;
 		const requestModel: TModel = resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model;
 		const sessionId =
 			"sessionId" in providerOptions && typeof providerOptions.sessionId === "string"
@@ -733,17 +775,23 @@ export class ModelRuntime implements Models {
 			mergeHeaders(getOpenCodeSessionHeaders(requestModel, sessionId), resolution.auth.headers),
 			providerOptions.headers,
 		);
-		if (transformHeaders) headers = await transformHeaders(headers ?? {});
 		const env =
 			resolution.env || providerOptions.env
 				? { ...(resolution.env ?? {}), ...(providerOptions.env ?? {}) }
 				: undefined;
+		if (this.requestAuthListeners.size > 0) {
+			this.notifyRequestAuth({ phase: "resolved", provider: model.provider, apiKey, headers, env });
+		}
+		if (transformHeaders) headers = await transformHeaders(headers ?? {});
+		if (this.requestAuthListeners.size > 0) {
+			this.notifyRequestAuth({ phase: "final", provider: model.provider, apiKey, headers, env });
+		}
 		return {
 			provider,
 			model: requestModel,
 			options: {
 				...providerOptions,
-				apiKey: providerOptions.apiKey ?? resolution.auth.apiKey,
+				apiKey,
 				headers,
 				env,
 			} as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions<TModel>,

@@ -95,6 +95,7 @@ import {
 	type ExecuteToolOptions,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
+	type ExtensionHandlerObserver,
 	type ExtensionMode,
 	ExtensionRunner,
 	type ExtensionUIContext,
@@ -162,6 +163,7 @@ import {
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import { createAllToolDefinitions } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
+import { traceAuxiliaryStreamFn, unwrapTracedStreamFn } from "./trace/recorder.ts";
 import { addUsageToTotals, combineUsage, createUsageTotals } from "./usage-totals.ts";
 import {
 	findLatestResponse,
@@ -527,6 +529,7 @@ export class AgentSession {
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
+	private _extensionHandlerObserver?: ExtensionHandlerObserver;
 
 	private _modelRuntime: ModelRuntime;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
@@ -651,10 +654,12 @@ export class AgentSession {
 					signal,
 				})
 			: { model: selectedModel, thinkingLevel: this.thinkingLevel };
-		if (this.agent.streamFunction === streamSimple) {
+		// Trace capture wraps the session's stream function; identify the function it wraps.
+		const streamFunction = unwrapTracedStreamFn(this.agent.streamFunction);
+		if (streamFunction === streamSimple) {
 			return { ...(await this._getRequiredRequestAuth(model, signal)), thinkingLevel };
 		}
-		if (runtimeStreamFunctions.get(this.agent.streamFunction) === this._modelRuntime) {
+		if (runtimeStreamFunctions.get(streamFunction) === this._modelRuntime) {
 			return { model, thinkingLevel };
 		}
 
@@ -2950,7 +2955,7 @@ export class AgentSession {
 			customInstructions,
 			signal,
 			request.thinkingLevel,
-			this.agent.streamFunction,
+			traceAuxiliaryStreamFn(this.agent.streamFunction),
 			request.env,
 			this.settingsManager.getRetrySettings(),
 			this._summarizationRetryCallbacks({ source: "compaction", reason }),
@@ -3871,6 +3876,7 @@ export class AgentSession {
 		if (this._extensionRunnerRef) {
 			this._extensionRunnerRef.current = this._extensionRunner;
 		}
+		this._extensionRunner.setHandlerObserver(this._extensionHandlerObserver);
 		this._bindExtensionCore(this._extensionRunner);
 		this._applyExtensionBindings(this._extensionRunner);
 
@@ -4322,7 +4328,7 @@ export class AgentSession {
 					customInstructions,
 					replaceInstructions,
 					reserveTokens: branchSummarySettings.reserveTokens,
-					streamFn: this.agent.streamFunction,
+					streamFn: traceAuxiliaryStreamFn(this.agent.streamFunction),
 					retry: this.settingsManager.getRetrySettings(),
 					callbacks: this._summarizationRetryCallbacks({ source: "branchSummary" }),
 				});
@@ -4593,7 +4599,7 @@ export class AgentSession {
 			messages: this.messages,
 			hint: options.hint,
 			signal: options.signal,
-			streamFn: this.agent.streamFunction,
+			streamFn: traceAuxiliaryStreamFn(this.agent.streamFunction),
 			retry: this.settingsManager.getRetrySettings(),
 			sessionId: this.sessionId,
 		});
@@ -4644,6 +4650,12 @@ export class AgentSession {
 		context.sendMessage = (message, options) => this.sendCustomMessage(message, options);
 		context.sendUserMessage = (content, options) => this.sendUserMessage(content, options);
 		return context;
+	}
+
+	/** Observe extension handler invocations. The observer is kept across reload(). */
+	setExtensionHandlerObserver(observer: ExtensionHandlerObserver | undefined): void {
+		this._extensionHandlerObserver = observer;
+		this._extensionRunner.setHandlerObserver(observer);
 	}
 
 	/**

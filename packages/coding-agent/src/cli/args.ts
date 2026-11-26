@@ -40,6 +40,8 @@ export interface Args {
 	print?: boolean;
 	export?: string;
 	import?: string;
+	trace?: string;
+	replayTrace?: string;
 	noSkills?: boolean;
 	skills?: string[];
 	promptTemplates?: string[];
@@ -196,6 +198,17 @@ export function parseArgs(args: string[]): Args {
 				result.diagnostics.push({ type: "error", message: "--import requires a portable session file path" });
 			} else {
 				result.import = inputPath;
+				i++;
+			}
+		} else if (arg === "--trace" || arg === "--replay-trace") {
+			const tracePath = args[i + 1];
+			if (tracePath === undefined || tracePath.startsWith("-")) {
+				result.diagnostics.push({ type: "error", message: `${arg} requires a trace file path` });
+			} else if (arg === "--trace") {
+				result.trace = tracePath;
+				i++;
+			} else {
+				result.replayTrace = tracePath;
 				i++;
 			}
 		} else if ((arg === "--extension" || arg === "-e") && i + 1 < args.length) {
@@ -355,6 +368,8 @@ ${chalk.bold("Options:")}
   --no-context-files, -nc        Disable AGENTS.md and CLAUDE.md discovery and loading
   --export <file> [out]          Export session file to HTML, or to a portable session when out ends in .jsonl, and exit
   --import <file>                Import a portable session file as a new session in this project
+  --trace <file>                 Record a redacted local trace of agent runs to a new file
+  --replay-trace <file>          Validate a trace, print its timeline, replay it offline, and exit
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --tui-mode <mode>              TUI mode: fullscreen (default) or regular
