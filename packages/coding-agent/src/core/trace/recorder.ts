@@ -20,8 +20,8 @@ import type {
 import {
 	type Api,
 	type AssistantMessage,
-	type AssistantMessageEvent,
-	AssistantMessageEventStream,
+	type AssistantMessageEventStream,
+	createAssistantMessageEventStream,
 	type Model,
 	uuidv7,
 } from "@earendil-works/pi-ai";
@@ -152,46 +152,46 @@ function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
 	return typeof (value as PromiseLike<T> | undefined)?.then === "function";
 }
 
+interface ForwardedEventStream {
+	stream: AssistantMessageEventStream;
+	succeed(message: AssistantMessage): void;
+	fail(error: unknown): void;
+}
+
 /**
  * Forwards a provider stream to its consumer. An iteration or `result()` failure of the source
  * reaches the consumer as it would without tracing, instead of leaving this stream unsettled.
  */
-class ForwardedEventStream extends AssistantMessageEventStream {
-	private failure: { error: unknown } | undefined;
-	private readonly settled: Promise<AssistantMessage>;
-	private resolveSettled: (message: AssistantMessage) => void = () => {};
-	private rejectSettled: (error: unknown) => void = () => {};
-
-	constructor() {
-		super();
-		this.settled = new Promise<AssistantMessage>((resolve, reject) => {
-			this.resolveSettled = resolve;
-			this.rejectSettled = reject;
-		});
-		// A consumer that only iterates receives the failure there; avoid an unhandled rejection.
-		this.settled.catch(() => {});
-	}
-
-	succeed(message: AssistantMessage): void {
-		this.end(message);
-		this.resolveSettled(message);
-	}
-
-	fail(error: unknown): void {
-		this.failure = { error };
-		this.end();
-		this.rejectSettled(error);
-	}
-
-	override result(): Promise<AssistantMessage> {
-		return this.settled;
-	}
-
-	override async *[Symbol.asyncIterator](): AsyncIterator<AssistantMessageEvent> {
-		const events = super[Symbol.asyncIterator]();
-		for (let next = await events.next(); !next.done; next = await events.next()) yield next.value;
-		if (this.failure) throw this.failure.error;
-	}
+function forwardedEventStream(): ForwardedEventStream {
+	const stream = createAssistantMessageEventStream();
+	let failure: { error: unknown } | undefined;
+	let resolveSettled: (message: AssistantMessage) => void = () => {};
+	let rejectSettled: (error: unknown) => void = () => {};
+	const settled = new Promise<AssistantMessage>((resolve, reject) => {
+		resolveSettled = resolve;
+		rejectSettled = reject;
+	});
+	// A consumer that only iterates receives the failure there; avoid an unhandled rejection.
+	settled.catch(() => {});
+	const events = stream[Symbol.asyncIterator].bind(stream);
+	stream.result = () => settled;
+	stream[Symbol.asyncIterator] = async function* () {
+		const iterator = events();
+		for (let next = await iterator.next(); !next.done; next = await iterator.next()) yield next.value;
+		if (failure) throw failure.error;
+	};
+	return {
+		stream,
+		succeed(message) {
+			stream.end(message);
+			resolveSettled(message);
+		},
+		fail(error) {
+			failure = { error };
+			stream.end();
+			rejectSettled(error);
+		},
+	};
 }
 
 /** Records one or more sessions into a local trace file. Capture never changes the agent result. */
@@ -635,7 +635,7 @@ export class TraceRecorder {
 		model: Model<Api>,
 		source: AssistantMessageEventStream,
 	): AssistantMessageEventStream {
-		const output = new ForwardedEventStream();
+		const output = forwardedEventStream();
 		const encoder = new AssistantMessageFrameEncoder();
 		let settled = false;
 		// Content the stream produced so far; a later failure is recorded with it, so the terminal
@@ -659,7 +659,7 @@ export class TraceRecorder {
 							);
 						}
 					});
-					output.push(event);
+					output.stream.push(event);
 				}
 				const message = await source.result();
 				if (!settled) this.observe(() => this.finishRequest(requestId, message));
@@ -675,7 +675,7 @@ export class TraceRecorder {
 				output.fail(error);
 			}
 		})();
-		return output;
+		return output.stream;
 	}
 
 	private finishRequest(requestId: string, message: AssistantMessage, setupError?: string): void {
