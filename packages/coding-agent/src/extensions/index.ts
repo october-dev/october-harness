@@ -5,6 +5,7 @@ import llamaExtension from "./llama/index.ts";
 import { createMcpExtension } from "./mcp/index.ts";
 import settingsMcpExtension from "./mcp/settings-extension.ts";
 import octoberExtension from "./october/index.ts";
+import penharnessExtension from "./penharness/index.ts";
 import toolSearchExtension from "./tool-search/index.ts";
 
 export function createBuiltInExtensions(
@@ -33,5 +34,6 @@ export function createBuiltInExtensions(
 			builtin: true,
 		},
 		{ name: "october", factory: octoberExtension, hidden: true },
+		{ name: "penharness", factory: penharnessExtension },
 	];
 }
