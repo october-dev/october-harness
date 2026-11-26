@@ -1,6 +1,6 @@
-import { type AssistantMessageFrame, reduceAssistantMessageFrames } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import type { TraceFrame, TraceRecord } from "../src/core/trace/format.ts";
+import { type AssistantMessageFrame, reduceAssistantMessageFrames } from "../src/core/trace/frames.ts";
 import { OMITTED, REDACTED, TraceRedactor } from "../src/core/trace/redact.ts";
 
 // Regression: october-dev/october-harness#9

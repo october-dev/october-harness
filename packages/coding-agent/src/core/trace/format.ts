@@ -8,9 +8,9 @@
 
 import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
-import { type AssistantMessageFrame, reduceAssistantMessageFrames } from "@earendil-works/pi-ai";
 import { type TSchema, Type } from "typebox";
 import { Check, Errors } from "typebox/value";
+import { type AssistantMessageFrame, reduceAssistantMessageFrames } from "./frames.ts";
 
 export const TRACE_FORMAT = "pi-trace";
 export const TRACE_FORMAT_VERSION = 1;
@@ -188,6 +188,7 @@ const ToolCallBlock = Obj({
 	id: Str,
 	name: Str,
 	arguments: Type.Record(Str, Type.Unknown()),
+	argumentsError: Opt(Str),
 	thoughtSignature: Opt(Str),
 	namespace: Opt(Str),
 });
@@ -261,6 +262,7 @@ const Frame = Type.Union([
 		id: Str,
 		name: Str,
 		arguments: Type.Record(Str, Type.Unknown()),
+		argumentsError: Opt(Str),
 		thoughtSignature: Opt(Str),
 		namespace: Opt(Str),
 	}),

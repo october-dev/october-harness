@@ -21,9 +21,7 @@ import {
 	type Api,
 	type AssistantMessage,
 	type AssistantMessageEvent,
-	type AssistantMessageEventStream,
-	AssistantMessageFrameEncoder,
-	EventStream,
+	AssistantMessageEventStream,
 	type Model,
 	uuidv7,
 } from "@earendil-works/pi-ai";
@@ -43,6 +41,7 @@ import {
 	type TraceToolDefinition,
 	toolKey,
 } from "./format.ts";
+import { AssistantMessageFrameEncoder } from "./frames.ts";
 import { TraceRedactor } from "./redact.ts";
 
 const DEFAULT_MAX_PENDING_BYTES = 64 * 1024 * 1024;
@@ -157,17 +156,14 @@ function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
  * Forwards a provider stream to its consumer. An iteration or `result()` failure of the source
  * reaches the consumer as it would without tracing, instead of leaving this stream unsettled.
  */
-class ForwardedEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
+class ForwardedEventStream extends AssistantMessageEventStream {
 	private failure: { error: unknown } | undefined;
 	private readonly settled: Promise<AssistantMessage>;
 	private resolveSettled: (message: AssistantMessage) => void = () => {};
 	private rejectSettled: (error: unknown) => void = () => {};
 
 	constructor() {
-		super(
-			(event) => event.type === "done" || event.type === "error",
-			(event) => (event.type === "done" ? event.message : (event as { error: AssistantMessage }).error),
-		);
+		super();
 		this.settled = new Promise<AssistantMessage>((resolve, reject) => {
 			this.resolveSettled = resolve;
 			this.rejectSettled = reject;

@@ -4,12 +4,10 @@ import { join } from "node:path";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	type AssistantMessage,
-	type AssistantMessageFrame,
 	createAssistantMessageEventStream,
 	fauxAssistantMessage,
 	fauxToolCall,
 	normalizeContext,
-	reduceAssistantMessageFrames,
 	streamSimple,
 } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
@@ -18,6 +16,7 @@ import { ENV_AGENT_DIR } from "../../src/config.ts";
 import type { ExtensionAPI } from "../../src/core/extensions/index.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { parseTrace, type Trace, type TraceRecord, type TraceRecordOf } from "../../src/core/trace/format.ts";
+import { type AssistantMessageFrame, reduceAssistantMessageFrames } from "../../src/core/trace/frames.ts";
 import {
 	TraceRecorder,
 	type TraceRecorderOptions,
