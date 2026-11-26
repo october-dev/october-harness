@@ -16,8 +16,10 @@ import {
 	inflateAsync,
 	type Limits,
 	type Link,
+	type LinkCloseReason,
 	type Message,
 	openPart,
+	originOf,
 	originPart,
 	type Part,
 } from "../link/internal.ts";
@@ -39,10 +41,9 @@ type HostLinkOptions = {
 	readonly trusted: boolean;
 	readonly codec: Codec;
 	readonly limits: Limits;
+	/** A route's `opened` (`RouteOptions.resolve`): the peer's incarnation once its `hello` arrived. */
+	readonly opened?: (incarnation: string) => void;
 };
-
-/** How many concurrent calls a host accepts on each of its links, announced in `hello`. */
-const CALLS = 256;
 
 /**
  * A link of a host, both directions over one channel. Closing it, from either end, ends both sides: the provider sides
@@ -66,8 +67,14 @@ export class HostLink implements ChannelHandler {
 	 */
 	readonly #providers = new Map<number, ProviderSide>();
 	readonly #channel: Channel;
+	readonly #opened: ((incarnation: string) => void) | undefined;
 	/** Aborted when the link closes: stops its asynchronous inflates at once. */
 	readonly #closing = new AbortController();
+	/**
+	 * How many concurrent calls of one origin this side accepts, announced in `hello`: none on a link it was given as
+	 * trusted, else the host's `callWindow` (decision "Call windows only for untrusted links").
+	 */
+	readonly #calls: number | undefined;
 
 	constructor(host: AnyHost, link: Link, options: HostLinkOptions, context: Context) {
 		this.host = host;
@@ -75,11 +82,14 @@ export class HostLink implements ChannelHandler {
 		this.principal = options.principal;
 		this.trusted = options.trusted;
 		this.limits = options.limits;
+		this.#opened = options.opened;
 		this.context = context;
 		this.consumer = new ConsumerSide(this);
 		const { codec, trusted } = options;
+		const calls = trusted ? undefined : host.callWindow;
+		this.#calls = calls;
 		const report = (error: unknown): void => host.report({ kind: "protocol_error", error });
-		const channel = { codec, incarnation: host.incarnation, calls: CALLS, trusted, report, metrics: host.metrics };
+		const channel = { codec, incarnation: host.incarnation, calls, trusted, report, metrics: host.metrics };
 		this.#channel = new Channel(link, this, channel, context);
 		host.metrics.upDownCounter("chord.links.open").add(1);
 		// Last: a link closed already calls `closed` at once.
@@ -109,12 +119,19 @@ export class HostLink implements ChannelHandler {
 		this.#channel.close();
 	}
 
+	/** Runs `then` once everything the peer sent before it saw a `ping` sent now has arrived (see `Channel.fence`). */
+	fence(then: () => void): () => void {
+		return this.#channel.fence(then);
+	}
+
 	/** The heartbeat (see `Channel.tick`). */
 	tick(now: number, paused: number, ping: number, close: number): void {
 		this.#channel.tick(now, paused, ping, close);
 	}
 
 	opened(): void {
+		// First: whoever asked knows the peer before anything else it sent is handled, and before this host sends.
+		this.#opened?.(this.#channel.peer);
 		this.consumer.opened(this.#channel.peerCalls);
 		this.host.linkOpened(this);
 	}
@@ -162,7 +179,7 @@ export class HostLink implements ChannelHandler {
 	 */
 	message(message: Message): void | Promise<void> {
 		// A child (a tab, a TUI) relays nothing: its origins would each get their own call window and record.
-		if (this.role === "child" && "origin" in message && message.origin !== undefined) {
+		if (this.role === "child" && originOf(message) !== undefined) {
 			throw new Error(`${message.kind}: an origin on a child link`);
 		}
 		switch (message.kind) {
@@ -187,6 +204,7 @@ export class HostLink implements ChannelHandler {
 			case "result":
 			case "error":
 			case "gone":
+			case "event":
 				return this.consumer.message(message);
 			case "revoke":
 				// Only the parent revokes; a child or a route cannot (race 6).
@@ -211,13 +229,17 @@ export class HostLink implements ChannelHandler {
 		for (const provider of this.#providers.values()) provider.revokeUnbound(revoked, error);
 	}
 
-	closed(): void {
-		this.host.metrics.upDownCounter("chord.links.open").add(-1);
+	closed(reason: LinkCloseReason): void {
+		const { metrics } = this.host;
+		metrics.upDownCounter("chord.links.open").add(-1);
+		metrics.counter("chord.links.closed").add(1, { reason });
 		this.#closing.abort();
 		for (const provider of this.#providers.values()) provider.closed();
 		this.#providers.clear();
 		this.consumer.closed();
 		this.host.unlink(this);
+		// Often a stalled peer: holders here wait for another link, which nothing else would tell (slice 15 §4).
+		if (reason === "heartbeat") this.host.report({ kind: "link_closed", reason, role: this.role });
 	}
 
 	/** A `hold` goes to its origin's provider side, made for the origin's first. */
@@ -225,7 +247,7 @@ export class HostLink implements ChannelHandler {
 		const origin = message.origin ?? 0;
 		let provider = this.#providers.get(origin);
 		if (provider === undefined) {
-			provider = new ProviderSide(this, origin, CALLS);
+			provider = new ProviderSide(this, origin, this.#calls);
 			this.#providers.set(origin, provider);
 		}
 		provider.message(message);

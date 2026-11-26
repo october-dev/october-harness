@@ -10,7 +10,7 @@
 // - rename and pin (owner). Selecting a subagent opens its conversation: the (session, conversation) identity.
 // `+ New session` asks for a working directory, Tab choosing the environment; `/new [env:]path` creates one directly;
 // `/cd [env:]path` relocates the viewed session (the web's Relocate); `/name`, `/session` live here and in the status
-// plugin. With projects (`projects.json`, owner) and an empty search, the list is grouped: each project's row (its
+// plugin. With projects (the projects plugin, owner) and an empty search, the list is grouped: each project's row (its
 // places probed in the background; Enter creates a session in the project at the first reachable place, or the one
 // picked with left/right) with its sessions below it, then "Other" ("+ New session" and the sessions of no project).
 // The grouped list shows every session; Tab's scope (current folder / all) applies to the flat lists. `/move` moves the
@@ -24,8 +24,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import type { Held, HeldIn } from "@p2/app/v1";
-import { BACKGROUND_CONTEXT, contribute, defineFacet, followRegistry, liveIn } from "@p2/app/v1";
+import { BACKGROUND_CONTEXT, contribute, defineFacet, followRegistry, live, liveWith, type Ref } from "@p2/app/v1";
 import type { TuiContext } from "@p2/app/v1/tui";
 import {
 	confirm,
@@ -48,7 +47,7 @@ import {
 import { type Project, type ProjectPlace, Projects, placeLabel } from "../projects/contract.ts";
 import { SessionReads } from "../search/contract.ts";
 import { SessionStatus, type Status } from "../status/contract.ts";
-import { MAX_TITLE, type Operation, type Session, Sessions } from "./contract.ts";
+import { MAX_TITLE, type Operation, SESSIONS_OWNER, type Session, Sessions, type SessionsOwner } from "./contract.ts";
 import {
 	completeLocation,
 	envNames,
@@ -124,7 +123,7 @@ export class SessionsSurface implements TuiSurface {
 	/** Each session's latest root answer and how far the owner read it (`SessionReads`, owner only). */
 	private answers: Readonly<Record<string, number>> = {};
 	private reads: Readonly<Record<string, number>> = {};
-	private marks: Held<typeof SessionReads> | undefined;
+	private marks: Ref<typeof SessionReads> | undefined;
 	/** The last `markRead` sent (`session:through`): runtime changes come often, the call goes once per answer. */
 	private marked = "";
 	private hits: SessionHit[] = [];
@@ -147,14 +146,13 @@ export class SessionsSurface implements TuiSurface {
 	private sort: SortMode = "threaded";
 	private selectedIndex = 0;
 	private visible: Row[] = [];
-	private service: Held<typeof Sessions>;
-	/** The owner's projects (`projects.json`), why its last read failed, and this device's name in their rows. */
+	private service: Ref<typeof Sessions>;
+	/** The owner's live projects and this device's name in their rows. */
 	private projectList: readonly Project[] = [];
 	private label = "this device";
-	private projectsFailure: string | null = null;
-	/** The sessions' projects by session ID (`Projects.sessions`): a name may outlive its project in projects.json. */
+	/** The sessions' projects by session ID (`Projects.sessions`): a name may be an archived project's. */
 	private memberships: Readonly<Record<string, string>> = {};
-	private projectsRef: Held<typeof Projects> | undefined;
+	private projectsRef: Ref<typeof Projects> | undefined;
 	private readonly probes: PlaceProbes;
 	/**
 	 * The place picked with left/right per project name until the selector is shown again; without one, Enter takes the
@@ -172,15 +170,16 @@ export class SessionsSurface implements TuiSurface {
 		this.probes = new PlaceProbes(runtime.ctx, () => this.rebuild());
 		[this.shownRows, this.editing] = this.scope.optimistic(() => this.received, applyRow);
 		this.service = this.scope.watch(Sessions, {}, (ref, follow) => {
-			this.owner = ref.variant === "owner";
-			const viewer = liveIn(ref, "owner", "guest");
+			const owner = liveWith(ref, ...SESSIONS_OWNER);
+			this.owner = owner !== undefined;
+			const viewer = liveWith(ref, "sessions");
 			if (!viewer) return;
 			follow(viewer.sessions, (rows) => {
 				this.received = rows;
 				this.followMains(rows);
 				this.rebuild();
 			});
-			if (ref.variant === "owner") {
+			if (owner) {
 				// Unread answers are the owner's (any device); guests see none.
 				this.marks = this.scope.watch(SessionReads, {}, (reads, followReads) => {
 					followReads(reads.answers, (answers) => {
@@ -193,12 +192,12 @@ export class SessionsSurface implements TuiSurface {
 					});
 				});
 				this.followProjects();
-				follow(ref.operations, (operations) => this.followOperations(operations));
-				follow(ref.defaultCwd, (value) => {
+				follow(owner.operations, (operations) => this.followOperations(operations));
+				follow(owner.defaultCwd, (value) => {
 					this.defaultCwd = value ?? "~";
 					this.rebuild();
 				});
-				follow(ref.defaultEnv, (value) => {
+				follow(owner.defaultEnv, (value) => {
 					this.defaultEnv = value ?? null;
 					this.rebuild();
 				});
@@ -206,8 +205,9 @@ export class SessionsSurface implements TuiSurface {
 		});
 		// Owners and guests are readers (a guest's view holds its granted sessions, without error texts).
 		this.scope.watch(SessionStatus, {}, (ref, follow) => {
-			if (ref.variant === "reader")
-				follow(ref.statuses, (statuses) => {
+			const reader = liveWith(ref, "statuses");
+			if (reader)
+				follow(reader.statuses, (statuses) => {
 					this.statuses = statuses;
 				});
 		});
@@ -253,7 +253,7 @@ export class SessionsSurface implements TuiSurface {
 	/** The chat showing a session's main conversation reads it through its latest answer (the web's rule, owner). */
 	private markShownRead(): void {
 		const { screen, session, conversation } = this.runtime;
-		const marks = liveIn(this.marks, "owner");
+		const marks = live(this.marks);
 		if (!marks || screen !== "chat" || !session || conversation !== this.runtime.mainOf(session)) return;
 		const latest = this.answers[session] ?? 0;
 		const key = `${session}:${latest}`;
@@ -266,14 +266,9 @@ export class SessionsSurface implements TuiSurface {
 	private followProjects(): void {
 		if (this.projectsRef) return;
 		this.projectsRef = this.scope.watch(Projects, {}, (ref, follow) => {
-			if (ref.variant !== "owner") return;
 			follow(ref.projects, (projects) => {
 				this.projectList = projects;
 				if (this.shown) this.probes.probe(projects.flatMap((project) => project.places));
-				this.rebuild();
-			});
-			follow(ref.failure, (failure) => {
-				this.projectsFailure = failure;
 				this.rebuild();
 			});
 			follow(ref.local, (label) => {
@@ -287,7 +282,7 @@ export class SessionsSurface implements TuiSurface {
 		});
 	}
 
-	/** The owner's projects, in projects.json's order (`/move` reads them too). */
+	/** The owner's live projects, in the owner's order (`/move` reads them too). */
 	get projects(): readonly Project[] {
 		return this.projectList;
 	}
@@ -297,7 +292,7 @@ export class SessionsSurface implements TuiSurface {
 		return this.label;
 	}
 
-	/** The project session `id` belongs to, by name (perhaps no longer in projects.json). */
+	/** The project session `id` belongs to, by name (perhaps an archived one). */
 	projectOf(id: string): string | undefined {
 		return this.memberships[id];
 	}
@@ -350,15 +345,15 @@ export class SessionsSurface implements TuiSurface {
 	}
 
 	/** The owner's live catalog, which every change goes through. */
-	get catalog(): HeldIn<typeof Sessions, "owner"> | undefined {
-		return liveIn(this.service, "owner");
+	get catalog(): SessionsOwner | undefined {
+		return liveWith(this.service, ...SESSIONS_OWNER);
 	}
 
 	/**
 	 * Changes a row: shown at once, `done` once the server took it (the selector's status, else a status line); a
 	 * refused change rolls back and its error shows as a status line.
 	 */
-	edit(guess: RowGuess, call: (catalog: HeldIn<typeof Sessions, "owner">) => Promise<unknown>, done: string): void {
+	edit(guess: RowGuess, call: (catalog: SessionsOwner) => Promise<unknown>, done: string): void {
 		const catalog = this.catalog;
 		if (!catalog) return;
 		const settled = this.editing(guess, call(catalog)).then(() => {
@@ -399,7 +394,6 @@ export class SessionsSurface implements TuiSurface {
 		const rows: Row[] = [];
 		const byRecent = (a: Session, b: Session) => Number(b.pinned) - Number(a.pinned) || b.updatedAt - a.updatedAt;
 		const creating = this.owner && !this.archived && !query;
-		if (creating && this.projectsFailure) rows.push({ kind: "heading", text: this.projectsFailure, error: true });
 		if (this.grouped) this.groupRows(rows, candidates.toSorted(byRecent));
 		else if (creating) {
 			rows.push({ kind: "new", prefix: "" });
@@ -421,8 +415,8 @@ export class SessionsSurface implements TuiSurface {
 	}
 
 	/**
-	 * The grouped list (empty search, owner): each project's row with its sessions below it, in projects.json's order,
-	 * then "Other": "+ New session" and the sessions of no project, or of one projects.json no longer has.
+	 * The grouped list (empty search, owner): each project's row with its sessions below it, in the owner's order,
+	 * then "Other": "+ New session" and the sessions of no project, or of an archived one.
 	 */
 	private groupRows(rows: Row[], sessions: readonly Session[]): void {
 		for (const project of this.projects) {
@@ -553,7 +547,7 @@ export class SessionsSurface implements TuiSurface {
 	private create(location: Location, project?: string): void {
 		const catalog = this.catalog;
 		if (!catalog) return;
-		const projects = this.projectsRef && liveIn(this.projectsRef, "owner");
+		const projects = this.projectsRef && live(this.projectsRef);
 		const id = crypto.randomUUID();
 		if (this.mode === "create") this.closePrompt();
 		this.runtime.navigate("chat", id);
@@ -577,9 +571,9 @@ export class SessionsSurface implements TuiSurface {
 			this.create({ env: current ? (current.env ?? null) : this.defaultEnv, path: current?.cwd ?? this.defaultCwd });
 			return;
 		}
-		const location = parseLocation(argument, await envNames(this.ctx), { env: null });
-		if ("error" in location) this.runtime.fail(new Error(location.error));
-		else this.create(location);
+		const parsed = parseLocation(argument, await envNames(this.ctx), { env: null });
+		if (parsed.kind === "invalid") this.runtime.fail(new Error(parsed.error));
+		else this.create(parsed.location);
 	}
 
 	private submitPrompt(): void {
@@ -910,7 +904,7 @@ export class SessionsSurface implements TuiSurface {
 						: session.pinned
 							? "warning"
 							: undefined;
-			// A project projects.json no longer has: the session waits under "Other", dimmed, with the old name.
+			// An archived project: the session waits under "Other", dimmed, with the old name.
 			const project = this.projectOf(session.id);
 			const gone = project !== undefined && !this.projects.some((each) => each.name === project);
 			const shown = gone ? theme.fg("dim", `${text} (${lineText(project)})`) : color ? theme.fg(color, text) : text;
@@ -1017,7 +1011,6 @@ async function relocate(ctx: TuiContext, session: Session, location: Location, c
 	)
 		return;
 	const envs = await ownerEnvs(ctx);
-	if (envs.variant !== "owner") throw new Error("Only the owner changes directories");
 	const { path } = await envs.listDirectory(
 		{ path: location.path, ...(location.env ? { env: location.env } : {}) },
 		BACKGROUND_CONTEXT,
@@ -1041,7 +1034,6 @@ async function moveTo(ctx: TuiContext, env: string | null): Promise<void> {
 		return;
 	}
 	const envs = await ownerEnvs(ctx);
-	if (envs.variant !== "owner") return;
 	const list = (path: string) => envs.listDirectory({ path, ...(env ? { env } : {}) }, BACKGROUND_CONTEXT);
 	let path = "~";
 	let error: string | undefined;
@@ -1087,9 +1079,9 @@ async function changeDirectory(ctx: TuiContext, argument: string): Promise<void>
 	if (!session) return;
 	const fallback = { env: session.env ?? null, cwd: session.cwd };
 	if (argument) {
-		const location = parseLocation(argument, await envNames(ctx), fallback);
-		if ("error" in location) ctx.notify(location.error, "error");
-		else await relocate(ctx, session, location);
+		const parsed = parseLocation(argument, await envNames(ctx), fallback);
+		if (parsed.kind === "invalid") ctx.notify(parsed.error, "error");
+		else await relocate(ctx, session, parsed.location);
 		return;
 	}
 	const overlay = ctx.overlay(

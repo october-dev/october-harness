@@ -1,35 +1,44 @@
-// The discord plugin's web facet: More › Discord (the owner's bots, BotsSheet.tsx), the Session sheet's Discord row and
+// The discord plugin's web facet: Settings › Discord (the owner's bots, BotsSheet.tsx), the Session sheet's Discord row and
 // the session's link sheet (LinkSheet.tsx), and the transcript's note on a delivered batch. The sheets render from the
 // sidebar foot's slot, which stays mounted while they stack on the Session sheet.
 import { contribute, defineFacet } from "@p2/app/v1";
-import { ChevronIcon, openLayer, Slots, useObject, useOwner, useReadable, useRoute, useSheet } from "@p2/app/v1/web";
+import {
+	ChevronIcon,
+	openLayer,
+	SettingsSections,
+	Slots,
+	useObject,
+	useOwner,
+	useReadable,
+	useRoute,
+	useSheet,
+} from "@p2/app/v1/web";
 import { TranscriptEntries } from "../chat/contract.ts";
 import { AddBotSheet, BotSheet, BotsSheet } from "./BotsSheet.tsx";
 import { DISCORD_BATCH, Discord } from "./contract.ts";
+import { HeldDiscord } from "./held.ts";
 import { LinkSheet } from "./LinkSheet.tsx";
 import "./style.css";
 
-/** The foot's Discord entry, and every Discord sheet on top. */
-function DiscordFoot() {
+/**
+ * Every Discord sheet on top: the bots' as a page of Settings, a session's link on its own. Mounted from the page's
+ * start, it holds the owner's `Discord` for them (`held.ts`): they open without a round trip.
+ */
+function DiscordSheets() {
 	const list = useSheet("discord");
 	const add = useSheet("discord-add");
 	const bot = useSheet("discord-bot");
 	const link = useSheet("discord-link");
-	if (!useOwner()) return null;
+	const owner = useOwner();
+	const discord = useObject(Discord, owner ? {} : undefined);
+	if (!owner) return null;
 	return (
-		<>
-			<button
-				type="button"
-				className="foot-button"
-				onClick={() => openLayer({ kind: "sheet", name: "discord" }, { fromDrawer: true })}
-			>
-				Discord
-			</button>
+		<HeldDiscord.Provider value={discord}>
 			{list && <BotsSheet />}
 			{add && <AddBotSheet />}
 			{bot?.locator && <BotSheet id={bot.locator} />}
 			{link?.locator && <LinkSheet session={link.locator} />}
-		</>
+		</HeldDiscord.Provider>
 	);
 }
 
@@ -64,7 +73,10 @@ function batchDisplay(data: unknown) {
 
 export default defineFacet((host) => {
 	contribute(host, "p2.web-discord", (self) => {
-		self.contribute(Slots, { "sidebar-foot:discord": DiscordFoot, "session-rows:discord": SessionRow });
+		self.contribute(SettingsSections, { discord: { label: "Discord", order: 60, Sheet: DiscordSheets } });
+		self.contribute(Slots, {
+			"session-rows:discord": SessionRow,
+		});
 		self.contribute(TranscriptEntries, { [DISCORD_BATCH]: batchDisplay });
 	});
 });

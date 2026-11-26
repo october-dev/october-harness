@@ -1,6 +1,7 @@
-import { BACKGROUND_CONTEXT, contribute, defineFacet, follow, liveIn } from "@p2/app/v1";
+import { BACKGROUND_CONTEXT, contribute, defineFacet, follow, liveWith } from "@p2/app/v1";
 import type { Navigation, WorkspaceRoute } from "@p2/app/v1/web";
 import {
+	Commands,
 	FolderIcon,
 	locationLabel,
 	Slots,
@@ -14,10 +15,12 @@ import {
 	useStatus,
 } from "@p2/app/v1/web";
 import { useEffect, useState } from "react";
-import { Chat } from "../chat/contract.ts";
+import { CHAT_PARTICIPANT, Chat } from "../chat/contract.ts";
 import { Sessions } from "../sessions/contract.ts";
 import { conversationLocation, Subagents } from "../subagents/contract.ts";
+import { WORKSPACE_COMMANDS } from "./commands.tsx";
 import { Workspace } from "./contract.ts";
+import { withWorkspace } from "./tabs.ts";
 import { WorkspacePanel as MobileWorkspacePanel } from "./Workspace.tsx";
 
 function WorkspaceButton() {
@@ -34,7 +37,7 @@ function WorkspaceButton() {
 			onClick={() =>
 				route.workspace
 					? void nav.close((current) => ({ ...current, workspace: undefined }))
-					: void nav.push({ ...route, workspace: { tab: "files", directory: "" } })
+					: void nav.push(withWorkspace(route, "files"))
 			}
 		>
 			<FolderIcon />
@@ -80,15 +83,15 @@ function NativePanel({
 	const workspace = useObject(Workspace, { session, conversation });
 	// Only to send review comments: a method-only reference (the chat view holds the state when it is open).
 	const chat = useObject(Chat, { session, conversation });
-	const rows = useReadable(liveIn(useObject(Sessions, {}), "owner", "guest")?.sessions);
-	const children = useReadable(liveIn(useObject(Subagents, {}), "reader")?.children);
+	const rows = useReadable(liveWith(useObject(Sessions, {}), "sessions")?.sessions);
+	const children = useReadable(liveWith(useObject(Subagents, {}), "children")?.children);
 	// Where the viewed conversation works: a subagent may have its own location (e.g. a git worktree, another machine).
 	const location = conversationLocation(
 		rows?.find((row) => row.id === session),
 		children?.[session]?.find((child) => child.conversationId === conversation),
 	);
 	const cwd = location?.cwd ?? "";
-	const { steer, setError } = useComposerState();
+	const { setError } = useComposerState();
 	// Why the workspace is not open: a failed open shows its error (Retry opens it again with a new reference)
 	// instead of loading forever.
 	const [unavailable, setUnavailable] = useState<string>();
@@ -116,12 +119,9 @@ function NativePanel({
 			owner={owner}
 			onSend={async (text) => {
 				try {
-					const writer = liveIn(chat, "participant");
+					const writer = liveWith(chat, ...CHAT_PARTICIPANT);
 					if (!writer) throw new Error("This conversation is read-only");
-					await writer.send(
-						{ text, requestId: crypto.randomUUID(), whenBusy: steer ? "steer" : "followUp" },
-						BACKGROUND_CONTEXT,
-					);
+					await writer.send({ text, requestId: crypto.randomUUID(), whenBusy: "steer" }, BACKGROUND_CONTEXT);
 				} catch (error) {
 					setError(error instanceof Error ? error.message : "Could not send comments");
 					throw error;
@@ -134,5 +134,6 @@ function NativePanel({
 export default defineFacet((host) => {
 	contribute(host, "p2.web-workspace", (self) => {
 		self.contribute(Slots, { "workspace-actions": WorkspaceButton, "workspace-panel": WorkspacePanel });
+		self.contribute(Commands, WORKSPACE_COMMANDS);
 	});
 });

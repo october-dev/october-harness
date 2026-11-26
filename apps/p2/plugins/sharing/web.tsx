@@ -1,11 +1,13 @@
-// Sharing in the browser: the share sheet (owner), and the guest's presence while its page is open.
+// Sharing in the browser: the share sheet (owner), the guest's presence while its page is open, and the sharing
+// commands of the command menu (commands.tsx).
 
 import { BACKGROUND_CONTEXT, contribute, defineFacet } from "@p2/app/v1";
 import {
+	CommandPages,
+	Commands,
 	closeLayers,
 	copyText,
 	errorText,
-	readValue,
 	Sheet,
 	Slots,
 	useObject,
@@ -15,9 +17,10 @@ import {
 	useSheet,
 } from "@p2/app/v1/web";
 import { useEffect, useState } from "react";
-import { GuestPresence, type ShareMode, Sharing } from "./contract.ts";
-
-const LABEL: Record<ShareMode, string> = { view: "Read-only", full: "Read/write" };
+import { SHARING_COMMANDS, SHARING_PAGES } from "./commands.tsx";
+import { GuestPresence, ShareInvite, type ShareMode, Sharing } from "./contract.ts";
+import { DEFAULT_INVITE_SECONDS, INVITE_DURATIONS, validUntil } from "./durations.ts";
+import { confirmsFirst, LINK_LABEL, linkToShare, resetLink } from "./links.ts";
 
 /**
  * Two links per session (read-only; read/write: send and Stop), the people it is shared with by email, and the guests
@@ -26,16 +29,25 @@ const LABEL: Record<ShareMode, string> = { view: "Read-only", full: "Read/write"
  */
 function ShareSheet({ session, onClose }: { session: string; onClose: () => void }) {
 	const sharing = useObject(Sharing, { session });
+	const invites = useObject(ShareInvite, { session });
 	const links = useReadable(sharing?.links);
 	const guests = useReadable(sharing?.guests);
 	const people = useReadable(sharing?.people);
 	const peopleUrl = useReadable(sharing?.peopleUrl);
 	const remoteEnv = useReadable(sharing?.env);
+	/** Copying makes an invite (through Radius): the owner picks how long it opens. */
+	const invitesOn = useReadable(invites?.invites);
 	const [copied, setCopied] = useState<ShareMode | "address">();
+	const [validFor, setValidFor] = useState(DEFAULT_INVITE_SECONDS);
+	/** When the invite last copied for each link stops opening. */
+	const [until, setUntil] = useState<Partial<Record<ShareMode, number>>>({});
 	const [email, setEmail] = useState("");
 	const [personMode, setPersonMode] = useState<ShareMode>("view");
 	const [confirming, setConfirming] = useState<
-		{ reset: ShareMode } | { remove: string } | { remote: true } | { share: string }
+		| { kind: "reset"; reset: ShareMode }
+		| { kind: "remove"; remove: string }
+		| { kind: "remote" }
+		| { kind: "share"; share: string }
 	>();
 	const [error, setError] = useState<string>();
 	useEffect(() => {
@@ -44,20 +56,17 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 		return () => clearTimeout(timer);
 	}, [copied]);
 	const copy = async (mode: ShareMode, remoteConfirmed = false) => {
-		if (!sharing) return;
+		if (!invites) return;
 		setError(undefined);
+		if (!remoteConfirmed && confirmsFirst(mode, links, remoteEnv)) {
+			setConfirming({ kind: "remote" });
+			return;
+		}
 		try {
-			let url = links?.find((link) => link.mode === mode)?.url;
-			if (url === undefined && mode === "full" && remoteEnv && !remoteConfirmed) {
-				setConfirming({ remote: true });
-				return;
-			}
-			if (url === undefined) {
-				await sharing.link({ mode, ...(remoteConfirmed ? { remoteConfirmed } : {}) }, BACKGROUND_CONTEXT);
-				// The answer follows its state: the new link is in `links` when the call resolves.
-				url = readValue(sharing.links)?.find((link) => link.mode === mode)?.url;
-			}
-			if (url !== undefined && (await copyText(url))) setCopied(mode);
+			const link = await linkToShare(invites, mode, validFor, remoteConfirmed);
+			if (await copyText(link.url)) setCopied(mode);
+			const expiresAt = link.expiresAt;
+			if (expiresAt !== null) setUntil((previous) => ({ ...previous, [mode]: expiresAt }));
 		} catch (reason) {
 			setError(errorText(reason));
 		}
@@ -67,7 +76,7 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 		if (!sharing) return;
 		setError(undefined);
 		if (personMode === "full" && remoteEnv && !remoteConfirmed) {
-			setConfirming({ share: address });
+			setConfirming({ kind: "share", share: address });
 			return;
 		}
 		try {
@@ -86,24 +95,23 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 	const confirm = () => {
 		if (!sharing || !confirming) return;
 		setConfirming(undefined);
-		if ("remote" in confirming) {
+		if (confirming.kind === "remote") {
 			void copy("full", true);
 			return;
 		}
-		if ("share" in confirming) {
+		if (confirming.kind === "share") {
 			void share(confirming.share, true);
 			return;
 		}
 		const action =
-			"reset" in confirming
-				? sharing.link(
-						{
-							mode: confirming.reset,
-							reset: true,
-							...(remoteEnv && confirming.reset === "full" ? { remoteConfirmed: true } : {}),
-						},
-						BACKGROUND_CONTEXT,
-					)
+			confirming.kind === "reset"
+				? resetLink(sharing, confirming.reset).then(() => {
+						const reset = confirming.reset;
+						// The link's invites were withdrawn with it.
+						setUntil((previous) =>
+							Object.fromEntries(Object.entries(previous).filter(([mode]) => mode !== reset)),
+						);
+					})
 				: sharing.remove({ guestId: confirming.remove }, BACKGROUND_CONTEXT);
 		action.catch((reason: unknown) => setError(errorText(reason)));
 	};
@@ -114,7 +122,7 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 	);
 	/** Remove, confirmed in place: for a link guest (blocked from the session) or a person (shared no more). */
 	const removal = (id: string) =>
-		confirming && "remove" in confirming && confirming.remove === id ? (
+		confirming?.kind === "remove" && confirming.remove === id ? (
 			<span className="inline-form">
 				<button type="button" className="text-action danger" onClick={confirm}>
 					Remove
@@ -122,7 +130,7 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 				{cancel}
 			</span>
 		) : (
-			<button type="button" className="text-action" onClick={() => setConfirming({ remove: id })}>
+			<button type="button" className="text-action" onClick={() => setConfirming({ kind: "remove", remove: id })}>
 				Remove
 			</button>
 		);
@@ -133,13 +141,42 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 				make the agent run commands and change files on{" "}
 				{remoteEnv ? `the remote environment "${remoteEnv}"` : "this host"}.
 			</p>
+			{invitesOn && (
+				<p className="muted small">
+					Through Radius every copied link is a new invite: anyone with it can join until it expires. Guests stay
+					while their page is open; Reset ends the link and all its invites.
+				</p>
+			)}
 			<div className="list">
+				{invitesOn && (
+					<div className="share-row">
+						<span>Valid for</span>
+						<select
+							className="input"
+							aria-label="Valid for"
+							value={validFor}
+							onChange={(event) => setValidFor(Number(event.target.value))}
+						>
+							{INVITE_DURATIONS.map(({ seconds, label }) => (
+								<option key={seconds} value={seconds}>
+									{label}
+								</option>
+							))}
+						</select>
+					</div>
+				)}
 				{(["view", "full"] as const).map((mode) => {
 					const exists = links?.some((link) => link.mode === mode) ?? false;
+					const expiresAt = until[mode];
 					return (
 						<div className="share-row" key={mode}>
-							<span>{LABEL[mode]}</span>
-							{mode === "full" && confirming && "remote" in confirming ? (
+							<span>
+								{LINK_LABEL[mode]}
+								{expiresAt !== undefined && (
+									<small className="muted"> · copied, valid until {validUntil(expiresAt)}</small>
+								)}
+							</span>
+							{mode === "full" && confirming?.kind === "remote" ? (
 								<>
 									<span className="muted small">
 										Guests can run commands on "{remoteEnv}". Create the link?
@@ -149,7 +186,7 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 									</button>
 									{cancel}
 								</>
-							) : confirming && "reset" in confirming && confirming.reset === mode ? (
+							) : confirming?.kind === "reset" && confirming.reset === mode ? (
 								<>
 									<span className="muted small">New link, disconnect its guests?</span>
 									<button type="button" className="text-action danger" onClick={confirm}>
@@ -163,7 +200,7 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 										<button
 											type="button"
 											className="text-action"
-											onClick={() => setConfirming({ reset: mode })}
+											onClick={() => setConfirming({ kind: "reset", reset: mode })}
 										>
 											Reset
 										</button>
@@ -171,7 +208,7 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 									<button
 										type="button"
 										className={`button ${copied === mode ? "done" : ""}`}
-										disabled={links === undefined}
+										disabled={links === undefined || !invites}
 										onClick={() => void copy(mode)}
 									>
 										{copied === mode ? "Copied" : "Copy link"}
@@ -210,14 +247,14 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 							value={personMode}
 							onChange={(event) => setPersonMode(event.target.value as ShareMode)}
 						>
-							<option value="view">{LABEL.view}</option>
-							<option value="full">{LABEL.full}</option>
+							<option value="view">{LINK_LABEL.view}</option>
+							<option value="full">{LINK_LABEL.full}</option>
 						</select>
 						<button type="submit" className="button" disabled={!email.trim()}>
 							Share
 						</button>
 					</form>
-					{confirming && "share" in confirming && (
+					{confirming?.kind === "share" && (
 						<div className="share-row">
 							<span className="muted small">
 								{confirming.share} can run commands on "{remoteEnv}". Share read/write?
@@ -273,7 +310,10 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 	);
 }
 
-/** The top bar's share button (owner only). */
+/**
+ * The open session's share sheet while it is the top layer (owner only); the Session sheet, the stats' guest count and
+ * the command menu open it.
+ */
 function ShareButton() {
 	const { session } = useRoute();
 	const owner = useOwner();
@@ -284,8 +324,10 @@ function ShareButton() {
 
 export default defineFacet((host) => {
 	contribute(host, "p2.sharing-web", (self) => {
-		// A guest counts as connected while its page holds this (the owner's variant does nothing).
+		// A guest counts as connected while its page holds this (the owner's does nothing).
 		self.get(GuestPresence, {});
 		self.contribute(Slots, { "session-actions": ShareButton });
+		self.contribute(Commands, SHARING_COMMANDS);
+		self.contribute(CommandPages, SHARING_PAGES);
 	});
 });

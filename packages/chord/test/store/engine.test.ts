@@ -17,6 +17,7 @@ import {
 	insertDocument,
 	listDocumentKeys,
 	listDocuments,
+	listHostRecords,
 	loadDocument,
 	readDocument,
 	retireDocument,
@@ -33,8 +34,7 @@ const OWNER = { owner: "app.store", namespace: "chord", kind: "notes" };
 
 /** A store on `:memory:` (or `on`) and a commit helper resolving with the created ids. */
 async function engine(on?: ChordStore) {
-	const store =
-		on ?? ((await openStore(sqliteBackend(await openNodeSqliteDatabase(":memory:")), context)) as ChordStore);
+	const store = on ?? (await openStore(sqliteBackend(await openNodeSqliteDatabase(":memory:")), context));
 	const commit = async (...writes: StagedWrite[]): Promise<readonly number[]> => {
 		let created: readonly number[] = [];
 		await store.commit(
@@ -65,7 +65,7 @@ async function engine(on?: ChordStore) {
 /** `store`'s archive with `edit` applied to its parts, imported into a fresh `:memory:` store. */
 async function reimported(store: ChordStore, edit: (parts: ArchivePart[]) => unknown[]): Promise<ChordStore> {
 	const parts = edit(await exported(store));
-	return (await importStore(sqliteBackend(await openNodeSqliteDatabase(":memory:")), parts, context)) as ChordStore;
+	return await importStore(sqliteBackend(await openNodeSqliteDatabase(":memory:")), parts, context);
 }
 
 /** A staged write applying `apply` in the step (an adapter's composite). */
@@ -261,5 +261,47 @@ describe("counters at the safe-integer limit", () => {
 		const found = (await read<DocumentRecord | undefined>((e) => findDocument(e, at("a"))))!;
 		await commit(delta(found.id, LIMIT - 1, [["s", ["n"], 1]]));
 		expect(String(await rejection(commit(delta(found.id, LIMIT, [["s", ["n"], 2]]))))).toContain("safe range");
+	});
+});
+
+describe("records belonging to a host (schema 3)", () => {
+	it("keep their host, are listed by it (live only, by id), and round-trip through an archive", async () => {
+		const { store, commit, at, base, read } = await engine();
+		const hosted = (key: string, host: string) => createDocument({ ...at(key), host }, base({ n: 1 }), '{"n":1}');
+		const [a] = await commit(hosted("session|S1", "session|S1"));
+		await commit(hosted("session|S2", "session|S2"), createDocument(at("session|S1x"), base({ n: 2 }), '{"n":2}'));
+		const [b] = await commit(
+			createDocument({ ...OWNER, kind: "other", key: "session|S1", host: "session|S1" }, base({}), "{}"),
+		);
+		const listed = await read<DocumentRecord[]>((e) => listHostRecords(e, "session|S1", 0, 10));
+		expect(listed.map(({ id, host }) => [id, host])).toEqual([
+			[a, "session|S1"],
+			[b, "session|S1"],
+		]);
+		expect(
+			(await read<DocumentRecord[]>((e) => listHostRecords(e, "session|S1", a!, 10))).map(({ id }) => id),
+		).toEqual([b]);
+		expect((await read<DocumentRecord | undefined>((e) => findDocument(e, at("session|S1x"))))?.host).toBeUndefined();
+		await commit(retireDocument(a!, 1));
+		expect(
+			(await read<DocumentRecord[]>((e) => listHostRecords(e, "session|S1", 0, 10))).map(({ id }) => id),
+		).toEqual([b]);
+		const copy = await reimported(store, (parts) => parts);
+		expect(await exported(copy)).toEqual(await exported(store));
+		await copy.close(context);
+		await store.close(context);
+	});
+
+	it("have an indexed host column", async () => {
+		const { store, read } = await engine();
+		const columns = await read<{ name: string }[]>((e) =>
+			e.all(`SELECT name FROM pragma_table_info('${TABLES.documents}')`),
+		);
+		expect(columns.map(({ name }) => name)).toContain("host");
+		const index = await read<{ sql: string } | undefined>((e) =>
+			e.get(`SELECT sql FROM sqlite_master WHERE name = 'chord_documents_host'`),
+		);
+		expect(index?.sql).toContain("WHERE host IS NOT NULL");
+		await store.close(context);
 	});
 });

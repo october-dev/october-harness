@@ -9,7 +9,7 @@ import type { JsonValue } from "../json.ts";
 import { type Batch, handedOut, Source, type WatchStart } from "../state/internal.ts";
 
 /**
- * Where a replica stands: a value, a failed member (reads throw; the provider's member failed, or a newly bound variant
+ * Where a replica stands: a value, a failed member (reads throw; the provider's member failed, or a new binding
  * lacks it, and either may come back; `last` is its last good value, `undefined` when it had none), or ended with its
  * reference.
  */
@@ -25,6 +25,9 @@ export type MemberSnapshot =
 
 const NO_OPS: readonly Op[] = [];
 
+/** What a fork is made with before it takes its original's state. */
+const FORKED: MemberSnapshot = { kind: "value", value: null };
+
 /** One state member of a hold, as the consumer reads and watches it; changed only inside the consumer's batch. */
 export class Replica extends Source {
 	#state: ReplicaState;
@@ -35,10 +38,32 @@ export class Replica extends Source {
 	#retired = false;
 	/** A retirement that reached it while failed: its next value carries the flag. */
 	#retiredWhileFailed = false;
+	/**
+	 * How many values it took (its first value included): a reference joining a shared remote object sees a member it
+	 * found failed or missing once this passes the count it found (decision "References share one wire hold").
+	 */
+	#generation: number;
 
 	constructor(batch: Batch, state: MemberSnapshot) {
 		super(batch);
 		this.#state = state.kind === "value" ? state : { kind: "failed", error: handedOut(state.error), last: undefined };
+		this.#generation = state.kind === "value" ? 1 : 0;
+	}
+
+	/** How many values it took: one per adoption (a snapshot's, a change's, a recovery's). */
+	get generation(): number {
+		return this.#generation;
+	}
+
+	/**
+	 * A copy of it for another remote object of the same reference (a private retry after `too_large/part`): its state,
+	 * last good value and count, a fresh decoder (that object's next snapshot resets it).
+	 */
+	fork(batch: Batch): Replica {
+		const fork = new Replica(batch, FORKED);
+		fork.#state = this.#state;
+		fork.#generation = this.#generation;
+		return fork;
 	}
 
 	get value(): JsonValue {
@@ -77,6 +102,7 @@ export class Replica extends Source {
 	adopt(value: JsonValue, ops: readonly Op[], retired: boolean): void {
 		const flagged = retired || this.#retiredWhileFailed;
 		this.#state = { kind: "value", value };
+		this.#generation++;
 		this.#ops = ops;
 		this.#retired = flagged;
 		this.#retiredWhileFailed = false;
@@ -126,8 +152,8 @@ export class Replica extends Source {
 	}
 
 	/**
-	 * The member is not in a newly bound variant, in the batch that binds it: as a failure (`fail`) with `error`; a later
-	 * binding of a variant that has it brings it back (`reset`), as on the provider's host.
+	 * The member is not in a new binding (not granted), in the batch that binds it: as a failure (`fail`) with
+	 * `error`; a later binding that has it brings it back (`reset`), as on the provider's host.
 	 */
 	vanish(error: ChordError): void {
 		this.fail(error);

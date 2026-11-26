@@ -6,11 +6,11 @@ import { after, before, describe, it } from "node:test";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT, follow } from "@p2/app/v1";
-import { Chat } from "../../plugins/chat/contract.ts";
-import { Sessions } from "../../plugins/sessions/contract.ts";
+import { CHAT_PARTICIPANT, Chat } from "../../plugins/chat/contract.ts";
+import { SESSIONS_OWNER, Sessions } from "../../plugins/sessions/contract.ts";
 import { SessionStatus } from "../../plugins/status/contract.ts";
 import { AGENT_MESSAGE_ENTRY, type AgentMessage, Subagents } from "../../plugins/subagents/contract.ts";
-import { type Fixture, holdIn, startFixture, until } from "./helpers.ts";
+import { type Fixture, holdWith, startFixture, until } from "./helpers.ts";
 
 const agentMessages = (view: ConversationView | null | undefined) =>
 	(view?.entries ?? [])
@@ -36,11 +36,12 @@ describe("subagent team messaging (fake provider)", () => {
 
 	it("a subagent asks the main agent, notes a sibling and reads its answer; reports are entries", async () => {
 		const owner = fixture.browser();
-		const sessions = await holdIn(owner, Sessions, {}, "owner");
-		const status = await holdIn(owner, SessionStatus, {}, "reader");
-		const agents = await holdIn(owner, Subagents, {}, "reader");
+		const sessions = await holdWith(owner, Sessions, {}, ...SESSIONS_OWNER);
+		const status = await holdWith(owner, SessionStatus, {}, "statuses");
+		const agents = await holdWith(owner, Subagents, {}, "children");
 		const session = await sessions.create({ cwd: fixture.workspace }, BACKGROUND_CONTEXT);
-		const chat = (conversation: number) => holdIn(owner, Chat, { session: session.id, conversation }, "participant");
+		const chat = (conversation: number) =>
+			holdWith(owner, Chat, { session: session.id, conversation }, ...CHAT_PARTICIPANT);
 		const root = await chat(1);
 		const keep = follow(root.view, () => {});
 		const idle = () => until(status.statuses, (value) => value?.[session.id]?.tasks === 0, 30_000);
@@ -64,9 +65,6 @@ describe("subagent team messaging (fake provider)", () => {
 		assert.equal(asked?.data.text, "Which API should I use?");
 		assert.match(asked?.model ?? "", /<sender kind=\\"subagent\\" name=\\"asker\\"\/>/);
 		assert.match(asked?.model ?? "", /\[asks; answer with subagent send to asker\] Which API/);
-		// The owner started the turn that spawned it: what it writes records that, so the main agent's turn on it may act
-		// for the owner.
-		assert.equal(asked?.data.origin, "owner");
 		// The question started a root turn, and every report is an entry with the subagent's name.
 		await until(root.view, (value) =>
 			JSON.stringify(value).includes("Echo: [asks; answer with subagent send to asker]"),
@@ -75,10 +73,6 @@ describe("subagent team messaging (fake provider)", () => {
 		const reports = agentMessages(root.view.value).filter((m) => m.data.intent === "answered");
 		assert.deepEqual(reports.map((m) => m.data.from.name).sort(), ["asker", "first"]);
 		assert.match(reports[0]?.model ?? "", /\[answered, no reply needed\]/);
-		assert.deepEqual(
-			reports.map((m) => m.data.origin),
-			["owner", "owner"],
-		);
 
 		// A note to a sibling arrives in its conversation; reading a sibling's answer.
 		const children = await until(agents.children, (value) => (value?.[session.id]?.length ?? 0) === 2);
@@ -98,7 +92,6 @@ describe("subagent team messaging (fake provider)", () => {
 		const received = agentMessages(noted).find((m) => m.data.intent === "note");
 		assert.equal(received?.data.from.name, "asker");
 		assert.match(received?.model ?? "", /\[notes, no reply needed\] FYI/);
-		assert.equal(received?.data.origin, "owner");
 		await idle();
 		await root.send(
 			{

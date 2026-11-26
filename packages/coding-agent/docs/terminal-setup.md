@@ -15,6 +15,7 @@ October uses extended-key protocols so terminals can distinguish combinations su
 | Inline images or colors are not detected | [Override detected capabilities](#override-detected-capabilities) |
 | An IME candidate window appears in the wrong place | [WezTerm](#wezterm) or [IntelliJ IDEA](#intellij-idea-integrated-terminal) |
 | Modified keys fail only inside tmux | [Run October in tmux](tmux.md) |
+| After October exits, moving the mouse types text such as `[<35;12;5M` into the shell prompt | [Recover the terminal after October was killed](#recover-the-terminal-after-pi-was-killed) |
 
 Use `/hotkeys` to inspect October's active shortcuts. See [Keybindings](keybindings.md) to change them.
 
@@ -220,6 +221,18 @@ Settings take precedence over environment variables. An unset value or `auto` pr
 
 Only force a capability supported by the complete terminal path. Unsupported escape sequences can corrupt rendering. See [Environment Variables](environment-variables.md#october-process-configuration) and [Settings](settings.md) for the canonical value definitions.
 
+## Recover the terminal after Pi was killed
+
+While it runs, Pi switches the terminal to the alternate screen, turns on mouse and focus reporting, and enables extended-key protocols. Pi turns them off when it exits, but it cannot do so when it is killed, for example with `kill -9`, from Task Manager, or when it runs out of memory. The terminal then keeps sending mouse reports and the shell types them into the prompt.
+
+To recover, run `pi` again and quit it with `Ctrl+D` or `/quit`. A clean exit turns all of these modes off and leaves the alternate screen.
+
+Keyboard input still reaches the shell, even if you cannot see what you type:
+
+1. Keep the mouse pointer off the terminal pane.
+2. Press `Ctrl+C` to clear the current line.
+3. Type `pi`, press `Enter`, then quit Pi.
+
 ## Program status
 
 October reports its state with the [Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status), so terminals and agent dashboards can show whether it is working, waiting for you, done, or failed:
@@ -233,3 +246,11 @@ October reports its state with the [Program Status Protocol (OSC 7501)](https://
 | `idle` | October started, or you cancelled the run. |
 
 Reports never contain prompts or model output. October sends them only after the terminal answers the protocol's support query; tmux and screen do not forward them. Set `PI_PROGRAM_STATUS=1` to send reports without asking, or `PI_PROGRAM_STATUS=0` to turn them off.
+
+## Program resume
+
+October tells the terminal how to bring the session back after the terminal restarts, with the [Program Resume Protocol (OSC 7577)](https://www.superlogical.com/rex/docs/build/program-resume). Terminals that support it set `OSC7577_TOKEN` in the environment; October reports only when it is set.
+
+The command is the one October prints when you quit, such as `october --session <id>`, to run in the session's directory. October updates it when you start, resume, or fork a session, and once a new session has its first message. A new session without messages has nothing to resume, so October removes the command until then. Quitting with `Ctrl+D`, `Ctrl+C` twice, or `/quit` removes it too; when the terminal itself closes or restarts, October keeps it.
+
+October removes `OSC7577_TOKEN` from its own environment at startup, so shells, editors, and extension processes it starts cannot replace its command or register commands of their own. Whether and when the terminal resumes a command is up to the terminal.

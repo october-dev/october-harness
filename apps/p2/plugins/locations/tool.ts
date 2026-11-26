@@ -1,6 +1,5 @@
 // The location tools: an agent lists the environments it may work on and their directories, and moves itself. Every main
-// agent has them, and the subagents and one-shot agents it gives them to. Only turns the owner started may use them (their
-// `origin: "owner"`): guests can neither discover environments nor move agents.
+// agent has them, and the subagents and one-shot agents it gives them to. A session in a sandbox stays in it.
 
 import {
 	type ConversationId,
@@ -60,14 +59,15 @@ export function createLocationExtension({ server, locate }: LocationTools) {
 		const envs = await server.envs(context);
 		const names = envs.map((env) => env.name);
 		const sandbox = sandboxAt(here, envs);
-		const parsed =
+		const result =
 			args.location !== undefined
 				? parseLocation(args.location, names, here)
 				: parseLocation(args.cwd ?? "", names, {
 						env: args.env === undefined ? here.env : args.env,
 						...(args.env === undefined || args.env === here.env ? { cwd: here.cwd } : {}),
 					});
-		if ("error" in parsed) return parsed.error;
+		if (result.kind === "invalid") return result.error;
+		const parsed = result.location;
 		if (sandbox !== undefined && parsed.env !== sandbox)
 			return `You work in sandbox ${sandbox} and cannot leave it; use paths inside ${sandbox}.`;
 		if (parsed.env !== null && !names.includes(parsed.env))
@@ -103,7 +103,6 @@ export function createLocationExtension({ server, locate }: LocationTools) {
 					"List the environments you can work on: this device, the configured SSH environments (host, last test) and sandboxes. Shows where you work now.",
 				parameters: obj({}, { open: true }),
 				replay: "safe",
-				origin: "owner",
 				execute: async (_args, api, context) => {
 					const reply = (text: string, isError = false) => ({
 						output: [{ type: "text" as const, text }],
@@ -147,7 +146,6 @@ export function createLocationExtension({ server, locate }: LocationTools) {
 					"List the folders of a directory on an environment (default: your cwd), to find where to work. Shows at most 200.",
 				parameters: obj(where, { open: true }),
 				replay: "safe",
-				origin: "owner",
 				execute: async (args, api, context) => {
 					const reply = (text: string, isError = false) => ({
 						output: [{ type: "text" as const, text }],
@@ -190,7 +188,6 @@ export function createLocationExtension({ server, locate }: LocationTools) {
 				parameters: obj(where, { open: true }),
 				// Setting the same destination again changes nothing.
 				replay: "safe",
-				origin: "owner",
 				execute: async (args, api, context) => {
 					const reply = (text: string, details: { env?: string | null; cwd?: string } = {}, isError = false) => ({
 						output: [{ type: "text" as const, text }],

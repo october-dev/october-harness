@@ -1,22 +1,34 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { BACKGROUND_CONTEXT, type Context } from "../../src/context/index.ts";
-import { type Contract, contractData } from "../../src/contracts/contract.ts";
+import { contractData } from "../../src/contracts/contract.ts";
 import {
 	arr,
 	bytes,
+	event,
 	evolve,
+	grantable,
 	type Implementation,
 	int,
+	keyed,
 	local,
+	memberNames,
 	method,
 	nul,
 	obj,
 	type ParamsOf,
+	queries,
 	remote,
 	str,
 	union,
 } from "../../src/contracts/index.ts";
-import { checkAccepts, currentVariants, LOCAL, takesNoArgs } from "../../src/contracts/internal.ts";
+import {
+	checkAccepts,
+	currentMembers,
+	currentVersion,
+	grantedMembers,
+	memberOrder,
+	takesNoArgs,
+} from "../../src/contracts/internal.ts";
 import { bindProvider, checkParams } from "../../src/data/internal.ts";
 import type { Watchable } from "../../src/state/index.ts";
 import { expectCollected, Server } from "../support.ts";
@@ -25,10 +37,8 @@ const Notes = remote("notes", {
 	version: 1,
 	params: { session: str(), page: int() },
 	hostAddress: () => Server(),
-	variants: {
-		editor: { state: { notes: arr(str()) }, methods: { add: method(obj({ text: str() }), str()), clear: method() } },
-		reader: { state: { notes: arr(str()) } },
-	},
+	state: { notes: arr(str()) },
+	methods: { add: grantable(method(obj({ text: str() }), str())), clear: grantable(method()) },
 });
 
 describe("contract handles", () => {
@@ -55,18 +65,62 @@ describe("contract handles", () => {
 	});
 });
 
-/** The members of one variant of a remote implementation. */
-type Members<C extends Contract, V extends string> = Extract<Implementation<C>, { readonly variant: V }>["members"];
+describe("member names", () => {
+	it("lists a remote contract's state members, methods and event members of the current version, grantable ones too", () => {
+		expect(memberNames(Notes)).toEqual({ state: ["notes"], methods: ["add", "clear"], events: [] });
+		const next = evolve(Notes, (e) => e.addState("count", int()).removeMethod("clear"));
+		expect(memberNames(next)).toEqual({ state: ["notes", "count"], methods: ["add"], events: [] });
+	});
+
+	it("lists a local contract's, without its keyed and queries members", () => {
+		const Store = local("names.store", {
+			version: 1,
+			params: {},
+			members: {
+				count: int(),
+				notes: keyed(str()),
+				rows: queries(obj({ id: str() }), { one: obj({ id: str() }) }),
+				ticked: event(int()),
+				add: method(int()),
+			},
+		});
+		expect(memberNames(Store)).toEqual({ state: ["count"], methods: ["add"], events: ["ticked"] });
+	});
+
+	it("refuses a copy of a contract", () => {
+		expect(() => memberNames({ ...Notes })).toThrow("not a declared contract");
+	});
+});
+
+describe("member order", () => {
+	it("is made once per members: every binding of them shares the lists, each kind sorted", () => {
+		const members = currentMembers(Notes);
+		const order = memberOrder(members);
+		expect(order).toEqual({ state: ["notes"], methods: ["add", "clear"], events: [] });
+		expect(memberOrder(members)).toBe(order);
+		// Granted members are members of their own: their order is theirs, made once too.
+		const granted = grantedMembers(currentVersion(Notes), new Set(["add"]));
+		expect(memberOrder(granted)).toEqual({ state: ["notes"], methods: ["add"], events: [] });
+		expect(memberOrder(grantedMembers(currentVersion(Notes), new Set(["add"])))).toBe(memberOrder(granted));
+	});
+
+	it("is kept by no contract: both are collected", async () => {
+		const refs = (() => {
+			const contract = local("gc.order", { version: 1, params: {}, members: { s: str(), go: method() } });
+			return [new WeakRef(contract), new WeakRef(memberOrder(currentMembers(contract)))];
+		})();
+		await expectCollected(...refs);
+	});
+});
 
 describe("derived types", () => {
-	it("Implementation: one variant with its members, state watchables and methods taking args and a context", () => {
-		expectTypeOf<Implementation<typeof Notes>["variant"]>().toEqualTypeOf<"editor" | "reader">();
-		type Editor = Members<typeof Notes, "editor">;
-		expectTypeOf<Editor["notes"]>().toEqualTypeOf<Watchable<string[]>>();
-		expectTypeOf<Editor["add"]>().toEqualTypeOf<(args: { text: string }, context: Context) => Promise<string>>();
+	it("Implementation: every member, state watchables and methods taking args and a context", () => {
+		type Members = Implementation<typeof Notes>;
+		expectTypeOf<keyof Members>().toEqualTypeOf<"notes" | "add" | "clear">();
+		expectTypeOf<Members["notes"]>().toEqualTypeOf<Watchable<string[]>>();
+		expectTypeOf<Members["add"]>().toEqualTypeOf<(args: { text: string }, context: Context) => Promise<string>>();
 		// A method without arguments omits them.
-		expectTypeOf<Editor["clear"]>().toEqualTypeOf<(context: Context) => Promise<null>>();
-		expectTypeOf<keyof Members<typeof Notes, "reader">>().toEqualTypeOf<"notes">();
+		expectTypeOf<Members["clear"]>().toEqualTypeOf<(context: Context) => Promise<null>>();
 	});
 
 	it("Implementation of a local contract is flat", () => {
@@ -101,7 +155,7 @@ describe("derived types", () => {
 				maybe: method(union([nul(), str()])),
 			},
 		});
-		const methods = [...currentVariants(Counts).get(LOCAL)!.methods].map(([name, data]) => [name, takesNoArgs(data)]);
+		const methods = [...currentMembers(Counts).methods].map(([name, data]) => [name, takesNoArgs(data)]);
 		expect(methods).toEqual([
 			["reset", true],
 			["total", true],

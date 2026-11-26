@@ -1,7 +1,8 @@
 import { arr, bool, int, nul, num, obj, opt, type Static, str, union, unknown } from "@earendil-works/pi-schema";
-import type { Ctx } from "@p2/app/v1";
 import {
+	type Ctx,
 	evolve,
+	grantable,
 	keyedRegistry,
 	literal,
 	local,
@@ -9,6 +10,7 @@ import {
 	method,
 	param,
 	propertiesOf,
+	type RefWith,
 	record,
 	remote,
 	SessionLockSchema,
@@ -25,7 +27,7 @@ export {
 	ThinkingLevelSchema,
 } from "@p2/app/v1";
 
-/** A session row's fields before `/tree` (`Sessions` v3, `Catalog` v2). */
+/** A session row's fields before `/tree` (`Catalog` v2). */
 const SESSION_FIELDS = {
 	id: str(),
 	env: opt(union([str(), nul()])),
@@ -40,15 +42,25 @@ const SESSION_FIELDS = {
 };
 const SessionSchemaV3 = obj(SESSION_FIELDS);
 
-/** `Sessions` v4 and `Catalog` v3: branch labels were always text. */
+/** `Catalog` v3: branch labels were always text. */
 const BranchSchemaV4 = obj({ conversation: int({ minimum: 1 }), label: str() });
 const SessionSchemaV4 = obj({ ...SESSION_FIELDS, main: int({ minimum: 1 }), branches: arr(BranchSchemaV4) });
 
+/** `Catalog` v4: a branch's label may be null (the session title). */
+export const BranchSchemaV5 = obj({ conversation: int({ minimum: 1 }), label: union([str(), nul()]) });
+const SessionSchemaV5 = obj({ ...SESSION_FIELDS, main: int({ minimum: 1 }), branches: arr(BranchSchemaV5) });
+
 /**
- * A `/tree` branch as the sidebar lists it: its conversation and its stored label (`MainDoc`); null shows the session
- * title (conversation 1 until it is renamed).
+ * A `/tree` branch as the sidebar lists it: its conversation, its stored label (`MainDoc`; null shows the session
+ * title: conversation 1 until it is renamed) and `parent`, the top-level conversation it was forked from (its Durable
+ * conversation record's). Absent for conversation 1, for a branch started before the first message (a new conversation,
+ * no fork), and in rows reported before it was.
  */
-export const BranchSchema = obj({ conversation: int({ minimum: 1 }), label: union([str(), nul()]) });
+export const BranchSchema = obj({
+	conversation: int({ minimum: 1 }),
+	label: union([str(), nul()]),
+	parent: opt(int({ minimum: 1 })),
+});
 export type Branch = Static<typeof BranchSchema>;
 
 export const SessionSchema = obj({
@@ -120,6 +132,16 @@ export const OperationSchema = union([
 export type Operation = Static<typeof OperationSchema>;
 
 /**
+ * Every session's catalog row by its id (server, host-internal): built once per catalog write, so each worker's view
+ * of its own row (`Sessions`, a worker's `session`) is a lookup, not a scan of the rows. 2: a branch's `parent`.
+ */
+export const SessionIndex = local("p2.session-index", {
+	version: 2,
+	params: {},
+	members: { byId: record(SessionSchema) },
+});
+
+/**
  * Archived sessions whose worker may start anyway, without resuming Durable work: rebuilding their search index
  * (server, host-internal; the search plugin's `rebuildIndex`, as Pi Mobile's).
  */
@@ -182,11 +204,24 @@ const CatalogV3 = evolve(CatalogV2, (e) =>
 		),
 );
 
+/** 4: a branch's label may be null (the session title). */
+const CatalogV4 = evolve(CatalogV3, (e) =>
+	e
+		.state("sessions", arr(SessionSchemaV5))
+		.result("get", SessionSchemaV5)
+		.result("create", SessionSchemaV5)
+		.method(
+			"update",
+			obj({ ...UPDATE_FIELDS, main: opt(int({ minimum: 1 })), branches: opt(arr(BranchSchemaV5)) }),
+			SessionSchemaV5,
+		),
+);
+
 /**
- * The session catalog (server, SQLite): every session, archived ones included. Host-internal. 4: a branch's label may
- * be null (the session title). The provider still serves 2 and 3 (its `accepts`).
+ * The session catalog (server, the server store's table keyed by each session's address): every session, archived
+ * ones included. Host-internal. 5: a branch's `parent`. The provider still serves 2, 3 and 4 (its `accepts`).
  */
-export const Catalog = evolve(CatalogV3, (e) =>
+export const Catalog = evolve(CatalogV4, (e) =>
 	e
 		.state("sessions", arr(SessionSchema))
 		.result("get", SessionSchema)
@@ -199,122 +234,100 @@ export const Catalog = evolve(CatalogV3, (e) =>
 );
 
 /**
- * Sessions as a principal sees them, before `/tree`: the base of the history (2: thinking levels are an enum;
- * configureSelf takes either field alone. 3: `clone` and `fork` (owner)).
+ * Sessions as a principal sees them. The owner lists and manages all (`SESSIONS_OWNER`); a guest sees its own sessions
+ * (`sessions`); a worker sees and reports only its own session (`SESSIONS_WORKER`, its principal names it). 3: `clone`
+ * and `fork`. 4: rows carry `main` and `branches`; the worker's `treeSelf`. 5: a branch's label may be null. 6:
+ * client-chosen IDs and lifecycle operations as jobs. 7: a branch's `parent`. 8: a new base (grantable members
+ * replaced variants; older versions are refused, their pages and TUIs reload).
+ *
+ * `create` takes the new session's `id`, `clone` and `fork` the copy's (`copy`), so a page navigates at once. `clone`,
+ * `fork`, `relocate` and `archive` answer once their effect is visible (the copy's row, the archived row) or started (a
+ * move), and their long part runs as a job, shown in `operations` (running, then gone or failed with its error) until
+ * `dismissOperation`. A `relocate` the worker refuses (busy) is a failed operation.
  */
-const SessionsV3 = remote("p2.sessions", {
-	version: 3,
+export const Sessions = remote("p2.sessions", {
+	version: 8,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: {
-				sessions: arr(SessionSchemaV3),
-				/** Working directory suggested for a new session: the most recently active one, or the home directory. */
-				defaultCwd: str(),
-				defaultEnv: union([str(), nul()]),
-			},
-			methods: {
-				create: method(CreateSchema, SessionSchemaV3),
-				relocate: method(
-					obj({
-						id: str(),
-						cwd: str({ minLength: 1 }),
-						env: union([str(), nul()]),
-					}),
-				),
-				rename: method(obj({ id: str(), title: Title })),
-				pin: method(obj({ id: str(), pinned: bool() })),
-				archive: method(Id),
-				restore: method(Id),
-				/**
-				 * A copy of the session as it is now (pi's `/clone`): its store with every conversation, and its artifacts,
-				 * downloads and uploads, under a new ID. Refused while the session's worker has work running.
-				 */
-				clone: method(Id, SessionSchemaV3),
-				/**
-				 * A new session holding the active context of `conversation` before the entry `before` (pi's `/fork` from a
-				 * user message: that message is not part of it). The main conversation or one of its `/tree` branches.
-				 */
-				fork: method(
-					obj({
-						id: str(),
-						conversation: int({ minimum: 1 }),
-						before: int({ minimum: 1 }),
-					}),
-					SessionSchemaV3,
-				),
-			},
-		},
-		/** A guest sees its one session while it is not archived. */
-		guest: {
-			state: { sessions: arr(SessionSchemaV3) },
-		},
-		worker: {
-			state: { session: union([SessionSchemaV3, nul()]) },
-			methods: {
-				renameSelf: method(obj({ title: Title }), obj({ previous: str() })),
-				/** The root conversation's configuration changed (either field alone): the catalog entry follows. */
-				configureSelf: method(obj({ model: opt(ModelRefSchema), thinkingLevel: opt(ThinkingLevelSchema) })),
-			},
-		},
+	state: {
+		sessions: grantable(arr(SessionSchema)),
+		/** Working directory suggested for a new session: the most recently active one, or the home directory. */
+		defaultCwd: grantable(str()),
+		defaultEnv: grantable(union([str(), nul()])),
+		operations: grantable(arr(OperationSchema)),
+		/** The worker's own row. */
+		session: grantable(union([SessionSchema, nul()])),
+	},
+	methods: {
+		create: grantable(method(CreateArgsSchema, SessionSchema)),
+		relocate: grantable(
+			method(
+				obj({
+					id: str(),
+					cwd: str({ minLength: 1 }),
+					env: union([str(), nul()]),
+				}),
+			),
+		),
+		rename: grantable(method(obj({ id: str(), title: Title }))),
+		pin: grantable(method(obj({ id: str(), pinned: bool() }))),
+		archive: grantable(method(Id)),
+		restore: grantable(method(Id)),
+		/**
+		 * A copy of the session as it is now (pi's `/clone`): its store with every conversation, and its artifacts,
+		 * downloads and uploads, under a new ID. Refused while the session's worker has work running.
+		 */
+		clone: grantable(method(obj({ id: str(), copy: opt(SessionIdSchema) }), SessionSchema)),
+		/**
+		 * A new session holding the active context of `conversation` before the entry `before` (pi's `/fork` from a
+		 * user message: that message is not part of it). The main conversation or one of its `/tree` branches.
+		 */
+		fork: grantable(
+			method(
+				obj({
+					id: str(),
+					conversation: int({ minimum: 1 }),
+					before: int({ minimum: 1 }),
+					copy: opt(SessionIdSchema),
+				}),
+				SessionSchema,
+			),
+		),
+		dismissOperation: grantable(method(obj({ operation: str() }), nul())),
+		/** The worker's. */
+		renameSelf: grantable(method(obj({ title: Title }), obj({ previous: str() }))),
+		/** The root conversation's configuration changed (either field alone): the catalog entry follows. */
+		configureSelf: grantable(method(obj({ model: opt(ModelRefSchema), thinkingLevel: opt(ThinkingLevelSchema) }))),
+		/**
+		 * The session's main conversation or its branches changed (a `/tree` switch or fork, a branch renamed), or the
+		 * worker started; the catalog entry follows, so clients open the main one and list the branches.
+		 */
+		treeSelf: grantable(method(obj({ main: int({ minimum: 1 }), branches: arr(BranchSchema) }), nul())),
 	},
 });
 
-/** 4: rows carry `main` and `branches`; the worker's `treeSelf`. */
-const SessionsV4 = evolve(SessionsV3, (e) =>
-	e
-		.state("owner", "sessions", arr(SessionSchemaV4))
-		.state("guest", "sessions", arr(SessionSchemaV4))
-		.state("worker", "session", union([SessionSchemaV4, nul()]))
-		.result("create", SessionSchemaV4)
-		.result("clone", SessionSchemaV4)
-		.result("fork", SessionSchemaV4)
-		.addMethod("worker", "treeSelf", obj({ main: int({ minimum: 1 }), branches: arr(BranchSchemaV4) }), nul()),
-);
+/** What the owner is granted on `Sessions`: the whole catalog and its lifecycle. */
+export const SESSIONS_OWNER = [
+	"sessions",
+	"defaultCwd",
+	"defaultEnv",
+	"operations",
+	"create",
+	"relocate",
+	"rename",
+	"pin",
+	"archive",
+	"restore",
+	"clone",
+	"fork",
+	"dismissOperation",
+] as const;
 
-/** 5: a branch's label may be null (the session title). */
-const SessionsV5 = evolve(SessionsV4, (e) =>
-	e
-		.state("owner", "sessions", arr(SessionSchema))
-		.state("guest", "sessions", arr(SessionSchema))
-		.state("worker", "session", union([SessionSchema, nul()]))
-		.result("create", SessionSchema)
-		.result("clone", SessionSchema)
-		.result("fork", SessionSchema)
-		.args("treeSelf", obj({ main: int({ minimum: 1 }), branches: arr(BranchSchema) })),
-);
+/** What a session's worker is granted on `Sessions`: its own row, and reports about itself. */
+export const SESSIONS_WORKER = ["session", "renameSelf", "configureSelf", "treeSelf"] as const;
 
-/**
- * Sessions as a principal sees them. The owner lists and manages all; a guest sees its own session; a worker sees
- * and renames only its own session (its principal names it). The provider still serves 3, 4 and 5 (its `accepts`):
- * pages and TUIs loaded before a deploy keep working.
- *
- * 6, client-chosen IDs and lifecycle operations as jobs: `create` takes the new session's `id`, `clone` and `fork` the
- * copy's (`copy`), so a page navigates at once. `clone`, `fork`, `relocate` and `archive` answer once their effect is
- * visible (the copy's row, the archived row) or started (a move), and their long part runs as a job, shown in
- * `operations` (running, then gone or failed with its error) until `dismissOperation`. A `relocate` the worker
- * refuses (busy) is a failed operation.
- *
- * The worker's `treeSelf`: the session's main conversation or its branches changed (a `/tree` switch or fork, a branch
- * renamed), or the worker started; the catalog entry follows, so clients open the main one and list the branches.
- */
-export const Sessions = evolve(SessionsV5, (e) =>
-	e
-		.args("create", CreateArgsSchema)
-		.args("clone", obj({ id: str(), copy: opt(SessionIdSchema) }))
-		.args(
-			"fork",
-			obj({
-				id: str(),
-				conversation: int({ minimum: 1 }),
-				before: int({ minimum: 1 }),
-				copy: opt(SessionIdSchema),
-			}),
-		)
-		.addState("owner", "operations", arr(OperationSchema))
-		.addMethod("owner", "dismissOperation", obj({ operation: str() }), nul()),
-);
+/** The owner's reference to the session catalog. */
+export type SessionsOwner = RefWith<typeof Sessions, (typeof SESSIONS_OWNER)[number]>;
 
 const Location = obj({ id: str(), cwd: str({ minLength: 1 }), env: union([str(), nul()]) });
 
@@ -374,27 +387,23 @@ export const SessionMoves = local("p2.session-moves", {
  * with them before anyone sends to it.
  */
 export const SessionTransfer = remote("p2.session-transfer", {
-	// 3: `copyFiles`.
-	version: 3,
+	// 3: `copyFiles`. 4: a new base (grantable members replaced variants; older versions are refused).
+	version: 4,
 	params: { session: param.str() },
 	hostAddress: sessionHost,
-	variants: {
-		server: {
-			methods: {
-				/** Durable `EntryDraft`s: kind, data, the model messages with context edits applied, `head: "self"` first. */
-				history: method(
-					obj({ conversation: int({ minimum: 1 }), before: int({ minimum: 1 }) }),
-					obj({ entries: arr(unknown()) }),
-				),
-				/** Appends `entries` to the main conversation in one commit; refused when it has history already. */
-				seed: method(obj({ entries: arr(unknown()) })),
-				/**
-				 * Copies this session's files (the kit's `Files`: index and blobs) into the directory of the new session
-				 * `to`, which must not exist yet (its worker waits while a fork copies).
-				 */
-				copyFiles: method(obj({ to: str() })),
-			},
-		},
+	methods: {
+		/** Durable `EntryDraft`s: kind, data, the model messages with context edits applied, `head: "self"` first. */
+		history: method(
+			obj({ conversation: int({ minimum: 1 }), before: int({ minimum: 1 }) }),
+			obj({ entries: arr(unknown()) }),
+		),
+		/** Appends `entries` to the main conversation in one commit; refused when it has history already. */
+		seed: method(obj({ entries: arr(unknown()) })),
+		/**
+		 * Copies this session's files (the kit's `Files`: index and blobs) into the directory of the new session
+		 * `to`, which must not exist yet (its worker waits while a fork copies).
+		 */
+		copyFiles: method(obj({ to: str() })),
 	},
 });
 
@@ -415,14 +424,58 @@ export const SessionLocks = local("p2.session-locks", {
  * reads its own session's (its principal names it).
  */
 export const SessionLock = remote("p2.session-lock", {
-	version: 1,
+	version: 2,
 	params: {},
 	hostAddress: serverHost,
-	variants: {
-		owner: {
-			state: { locks: record(SessionLockSchema) },
-			methods: { set: method(obj({ session: str(), lock: LockOrNone })) },
-		},
-		worker: { state: { lock: LockOrNone } },
+	state: {
+		/** The owner's. */
+		locks: grantable(record(SessionLockSchema)),
+		/** A worker's. */
+		lock: grantable(LockOrNone),
 	},
+	/** The owner's. */
+	methods: { set: grantable(method(obj({ session: str(), lock: LockOrNone }))) },
+});
+
+/**
+ * How long a sidebar rollup keeps showing a session that nothing else keeps in view (pinned, open, working, unread,
+ * failed): one day, three days, a week, or as long as it is not archived.
+ */
+export const SidebarWindowSchema = union([literal("1d"), literal("3d"), literal("1w"), literal("forever")]);
+export type SidebarWindow = Static<typeof SidebarWindowSchema>;
+
+/** A rollup's key (plugins/sessions/sidebar/model.ts): `recent`, `projects`, `folders`, `archive`. */
+const SidebarKey = str({ minLength: 1, maxLength: 1000 });
+
+const SIDEBAR_SETTINGS_STATE = {
+	/** Rollup keys in the order the owner put them; rollups not named follow in their default order. */
+	order: arr(str()),
+	/** Each rollup's window by key; a rollup not named has the default. */
+	windows: record(SidebarWindowSchema),
+	/** Whether a rollup shows only its heading, by key; one not named shows its sessions. */
+	collapsed: record(bool()),
+};
+const SIDEBAR_SETTINGS_METHODS = {
+	setOrder: method(obj({ order: arr(SidebarKey, { maxItems: 100 }) })),
+	setWindow: method(obj({ key: SidebarKey, window: SidebarWindowSchema })),
+	setCollapsed: method(obj({ key: SidebarKey, collapsed: bool() })),
+};
+
+/**
+ * The owner's sidebar settings (server, host-internal, persisted in the server's store: a person's view, not the
+ * session catalog): the rollups' order and windows, and which rollups are collapsed.
+ */
+export const SidebarSettingsStore = local("p2.sidebar-settings-store", {
+	version: 1,
+	params: {},
+	members: { ...SIDEBAR_SETTINGS_STATE, ...SIDEBAR_SETTINGS_METHODS },
+});
+
+/** The owner's sidebar settings, and the methods that change them. */
+export const SidebarSettings = remote("p2.sidebar-settings", {
+	version: 2,
+	params: {},
+	hostAddress: serverHost,
+	state: SIDEBAR_SETTINGS_STATE,
+	methods: SIDEBAR_SETTINGS_METHODS,
 });

@@ -1,22 +1,26 @@
 // `startServer` (slice 13 §1, §5; decisions "The app kit, point 1" to "point 5"): the server of an app built with the kit.
 // It lays out the data directory, opens the server's store, creates the server host, the HTTP component and one
 // workers component per worker kind, the plugins component over the app's required root and the user's root, loads
-// the server's plugins with the kit's own facets (the start-data object, sessions, the owner link, pairing, files),
-// and gives the app the controls it needs: the owner link, `applyChanges`, installs, export and import per address.
+// the server's plugins with the kit's own facets (the start-data object, sign-ins, the owner link, pairing, files),
+// and gives the app the controls it needs: the owner link, `applyChanges`, installs, export, import and delete per
+// address (the worker's data and the server's records and rows belonging to the address).
 // After the listen, off the start's path, it builds the bases (the surfaces' base bundles, each worker kind's worker
 // base) and records the base code the `base` mark compares.
 
-import { statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream, statSync } from "node:fs";
+import { mkdtemp, rename, rm } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import type { TelemetryContext } from "@earendil-works/pi-telemetry";
 import { type Context, withAbortSignal } from "../../context/index.ts";
 import { type Address, type HostKind, hostKind, type KindShape } from "../../contracts/index.ts";
-import type { Principal } from "../../data/index.ts";
+import { isChordError, type Principal } from "../../data/index.ts";
 import { principalKey, samePrincipal } from "../../data/principal.ts";
 import { createHost, type Host, type HostError, type PluginFacet, type PrincipalAttributes } from "../../host/index.ts";
 import { isJsonValue, type JsonValue } from "../../json.ts";
 import { openNodeSqliteDatabase } from "../../sqlite/node.ts";
-import { openStore, type Store, sqliteBackend } from "../../store/index.ts";
+import { decodeJsonl, encodeJsonl, openStore, type Store, sqliteBackend } from "../../store/index.ts";
 import { localeChoiceFacet, themeChoiceFacet, themesFacet, translationsFacet } from "../../surfaces/index.ts";
 import { type TelemetryIngestTarget, telemetryIngestFacet } from "../../telemetry-ingest/index.ts";
 import type { Watchable } from "../../watch.ts";
@@ -39,6 +43,7 @@ import {
 	type TuiSurfaceOptions,
 	tuiSurface,
 	WEB_PREFIX,
+	type WebRoutesOptions,
 	type WebSurface,
 	type WebSurfaceOptions,
 	webSurface,
@@ -52,7 +57,7 @@ import {
 	type WorkersBuilt,
 	type WorkersError,
 } from "../workers/index.ts";
-import { ARCHIVE_FORMAT, type ArchiveManifest, packData, unpackData } from "./archive.ts";
+import { ARCHIVE_FORMAT, type ArchiveManifest, exists, packData, unpackStaging } from "./archive.ts";
 import { addressParam, HostData } from "./data.ts";
 import { type FilesCaps, filesFacet } from "./files.ts";
 import { appInfoFacet } from "./info.ts";
@@ -60,7 +65,7 @@ import { type AppLayout, createLayout, defaultDataDir, openDataDir, privateStore
 import { OWNER_PATH, OwnerLink, ownerFacet, ownerTokenFile } from "./owner.ts";
 import { Pairings, pairingFacet } from "./pairing.ts";
 import { secretFile } from "./secrets.ts";
-import { createSessions } from "./sessions.ts";
+import { createSignIns } from "./sign-ins.ts";
 
 /** The server's host kind: the kit's server host is `Server()`. */
 export const Server = hostKind("server");
@@ -185,14 +190,14 @@ export type AppOptions<P extends Principal> = {
 } & ({ readonly workers?: readonly [] } | { readonly principal: { readonly worker: (address: Address) => P } });
 
 /**
- * The bounds of what public endpoints, clients and imports may cost: live ephemeral sessions (1,000; past it the
+ * The bounds of what public endpoints, clients and imports may cost: live ephemeral sign-ins (1,000; past it the
  * oldest ends, signed out), pairings under way that anonymous clients started (100 in all, 10 per client address; past
  * them 429; the owner's own are not counted), uploads under way per `Files` object (64; past it `unavailable`, `busy`),
  * an archive's unpacked bytes (4 GiB) and entries (100,000).
  */
 export type AppLimits = {
 	readonly uploads?: number;
-	readonly ephemeralSessions?: number;
+	readonly ephemeralSignIns?: number;
 	readonly pendingPairings?: number;
 	readonly pairingsPerAddress?: number;
 	readonly importBytes?: number;
@@ -210,7 +215,7 @@ export type AppTimeouts = {
 };
 
 /** The kit's web surface options (`webSurface`'s, its kind `web` and plugins the kit's). */
-export type AppWeb = Pick<WebSurfaceOptions, "entry" | "page" | "paths" | "public" | "conditions">;
+export type AppWeb = Pick<WebSurfaceOptions, "entry" | "conditions"> & Omit<WebRoutesOptions, "routes">;
 
 /** The plugins of a running app, for its "apply changes" control and its installs. */
 export type AppPlugins = {
@@ -240,7 +245,7 @@ export interface App<P extends Principal> {
 	readonly dataDir: string;
 	/** The owner link of this start (single use, 10 minutes): `http://127.0.0.1:<port>/_chord/owner#<token>`. */
 	ownerLink(): string;
-	/** The owner token file's path (a device session of the owner, mode 0600). */
+	/** The owner token file's path (a device sign-in of the owner, mode 0600). */
 	readonly ownerTokenFile: string;
 	/**
 	 * Settles once every base (the web and terminal base bundles, each worker kind's worker base) was built after the
@@ -260,19 +265,34 @@ export interface App<P extends Principal> {
 	 */
 	applyChanges(context: Context): Promise<RolloutResult>;
 	/**
-	 * Writes the data the worker at `address` created (its store and finished files) as an archive at `path`, stopping
-	 * nothing: a running worker packs its own store at one consistent point; without one the server packs it under the
-	 * worker's lock (no worker starts meanwhile).
+	 * Writes the data of the worker at `address` (its store and finished files, and the server's records and rows
+	 * belonging to the address) as an archive at `path`, stopping nothing: a running worker packs its own store at one
+	 * consistent point; without one the server packs it under the worker's lock (no worker starts meanwhile).
 	 */
 	exportData(address: Address, path: string, context: Context): Promise<void>;
 	/**
-	 * Makes the data of `address` (which must have none yet: nothing is overwritten) from the archive at `archive`,
-	 * under the worker's lock; its next hold starts it.
+	 * Makes the data of `address` from the archive at `archive` (an archive of an address of its kind; another address
+	 * is a copy: the server's host cells and keys are rewritten), under the worker's lock; its next hold starts it. An
+	 * address with data (a directory, server records or rows) is refused, unless `options.existing` is `"replace"`:
+	 * then its data is replaced. A refused or definitely failed import is undone (the old directory back, nothing new
+	 * left); one whose server commit has an unknown outcome (`storage_failed`) undoes nothing: the new directory stays in
+	 * place and the old one aside, and the rejection says so.
 	 */
-	importData(archive: string, address: Address, context: Context): Promise<void>;
+	importData(archive: string, address: Address, context: Context, options?: DataImportOptions): Promise<void>;
+	/**
+	 * Deletes the data of `address` (its worker's directory and the server's records and rows belonging to it) under
+	 * the worker's lock; refused while its worker runs.
+	 */
+	deleteData(address: Address, context: Context): Promise<void>;
 	/** Closes the HTTP component, the workers, the host, the store, the watcher and the data directory's lock. */
 	close(context: Context): Promise<void>;
 }
+
+/** What `importData` takes besides the archive and the address. */
+export type DataImportOptions = {
+	/** What happens when the address has data: refused (the default), or replaced. */
+	readonly existing?: "refuse" | "replace";
+};
 
 /** What `startWorker` reads from its start data besides the app's: the kit's part. */
 export type KitStart = {
@@ -302,7 +322,7 @@ export async function startServer<P extends Principal>(options: AppOptions<P>, c
 		context,
 	);
 	const { onError, api, limits = {} } = options;
-	const sessions = createSessions<P>(cookieSecret, { maxEphemeral: limits.ephemeralSessions });
+	const signIns = createSignIns<P>(cookieSecret, { maxEphemeral: limits.ephemeralSignIns });
 	const { telemetry, principalAttributes } = options;
 	const host = createHost<P>({
 		address: Server(),
@@ -317,7 +337,7 @@ export async function startServer<P extends Principal>(options: AppOptions<P>, c
 		host,
 		{
 			listen: options.listen ?? { host: "127.0.0.1", port: 0 },
-			links: { path: "/chord", opened: sessions.opened },
+			links: { path: "/chord", opened: signIns.opened },
 			telemetry,
 			onError: (error) => onError({ kind: "http", error }),
 		},
@@ -352,7 +372,7 @@ export async function startServer<P extends Principal>(options: AppOptions<P>, c
 			name: "chord.app.info",
 			facet: appInfoFacet({ dataDir: layout.dataDir, name: options.name, version: api.versions[0] ?? "", owner }),
 		},
-		{ name: "chord.app.sessions", facet: sessions.facet },
+		{ name: "chord.app.sign-ins", facet: signIns.facet },
 		{ name: "chord.app.owner", facet: ownerFacet(link, owner) },
 		{
 			name: "chord.app.pairing",
@@ -370,6 +390,8 @@ export async function startServer<P extends Principal>(options: AppOptions<P>, c
 	if (telemetry !== undefined) {
 		const facet = telemetryIngestFacet<P>({
 			target: telemetry,
+			// Every link of the kit's server is signed in: its pages are the app's own people's.
+			admit: () => true,
 			workerHost: (principal) => workerHosts.get(principalKey(principal, context)),
 			principalAttributes: (principal) => host.principalAttributes(principal, context),
 		});
@@ -383,7 +405,7 @@ export async function startServer<P extends Principal>(options: AppOptions<P>, c
 	};
 	try {
 		for (const kind of options.workers ?? []) {
-			workers.set(kind.kind.kind, workersOf(host, kind, options, layout, plugins, workerHosts, context));
+			workers.set(kind.kind.kind, workersOf(host, store, kind, options, layout, plugins, workerHosts, context));
 		}
 		for (const surface of surfacesOf(host, options, plugins)) {
 			surfaces.push(surface);
@@ -409,7 +431,7 @@ export async function startServer<P extends Principal>(options: AppOptions<P>, c
 
 /**
  * Refuses an owner the kit could not recognize or that would act as the server (a declaration policy the types cannot
- * express): sessions keep the owner as JSON, so a field `undefined` (or anything else not strict JSON) would never
+ * express): sign-ins keep the owner as JSON, so a field `undefined` (or anything else not strict JSON) would never
  * match it again; the server's principal reaches every worker's kit objects.
  */
 function checkOwner<P extends Principal>(owner: P, server: P, context: Context): void {
@@ -571,6 +593,7 @@ function modulesOf(api: AppApi, kind: AppKind | undefined): HostPackages {
  */
 function workersOf<P extends Principal>(
 	host: Host<P>,
+	store: Store,
 	kind: AppWorkerKind<P>,
 	options: AppOptions<P>,
 	layout: AppLayout,
@@ -594,6 +617,8 @@ function workersOf<P extends Principal>(
 			...(kind.env === undefined ? {} : { env: kind.env }),
 			baseDir: join(layout.workerBases, kind.kind.kind),
 			compileCache: layout.compileCache,
+			// The server's: a worker's exit is published after the commits its calls queued there.
+			store,
 			// The server reaches its workers' kit objects (`HostData`) whatever the app admits.
 			authorize: (principal, address) =>
 				samePrincipal(principal, server, context) || kind.authorize(principal, address),
@@ -614,7 +639,7 @@ function workersOf<P extends Principal>(
 				};
 				return { kit, app: await kind.start(address, ctx) };
 			},
-			lock: (address) => workerLock(options.name, dataDir, address),
+			lock: (address) => workerLock(options.name, dataDir, address.key),
 			...(kind.idleMs === undefined ? {} : { idleMs: kind.idleMs }),
 			plugins,
 			onError: (error) => options.onError({ kind: "workers", error }),
@@ -623,9 +648,17 @@ function workersOf<P extends Principal>(
 	);
 }
 
+/**
+ * Whether a host data commit's rejection leaves its outcome unknown: the store stopped after or during `COMMIT`
+ * (`unavailable/storage_failed`), so the commit may stand.
+ */
+function unknownOutcome(error: unknown): boolean {
+	return isChordError(error) && error.code === "unavailable" && error.reason === "storage_failed";
+}
+
 /** The process lock of the worker at `address`: its worker holds it while it runs, an export or import meanwhile. */
-function workerLock(name: string, dataDir: string, address: Address): string {
-	return `${name}:${dataDir}:${address.key}`;
+function workerLock(name: string, dataDir: string, key: string): string {
+	return `${name}:${dataDir}:${key}`;
 }
 
 /** How long an export or import waits for a worker's lock: past it a worker holds it (it runs or starts). */
@@ -752,12 +785,33 @@ class RunningApp<P extends Principal> implements App<P> {
 		const workers = this.#workersOf(address);
 		const manifest = this.#manifest(address);
 		const target = resolve(path);
+		// The server's part first, staged beside the archive: the worker or `packData` packs it with the rest.
+		const staging = await mkdtemp(join(dirname(target), ".chord-server-"));
+		const server = join(staging, "server.archive");
+		try {
+			const parts = encodeJsonl(this.host.exportHostData(address, context));
+			await pipeline(parts, createWriteStream(server, { mode: 0o600 }));
+			await this.#exportWorker(workers, address, manifest, server, target, context);
+		} finally {
+			await rm(staging, { recursive: true, force: true });
+		}
+	}
+
+	/** Packs the worker's data with the server's part `server` at `target`, by the running worker or under its lock. */
+	async #exportWorker(
+		workers: Workers<HostKind>,
+		address: Address,
+		manifest: ArchiveManifest,
+		server: string,
+		target: string,
+		context: Context,
+	): Promise<void> {
 		// Running: the worker packs its own store. Else the lock, unless a worker starts first: then ask it.
 		for (let attempt = 1; ; attempt++) {
 			if (workers.state.value[address.key]?.status === "running") {
 				const data = await this.host.get(HostData, { address: addressParam(address) }, context);
 				try {
-					await data.exportTo({ path: target, manifest: JSON.stringify(manifest) }, context);
+					await data.exportTo({ path: target, manifest: JSON.stringify(manifest), server }, context);
 				} finally {
 					data.release();
 				}
@@ -766,7 +820,7 @@ class RunningApp<P extends Principal> implements App<P> {
 			const lock = await this.#workerLock(address, context);
 			if (lock !== undefined) {
 				try {
-					await packData(workerDirectory(this.dataDir, address), manifest, target, context);
+					await packData(workerDirectory(this.dataDir, address), manifest, server, target, context);
 				} finally {
 					await lock.release();
 				}
@@ -776,20 +830,87 @@ class RunningApp<P extends Principal> implements App<P> {
 		}
 	}
 
-	async importData(archive: string, address: Address, context: Context): Promise<void> {
+	async importData(
+		archive: string,
+		address: Address,
+		context: Context,
+		options: DataImportOptions = {},
+	): Promise<void> {
 		this.#workersOf(address);
 		const { name, limits = {} } = this.#options;
+		const existing = options.existing ?? "refuse";
 		const accept = (manifest: ArchiveManifest): void => {
 			// A trust boundary: an archive from anywhere.
 			if (manifest?.format !== ARCHIVE_FORMAT) throw new Error(`importData: not a format ${ARCHIVE_FORMAT} archive`);
 			if (manifest.app !== name) throw new Error(`importData: an archive of "${manifest.app}", not "${name}"`);
+			if (manifest.address?.kind !== address.kind) {
+				throw new Error(`importData: an archive of a ${String(manifest.address?.kind)}, not a ${address.kind}`);
+			}
 		};
-		const lock = await this.#workerLock(address, context);
-		// A worker holds it: it runs, so the address has data, and nothing is overwritten.
-		if (lock === undefined) throw new Error(`importData: ${address.key} has data (its worker runs)`);
-		try {
+		const dir = workerDirectory(this.dataDir, address);
+		await this.#underLock(address, "importData", "has data (its worker runs)", context, async () => {
+			if (existing === "refuse" && (await exists(dir))) {
+				throw new Error(`importData: ${dir} exists already (an address is imported once)`);
+			}
+			// (1) Unpacked whole into staging: nothing changed yet.
 			const bounds = { bytes: limits.importBytes, entries: limits.importEntries };
-			await unpackData(resolve(archive), workerDirectory(this.dataDir, address), accept, bounds, context);
+			const { staging } = await unpackStaging(resolve(archive), dirname(dir), accept, bounds, context);
+			const aside = existing === "replace" && (await exists(dir)) ? `${dir}.aside-${randomUUID()}` : undefined;
+			let placed = false;
+			const undo = async (): Promise<void> => {
+				await rm(placed ? dir : staging, { recursive: true, force: true });
+				if (aside !== undefined && (await exists(aside))) await rename(aside, dir);
+			};
+			try {
+				// (2) The old directory aside, (3) the new one in place.
+				if (aside !== undefined) await rename(dir, aside);
+				await rename(staging, dir);
+				placed = true;
+				// (4) The server's part, the one commit, last.
+				const parts = decodeJsonl(createReadStream(join(dir, "server.archive")));
+				await this.host.importHostData(parts, context, { address, existing });
+			} catch (error) {
+				if (unknownOutcome(error)) {
+					// It may have committed: undoing could pair the old directory with the new server data.
+					throw new Error(
+						`importData: ${address.key}: the server's commit has an unknown outcome; nothing was undone (the ` +
+							`new directory is in place${aside === undefined ? "" : `, the old one at ${aside}`}). Run the ` +
+							`import again with existing: "replace" once the server's store is back.`,
+						{ cause: error },
+					);
+				}
+				await undo();
+				throw error;
+			}
+			// Committed: what is left over is harmless, so these never fail the import.
+			await rm(join(dir, "server.archive"), { force: true }).catch(() => {});
+			if (aside !== undefined) await rm(aside, { recursive: true, force: true }).catch(() => {});
+		});
+	}
+
+	async deleteData(address: Address, context: Context): Promise<void> {
+		this.#workersOf(address);
+		const dir = workerDirectory(this.dataDir, address);
+		await this.#underLock(address, "deleteData", "runs; stop its worker first", context, async () => {
+			// The server's part first (the one commit); a crash before the directory goes leaves it orphaned (nothing
+			// refers to it) and a repeated `deleteData` removes it.
+			await this.host.deleteHostData(address, context);
+			await rm(dir, { recursive: true, force: true });
+		});
+	}
+
+	/** Runs `work` under the worker's lock of `address` (refused while its worker runs: `<what>: <key> <held>`). */
+	async #underLock(
+		address: Address,
+		what: string,
+		held: string,
+		context: Context,
+		work: () => Promise<void>,
+	): Promise<void> {
+		const lock = await this.#workerLock(address, context);
+		if (lock === undefined) throw new Error(`${what}: ${address.key} ${held}`);
+		try {
+			await work();
 		} finally {
 			await lock.release();
 		}
@@ -800,7 +921,7 @@ class RunningApp<P extends Principal> implements App<P> {
 		const waited = AbortSignal.timeout(ADDRESS_LOCK_MS);
 		try {
 			return await processLock(
-				workerLock(this.#options.name, this.dataDir, address),
+				workerLock(this.#options.name, this.dataDir, address.key),
 				withAbortSignal(waited, context),
 			);
 		} catch (error) {

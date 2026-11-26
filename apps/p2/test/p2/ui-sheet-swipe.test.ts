@@ -5,13 +5,13 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@p2/app/v1";
-import { Sessions } from "../../plugins/sessions/contract.ts";
+import { SESSIONS_OWNER, Sessions } from "../../plugins/sessions/contract.ts";
 import { Browser, browserTests } from "./browser.ts";
-import { type Fixture, holdIn, startFixture } from "./helpers.ts";
+import { type Fixture, holdWith, startFixture } from "./helpers.ts";
 
 const point = (selector: string) =>
 	`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 12) }; })()`;
-const open = `Boolean(document.querySelector('[role=dialog][aria-label="Model"]'))`;
+const open = `Boolean(document.querySelector('[role=dialog][aria-label="Share"]'))`;
 
 describe("swiping a bottom sheet down", { skip: !browserTests }, () => {
 	let fixture: Fixture;
@@ -40,7 +40,7 @@ describe("swiping a bottom sheet down", { skip: !browserTests }, () => {
 	};
 
 	it("closes from its top edge or its content at the top, and settles back after a short pull", async () => {
-		const session = await (await holdIn(fixture.browser(), Sessions, {}, "owner")).create(
+		const session = await (await holdWith(fixture.browser(), Sessions, {}, ...SESSIONS_OWNER)).create(
 			{
 				cwd: fixture.workspace,
 				title: "Sheets",
@@ -55,10 +55,10 @@ describe("swiping a bottom sheet down", { skip: !browserTests }, () => {
 		});
 		await browser.call("Emulation.setTouchEmulationEnabled", { enabled: true });
 		await browser.open(`http://127.0.0.1:${fixture.server.port}/s/${session.id}`);
-		// The chip is disabled until the model resources arrive; a click before that does nothing.
-		await browser.wait(`document.querySelector('button[aria-label="Model and thinking"]')?.disabled === false`);
+		// The viewer count opens the Share sheet.
+		await browser.wait(`document.querySelector('.session-stats .client-count')`);
 		const openSheet = async () => {
-			await browser.evaluate(`document.querySelector('button[aria-label="Model and thinking"]').click()`);
+			await browser.evaluate(`document.querySelector('.session-stats .client-count').click()`);
 			await browser.wait(open);
 			// The opening slide is over.
 			await browser.evaluate("new Promise((resolve) => setTimeout(resolve, 400))");

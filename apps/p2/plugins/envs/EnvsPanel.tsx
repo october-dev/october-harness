@@ -1,4 +1,4 @@
-import type { Held } from "@p2/app/v1";
+import type { Ref } from "@p2/app/v1";
 import { BACKGROUND_CONTEXT } from "@p2/app/v1";
 import {
 	ChevronIcon,
@@ -7,11 +7,14 @@ import {
 	errorText,
 	LockIcon,
 	PlusIcon,
+	pressVerb,
 	Sheet,
 	SlotList,
+	upperFirst,
 	useNavigation,
 	useObject,
 	useOptimisticCall,
+	usePointerKind,
 	useReadable,
 } from "@p2/app/v1/web";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
@@ -255,7 +258,7 @@ function KeySection({
 	name,
 	onKey,
 }: {
-	service: Held<typeof Envs>;
+	service: Ref<typeof Envs>;
 	name: string;
 	onKey: (identityFile: string) => void;
 }) {
@@ -481,6 +484,7 @@ function FoldersField({
 	mounts: SandboxMount[];
 	onChange: (mounts: SandboxMount[]) => void;
 }) {
+	const press = upperFirst(pressVerb(usePointerKind()));
 	const [adding, setAdding] = useState<{ host: string; guest: string; readonly: boolean }>();
 	const ready = adding !== undefined && adding.host.trim() !== "" && adding.guest.trim() !== "";
 	const add = () => {
@@ -509,7 +513,9 @@ function FoldersField({
 					<button
 						type="button"
 						className="text-action"
-						title={mount.readonly ? "Read-only; tap to allow writes" : "Writable; tap to make read-only"}
+						title={
+							mount.readonly ? `Read-only: ${press} to allow writes` : `Writable: ${press} to make read-only`
+						}
 						onClick={() =>
 							onChange(
 								mounts.map((each, at) =>

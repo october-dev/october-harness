@@ -1,7 +1,6 @@
 import { canView, contribute, defineFacet, forbidden } from "@p2/app/v1";
-import { DOWNLOADS, DownloadError, Files, findDownload, saveDownload } from "@p2/app/v1/node";
+import { DownloadError, Files, findDownload, saveDownload } from "@p2/app/v1/node";
 import { Extensions, workerOf } from "@p2/app/v1/worker";
-import { FilesMirror } from "../files/contract.ts";
 import { MAX_SENT_PREVIEW, offeredBy, SentFiles } from "./contract.ts";
 import { createSendFileExtension, type SaveSnapshot } from "./tool.ts";
 
@@ -19,19 +18,18 @@ export function previewText(bytes: Buffer, partial: boolean): string | null {
 export default defineFacet((host) => {
 	contribute(host, "p2.send-file-tools", (self) => {
 		const worker = workerOf(self);
-		// Snapshots go into the session's files (space `downloads`, written by the agent), in a root of the worker's own;
-		// the server's mirror hears of the change before the tool answers.
+		// Snapshots go into the session's files (space `downloads`, written by the agent), in a root of the worker's own.
 		const save: SaveSnapshot = ({ name, size, conversation }, next, context) =>
-			worker().root(async (ctx) => {
-				const saved = await saveDownload(
-					await ctx.get(Files, {}),
-					{ name, size, source: "agent", ref: offeredBy(conversation) },
-					next,
-					ctx,
-				);
-				await (await ctx.get(FilesMirror, {})).push(DOWNLOADS, ctx);
-				return saved;
-			}, context);
+			worker().root(
+				async (ctx) =>
+					saveDownload(
+						await ctx.get(Files, {}),
+						{ name, size, source: "agent", ref: offeredBy(conversation) },
+						next,
+						ctx,
+					),
+				context,
+			);
 		const extension = createSendFileExtension(save);
 		self.contribute(Extensions, { [extension.name]: extension });
 	});
@@ -40,22 +38,19 @@ export default defineFacet((host) => {
 		if (!canView(principal, session)) throw forbidden("viewers only");
 		const files = self.get(Files, {});
 		return {
-			variant: "reader",
-			members: {
-				preview: async ({ id }, ctx) => {
-					const found = await findDownload(files, id, ctx);
-					if (found === undefined) throw new DownloadError(404, "File not found");
-					const length = Math.min(found.file.size, MAX_SENT_PREVIEW);
-					const bytes =
-						length === 0 ? new Uint8Array() : await files.read({ id: found.file.id, offset: 0, length }, ctx);
-					const truncated = found.file.size > bytes.length;
-					return {
-						name: found.name,
-						size: found.file.size,
-						text: previewText(Buffer.from(bytes), truncated),
-						truncated,
-					};
-				},
+			preview: async ({ id }, ctx) => {
+				const found = await findDownload(files, id, ctx);
+				if (found === undefined) throw new DownloadError(404, "File not found");
+				const length = Math.min(found.file.size, MAX_SENT_PREVIEW);
+				const bytes =
+					length === 0 ? new Uint8Array() : await files.read({ id: found.file.id, offset: 0, length }, ctx);
+				const truncated = found.file.size > bytes.length;
+				return {
+					name: found.name,
+					size: found.file.size,
+					text: previewText(Buffer.from(bytes), truncated),
+					truncated,
+				};
 			},
 		};
 	});

@@ -121,14 +121,16 @@ await plugins.rollout([plugins.step("server", server), workers.step("workers")],
     then updated only by what ships the kind (a rollout step of that kind, a direct `reload`): what a worker starts
     with. `build` never changes it.
   - `load(host, { kind, core, modules }, ctx)`: `kind`'s current set loaded with the runtime.
-  - `build(names, ctx)`: discovers again when the plugin set or a plugin's `package.json` changed, builds every facet
+  - `build(names, ctx)`: discovers again when the plugin set or a plugin's `package.json` changed, or when a named
+    plugin is unknown to discovery or a file discovery found for it is gone (the watcher's events can lag behind the
+    files: a plugin deleted or written just before a build of it is removed or added all the same), builds every facet
     of `names` and of plugins discovered since: `{ facets, plugins, removed }`, plain data (`plugins`: the built
     plugins as discovered, by name; a clone reloads the same).
   - `reload(host, built, ctx)`: applies `built` to the current set of the host's kind (its removed plugins and those
     rebuilt without a facet of the kind leave it, its facets replace theirs; applied and read in one step, so two
     reloads started together each pass their own) and reloads the host with that complete set.
   - `step(name, host)`: an in-process rollout step, one host named `name`. A step's `reload(built, ctx)` returns
-    `{ hosts: [{ host, report } | { host, stopped: true } | { host, error }] }` (D12). `rollout(steps, built, ctx)`
+    `{ hosts: [{ kind: "reloaded", host, report } | { kind: "stopped", host } | { kind: "failed", host, error }] }` (D12). `rollout(steps, built, ctx)`
     applies `built` to the current set of each step's kinds right before that step, runs the steps in order and stops
     at one that rejects (`stopped`); failed plugins and hosts do not stop it. It clears the dirty marks of the built
     plugins applied on every host of every step and unchanged since the build: a plugin failed on any host, or of a

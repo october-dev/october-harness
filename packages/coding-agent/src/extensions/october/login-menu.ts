@@ -1,6 +1,6 @@
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import { compareProviders } from "../../core/preferred-providers.ts";
-import type { AuthSelectorProvider } from "../../modes/interactive/components/oauth-selector.ts";
+import type { AuthSelectorProvider, AuthSelectorStatus } from "../../modes/interactive/components/oauth-selector.ts";
 
 export const LOGIN_MENU_TITLE = "Connect a provider";
 export const LOGIN_MENU_OPTIONS = ["October account", "Another provider account", "API key"];
@@ -13,12 +13,13 @@ export function getLoginProviderOptions(
 	const options: AuthSelectorProvider[] = [];
 	for (const provider of runtime.getProviders()) {
 		const authStatus = runtime.getProviderAuthStatus(provider.id);
-		const status = authStatus.configured
-			? {
-					type: runtime.isUsingOAuth(provider.id) ? ("oauth" as const) : ("api_key" as const),
-					source: authStatus.label ?? authStatus.source,
-				}
-			: undefined;
+		let status: AuthSelectorStatus | undefined;
+		if (authStatus.configured) {
+			const type = runtime.isUsingOAuth(provider.id) ? "oauth" : "api_key";
+			status = { kind: "configured", type, source: authStatus.label ?? authStatus.source };
+		} else if (authStatus.source === "stored") {
+			status = { kind: "unresolved" };
+		}
 		const subscription = provider.auth.oauth?.isSubscription === true;
 		if ((!authType || authType === "oauth") && provider.auth.oauth) {
 			options.push({

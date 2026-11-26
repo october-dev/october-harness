@@ -6,6 +6,7 @@
 // is tagged with its codec, so no JSON value is reserved: `[0, json]`, or `[1, base64]` for a part its origin deflated
 // (the text codec itself never compresses). A `hold`'s or `call`'s trace carrier is an optional element after its
 // other fields (slice 9); a `call`'s old-work flag (`old`) follows it as `true` (the carrier then `null` when absent).
+// An `event` message is `["E", [[hold, member, at, value]…]]`, an event ack `["a", events]`.
 
 import {
 	type BoundEntry,
@@ -64,7 +65,8 @@ function segmentsOf(message: Message): readonly Uint8Array[] | undefined {
 
 /** The tuple's JSON text, parts spliced in; wrapped with its origin when it has one. */
 function tuple(message: Message): string {
-	const origin = "origin" in message ? message.origin : undefined;
+	// Encoded on any kind: the message schema, after decoding, refuses an origin on a kind that has none.
+	const origin = (message as { readonly origin?: number }).origin;
 	return origin === undefined ? ownTuple(message) : `["@",${origin},${ownTuple(message)}]`;
 }
 
@@ -72,7 +74,12 @@ function tuple(message: Message): string {
 function ownTuple(message: Message): string {
 	switch (message.kind) {
 		case "hello":
-			return json(["h", message.protocol, message.incarnation, message.calls]);
+			return json([
+				"h",
+				message.protocol,
+				message.incarnation,
+				...(message.calls === undefined ? [] : [message.calls]),
+			]);
 		case "hold": {
 			const { address, principal, incarnation, chain, limit, trace } = message;
 			const head = json(["H", message.hold, message.type, message.version, message.fingerprint]).slice(0, -1);
@@ -119,7 +126,13 @@ function ownTuple(message: Message): string {
 		case "loading":
 			return json(["l", message.hold]);
 		case "ack":
-			return json(["a"]);
+			return json(message.events === undefined ? ["a"] : ["a", message.events]);
+		case "event": {
+			const entries = message.events.map(
+				({ hold, member, at, value }) => `[${hold},${member},${at},${partText(value)}]`,
+			);
+			return `["E",[${entries.join(",")}]]`;
+		}
 		case "closed":
 			return json(["C"]);
 		case "ping":
@@ -133,10 +146,10 @@ function json(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-/** `[hold, variant, [[member, value]…], failed?]`. */
-function boundEntry({ hold, variant, members, failed }: BoundEntry): string {
+/** `[hold, [granted…], [[member, value]…], failed?]`. */
+function boundEntry({ hold, granted, members, failed }: BoundEntry): string {
 	const pairs = members.map(({ member, value }) => `[${member},${partText(value)}]`).join(",");
-	return `[${hold},${variant},[${pairs}]${failedField(failed)}]`;
+	return `[${hold},[${granted.join(",")}],[${pairs}]${failedField(failed)}]`;
 }
 
 /** `[hold, [[member, ops]…], failed?, retired?]`; `failed` is `[]` when only `retired` follows. */
@@ -190,8 +203,13 @@ function fromFields(fields: unknown[], rest: Uint8Array): Message {
 	const field = <T>(index: number): T => f[index] as T;
 	switch (tag) {
 		case "h":
-			arity(3);
-			return { kind: "hello", protocol: field(0), incarnation: field(1), calls: field(2) };
+			arity(2, 3);
+			return {
+				kind: "hello",
+				protocol: field(0),
+				incarnation: field(1),
+				...(f.length === 3 ? { calls: field(2) } : {}),
+			};
 		case "H": {
 			arity(6, 7, 8, 9, 10, 11);
 			const address = list(f[5]);
@@ -243,10 +261,10 @@ function fromFields(fields: unknown[], rest: Uint8Array): Message {
 					if (fields.length !== 3 && fields.length !== 4) {
 						throw new Error(`text: a bound entry with ${fields.length} fields`);
 					}
-					const [hold, variant, members, failed] = fields;
+					const [hold, granted, members, failed] = fields;
 					return {
 						hold: hold as number,
-						variant: variant as number,
+						granted: list(granted) as number[],
 						members: pairs(members).map(([member, value]) => ({
 							member: member as number,
 							value: textPart(value),
@@ -302,8 +320,19 @@ function fromFields(fields: unknown[], rest: Uint8Array): Message {
 			arity(1);
 			return { kind: "loading", hold: field(0) };
 		case "a":
-			arity(0);
-			return { kind: "ack" };
+			arity(0, 1);
+			return f.length === 0 ? { kind: "ack" } : { kind: "ack", events: field(0) };
+		case "E":
+			arity(1);
+			return {
+				kind: "event",
+				events: list(f[0]).map((entry) => {
+					const fields = list(entry);
+					if (fields.length !== 4) throw new Error(`text: an event entry with ${fields.length} fields`);
+					const [hold, member, at, value] = fields;
+					return { hold: hold as number, member: member as number, at: at as number, value: textPart(value) };
+				}),
+			};
 		case "C":
 			arity(0);
 			// Its origin is the wrapper's; 0 without one, which the message schema refuses.

@@ -5,12 +5,15 @@ import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
+export const FIRST_TIME_SETUP_QUESTION = "Opt-in to anonymous usage data sharing?";
+
 export interface FirstTimeSetupResult {
 	theme: string;
 	shareAnalytics: boolean;
 }
 
 export interface FirstTimeSetupOptions {
+	onAnalyticsStep?: () => void;
 	onThemePreview: (themeName: string) => void;
 	onSubmit: (result: FirstTimeSetupResult) => void;
 	onCancel: () => void;
@@ -69,7 +72,7 @@ export class FirstTimeSetupComponent extends Container {
 				this.themeIndex,
 			);
 		} else {
-			this.addChild(new Text(theme.fg("text", "Opt-in to anonymous usage data sharing?"), 1, 0));
+			this.addChild(new Text(theme.fg("text", FIRST_TIME_SETUP_QUESTION), 1, 0));
 			this.addChild(
 				new Text(
 					theme.fg(
@@ -134,6 +137,7 @@ export class FirstTimeSetupComponent extends Container {
 		} else if (kb.matches(keyData, "tui.select.confirm") || keyData === "\n") {
 			if (this.step === "theme") {
 				this.step = "analytics";
+				this.options.onAnalyticsStep?.();
 				this.update();
 			} else {
 				this.options.onSubmit({

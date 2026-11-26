@@ -27,12 +27,13 @@ import type {
 	DocumentReader,
 	ToolExecutionApi,
 	ToolExecutionResult,
+	ToolPark,
 } from "@earendil-works/pi-durable";
 import { Connection, localDaemon, RemoteExecutionEnv } from "@earendil-works/pi-env";
 import { compile } from "@earendil-works/pi-schema";
 import { BACKGROUND_CONTEXT, type Location } from "@p2/app/v1";
 import { WebSocket } from "ws";
-import { Chat } from "../../plugins/chat/contract.ts";
+import { CHAT_PARTICIPANT, Chat } from "../../plugins/chat/contract.ts";
 import {
 	type EnvsConfig,
 	envRevision,
@@ -63,13 +64,13 @@ import {
 } from "../../plugins/envs/secrets.ts";
 import type { EnvInfo } from "../../plugins/locations/contract.ts";
 import { createLocationExtension, sandboxAt } from "../../plugins/locations/tool.ts";
-import { Sessions } from "../../plugins/sessions/contract.ts";
+import { SESSIONS_OWNER, Sessions } from "../../plugins/sessions/contract.ts";
 import { InheritedLocation, Subagents } from "../../plugins/subagents/contract.worker.ts";
 import { ownLocation, placeTarget, type SubagentLocator } from "../../plugins/subagents/tools.ts";
 import { Terminals } from "../../plugins/terminals/contract.ts";
 import type { TerminalEvent } from "../../plugins/terminals/protocol.ts";
 import { conversationConfinement, type ExecutionEnvironments } from "../../src/runtime/worker.ts";
-import { holdIn, poll, startFixture, until } from "./helpers.ts";
+import { holdWith, poll, startFixture, until } from "./helpers.ts";
 
 const slayer = { type: "ssh" as const, host: "slayer.example" };
 const box = {
@@ -196,7 +197,7 @@ const infos: EnvInfo[] = [
 	{ name: "slayer", type: "ssh", host: "slayer.example" },
 	{ name: "box1", type: "gondolin", host: "slayer" },
 ];
-const text = (result: ToolExecutionResult) =>
+const text = (result: ToolExecutionResult | ToolPark) =>
 	(result.output ?? []).map((part) => (part.type === "text" ? part.text : "")).join("");
 
 test("location tools keep a sandboxed conversation in its sandbox", async () => {
@@ -243,7 +244,10 @@ test("a sandboxed caller places subagents only in its sandbox", async () => {
 	const locator: SubagentLocator = {
 		locate: async () => ({ env: "box1", cwd: "/workspace" }),
 		sandbox: async (location) => (location.env === "box1" ? "box1" : undefined),
-		directory: async (target) => ({ env: target.env, cwd: target.path || "/workspace" }),
+		directory: async (target) => ({
+			kind: "directory",
+			location: { env: target.env, cwd: target.path || "/workspace" },
+		}),
 	};
 	const caller: Location = { env: "box1", cwd: "/workspace" };
 	for (const args of [{ env: "slayer" }, { env: null }, { env: null, cwd: "/tmp" }])
@@ -564,9 +568,9 @@ test(
 		const listing = await envs.listDirectory({ env: "sbx", path: "/" }, BACKGROUND_CONTEXT);
 		assert(listing.directories.includes("/workspace"), JSON.stringify(listing));
 
-		const sessions = await holdIn(owner, Sessions, {}, "owner");
+		const sessions = await holdWith(owner, Sessions, {}, ...SESSIONS_OWNER);
 		const session = (await sessions.create({ env: "sbx", cwd: "/workspace" }, BACKGROUND_CONTEXT)).id;
-		const chat = await holdIn(owner, Chat, { session, conversation: 1 }, "participant");
+		const chat = await holdWith(owner, Chat, { session, conversation: 1 }, ...CHAT_PARTICIPANT);
 		const output = (view: ConversationView | null | undefined) =>
 			(view?.entries ?? [])
 				.flatMap((entry) => entry.model ?? [])
@@ -586,7 +590,7 @@ test(
 
 		// A session outside places a subagent in the sandbox; configure cannot take it out again.
 		const outside = (await sessions.create({ env: "host", cwd: root }, BACKGROUND_CONTEXT)).id;
-		const main = await holdIn(owner, Chat, { session: outside, conversation: 1 }, "participant");
+		const main = await holdWith(owner, Chat, { session: outside, conversation: 1 }, ...CHAT_PARTICIPANT);
 		const spawnArgs = {
 			action: "spawn",
 			name: "boxed",
@@ -631,7 +635,10 @@ test(
 		// A terminal opens in the VM too.
 		const terminals = owner.hold(Terminals, { session, view: crypto.randomUUID() }, BACKGROUND_CONTEXT);
 		const { token } = await terminals.channel({}, BACKGROUND_CONTEXT);
-		const socket = new WebSocket(`ws://127.0.0.1:${fixture.server.port}/terminal?${new URLSearchParams({ token })}`);
+		// The grant admits the byte channel together with the owner's credentials (docs/p2-notes.md, terminals).
+		const socket = new WebSocket(`ws://127.0.0.1:${fixture.server.port}/terminal?${new URLSearchParams({ token })}`, {
+			headers: { Cookie: fixture.owner.cookie },
+		});
 		const events: TerminalEvent[] = [];
 		const screen: Buffer[] = [];
 		socket.on("message", (bytes, binary) => {

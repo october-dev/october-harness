@@ -310,30 +310,28 @@ class RemoteTextLineReader implements TextLineReader {
 		if (aborted) return aborted;
 		if (this.#closed) return err(new FileError("invalid", "Text line reader is closed", path));
 		try {
-			while (true) {
-				const newline = this.#buffered.indexOf("\n");
-				if (newline !== -1) {
-					const text = this.#buffered.slice(0, newline);
-					this.#buffered = this.#buffered.slice(newline + 1);
-					return ok({ text, terminated: true });
-				}
-				if (this.#ended) {
-					if (this.#buffered.length === 0) return ok(undefined);
-					const text = this.#buffered;
-					this.#buffered = "";
-					return ok({ text, terminated: false });
-				}
+			let newline = this.#buffered.indexOf("\n");
+			while (newline === -1 && !this.#ended) {
 				const bytes = await this.#handle.pread(this.#offset, LINE_CHUNK);
 				const afterReadAbort = abortResult<TextLine | undefined>(context.abortSignal, path);
 				if (afterReadAbort) return afterReadAbort;
 				this.#offset += bytes.length;
-				if (bytes.length === 0) {
-					this.#buffered += this.#decoder.decode();
-					this.#ended = true;
-				} else {
-					this.#buffered += this.#decoder.decode(bytes);
-				}
+				this.#ended = bytes.length === 0;
+				const text = this.#ended ? this.#decoder.decode() : this.#decoder.decode(bytes);
+				// Only the new text is scanned, so a line longer than one read is not rescanned per read.
+				const found = text.indexOf("\n");
+				if (found !== -1) newline = this.#buffered.length + found;
+				this.#buffered += text;
 			}
+			if (newline !== -1) {
+				const text = this.#buffered.slice(0, newline);
+				this.#buffered = this.#buffered.slice(newline + 1);
+				return ok({ text, terminated: true });
+			}
+			if (this.#buffered.length === 0) return ok(undefined);
+			const text = this.#buffered;
+			this.#buffered = "";
+			return ok({ text, terminated: false });
 		} catch (error) {
 			return err(toFileError(error, path));
 		}
@@ -704,8 +702,9 @@ export class RemoteExecutionEnv implements ExecutionEnv {
 			} finally {
 				await handle.close();
 			}
-			// Node's `readdir` fails on any entry it cannot lstat. libuv sorts names by their bytes on POSIX; on Windows it
-			// keeps the file system's order, which the daemon reports.
+			// Like `NodeExecutionEnv.listDir`, leave out entries removed between enumeration and lstat; any other entry error
+			// fails the listing. libuv sorts names by their bytes on POSIX; on Windows it keeps the file system's order, which
+			// the daemon reports.
 			const paths = await remotePath(this.connection);
 			if (paths === posix) {
 				const key = (entry: RemoteDirEntry) => Buffer.from(entry.raw ?? Buffer.from(entry.name, "utf8"));
@@ -715,7 +714,10 @@ export class RemoteExecutionEnv implements ExecutionEnv {
 			for (const entry of entries) {
 				if (context.abortSignal?.aborted) throw new FileError("aborted", "aborted", resolved);
 				const entryPath = paths.resolve(resolved, entry.name);
-				if (entry.error !== undefined) throw toFileError(new RemoteError(entry.error), entryPath);
+				if (entry.error !== undefined) {
+					if (entry.error.code === "ENOENT") continue;
+					throw toFileError(new RemoteError(entry.error), entryPath);
+				}
 				const info = toInfo(entryPath, entry.info!, paths);
 				if (info.ok) infos.push(info.value);
 			}

@@ -34,7 +34,7 @@ Each `models` entry adds a model to the provider. An entry whose `id` matches an
 | `api` | string |  | Overrides the provider api. |
 | `baseUrl` | string |  | Overrides the provider baseUrl. |
 | `reasoning` | boolean | `false` | Whether the model supports thinking. |
-| `thinkingLevelMap` | object |  | Provider value sent for each thinking level. null marks a level unsupported. Levels the model does not map use the provider's default value through high; xhigh and max are unsupported. |
+| `thinkingLevelMap` | object |  | Provider value sent for each thinking level. A string is sent to the provider; null hides the level. Levels left out use the provider's default value for off through high; xhigh and max are opt-in and only offered when mapped to a string. |
 | `input` | `("text" \| "image")[]` | `["text"]` |  |
 | `inputLimits` | [object](#input-limits) |  |  |
 | `cost` | object |  |  |
@@ -64,7 +64,7 @@ Each `modelOverrides` key is the ID of a built-in or extension model. Unknown ID
 |---|---|---|---|
 | `name` | string |  | Display name, also matched by --model patterns. |
 | `reasoning` | boolean |  | Whether the model supports thinking. |
-| `thinkingLevelMap` | object |  | Provider value sent for each thinking level. null marks a level unsupported. Levels the model does not map use the provider's default value through high; xhigh and max are unsupported. |
+| `thinkingLevelMap` | object |  | Provider value sent for each thinking level. A string is sent to the provider; null hides the level. Levels left out use the provider's default value for off through high; xhigh and max are opt-in and only offered when mapped to a string. |
 | `input` | `("text" \| "image")[]` |  |  |
 | `inputLimits` | [object](#input-limits) |  |  |
 | `cost` | object |  |  |
@@ -111,7 +111,7 @@ See [Describe model input and caching](models.md#describe-model-input-and-cachin
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `supportsStore` | boolean |  | Whether the provider supports the store field. Default: auto-detected from URL. |
-| `supportsDeveloperRole` | boolean |  | Whether the provider supports the developer role instead of system. Default: auto-detected from URL. |
+| `supportsDeveloperRole` | boolean |  | Whether to send system messages of reasoning models (the system prompt and mid-conversation system messages) with the developer role instead of system. Default: true only for api.openai.com. |
 | `supportsReasoningEffort` | boolean |  | Whether the provider supports reasoning_effort. Default: auto-detected from URL. |
 | `supportsUsageInStreaming` | boolean | `true` | Whether the provider supports stream_options.include_usage for token usage in streaming responses. |
 | `supportsFinishReason` | boolean | `true` | Whether streamed responses include finish_reason. When false, pi infers stop or toolUse when the stream ends. |
@@ -122,7 +122,7 @@ See [Describe model input and caching](models.md#describe-model-input-and-cachin
 | `requiresToolsWithToolHistory` | boolean |  | Whether requests without tools must send "tools": [] when the conversation contains tool calls or tool results. Needed by some proxies in front of Anthropic, such as older LiteLLM versions. Default: false, the field is omitted. |
 | `requiresThinkingAsText` | boolean |  | Whether thinking blocks must be converted to text blocks with &lt;thinking> delimiters. Default: auto-detected from URL. |
 | `requiresReasoningContentOnAssistantMessages` | boolean |  | Whether all replayed assistant messages must include an empty reasoning_content field when reasoning is enabled. Default: auto-detected from URL. |
-| `thinkingFormat` | `"openai" \| "openrouter" \| "deepseek" \| "together" \| "baseten" \| "zai" \| "qwen" \| "chat-template" \| "qwen-chat-template" \| "string-thinking" \| "ant-ling"` |  | Format for reasoning or thinking parameters. When omitted, October auto-detects the format from the provider URL. "openai" uses reasoning_effort, "openrouter" uses reasoning.effort, "deepseek" uses thinking.type plus reasoning_effort when supported, "together" uses reasoning.enabled plus reasoning_effort when supported, "baseten" uses configurable chat_template_args plus reasoning_effort when supported, "zai" uses thinking.type, "qwen" uses top-level enable_thinking, "qwen-chat-template" uses chat_template_kwargs.enable_thinking and preserve_thinking, "chat-template" uses configurable chat_template_kwargs, "string-thinking" uses top-level thinking, and "ant-ling" uses reasoning.effort only when the mapped effort is non-null. |
+| `thinkingFormat` | `"openai" \| "openrouter" \| "deepseek" \| "together" \| "baseten" \| "zai" \| "qwen" \| "chat-template" \| "qwen-chat-template" \| "string-thinking"` |  | Format for reasoning or thinking parameters. When omitted, October auto-detects the format from the provider URL. "openai" uses reasoning_effort, "openrouter" uses reasoning.effort, "deepseek" uses thinking.type plus reasoning_effort when supported, "together" uses reasoning.enabled plus reasoning_effort when supported, "baseten" uses configurable chat_template_args plus reasoning_effort when supported, "zai" uses thinking.type, "qwen" uses top-level enable_thinking, "qwen-chat-template" uses chat_template_kwargs.enable_thinking and preserve_thinking, "chat-template" uses configurable chat_template_kwargs, and "string-thinking" uses top-level thinking. |
 | `chatTemplateKwargs` | object |  | Kwargs sent as chat_template_kwargs when thinkingFormat is "chat-template". Use $var with "thinking.enabled", "thinking.effort", or "thinking.budget" for pi-controlled values. |
 | `chatTemplateArgs` | object |  | Arguments sent as chat_template_args when thinkingFormat is "baseten". Use $var with "thinking.enabled", "thinking.effort", or "thinking.budget" for pi-controlled values. |
 | `openRouterRouting` | object |  | OpenRouter provider routing preferences. Controls which upstream providers OpenRouter routes requests to. Sent as the provider field in the OpenRouter API request body. See https://openrouter.ai/docs/guides/routing/provider-selection. |
@@ -157,7 +157,7 @@ Also applies to `azure-openai-responses` and `openai-codex-responses`.
 | `supportsAdditionalTools` | boolean | `false` | Whether the model supports message-anchored additional_tools input items. |
 | `supportsToolSearch` | boolean | `false` | Whether the model supports client-executed tool search for transcript-anchored additions. |
 | `supportsExplicitPromptCacheMode` | boolean | `false` | Whether the model accepts prompt_cache_options. Older OpenAI models reject the parameter. |
-| `supportsMidConvoEffort` | boolean | `false` | Whether thinking level changes are sent as configuration_update input items instead of changing reasoning.effort, so a change keeps the prompt cache. Only used by the openai-responses API, and ignored with Sign in with ChatGPT on the openai provider. |
+| `supportsMidConvoEffort` | boolean | `false` | Whether thinking level changes are sent as configuration_update input items instead of changing reasoning.effort, so a change keeps the prompt cache. Used by the openai-responses and openai-codex-responses APIs, and ignored with Sign in with ChatGPT on the openai provider. |
 | `supportsMaxOutputTokens` | boolean | `true` | Whether the provider accepts max_output_tokens. Some Codex-protocol gateways reject it. |
 
 ### `anthropic-messages`
@@ -176,7 +176,7 @@ Also applies to `azure-openai-responses` and `openai-codex-responses`.
 | `supportsMidConvoEffort` | boolean | `false` | Whether the exact model transport supports effort-only system messages and thinking binding controls. |
 | `supportsMidConvoSystemMessages` | boolean | `false` | Whether the exact model accepts system-role messages inside the conversation. When false, later system messages are folded into the top-level system prompt. |
 | `supportsMidConvoToolChanges` | boolean | `false` | Whether the exact model accepts mid-conversation tool_addition and tool_removal blocks. Requires supportsMidConvoSystemMessages. |
-| `supportsMessageThreads` | boolean |  | Whether the endpoint supports Anthropic message threads, which let a request with a session id send only the new messages and continue from the previous reply. Default: true for provider anthropic with a baseUrl on api.anthropic.com, false otherwise. Set true for gateways that forward the thread request field. |
+| `supportsMessageThreads` | boolean |  | Whether the endpoint supports Anthropic message threads, which let a request with a session id send only the new messages and continue from the previous reply. Default: true for a baseUrl on api.anthropic.com, false otherwise. Set true for gateways that forward the thread request field. |
 | `allowedFallbackModels` | `object[]` |  | Models Anthropic accepts for server-side refusal fallback, with local pricing metadata for returned fallback responses. When absent or empty, callers must omit fallbacks; Anthropic rejects the field for models with no permitted fallback targets. |
 
 ### `bedrock-converse-stream`
@@ -184,12 +184,22 @@ Also applies to `azure-openai-responses` and `openai-codex-responses`.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `supportsStrictMode` | boolean | `false` | Whether the model supports Bedrock strict tool schemas. |
+| `supportsReasoningReplay` | boolean | `true` | Whether the model accepts reasoning blocks from earlier assistant messages. When false, earlier reasoning is not sent back. The generated catalog disables this for Kimi K3 models, which fail on Converse when it is sent. |
 
 ### `mistral-conversations`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `supportsMidConvoSystemMessages` | boolean | `false` | Whether the exact model accepts system messages after the conversation has started. When false, later system messages are folded into the leading system message. |
+| `supportsStrictMode` | boolean | `false` | Whether the model supports strict (schema-constrained) function tools. |
+
+### `google-generative-ai`
+
+Also applies to `google-vertex`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `supportsStrictMode` | boolean |  | Whether the model enforces strict tools through Gemini's VALIDATED function-calling mode. Default: true for model IDs containing gemini-3 or a later version, such as gemini-3-pro or vendor-gemini-4-argon, false otherwise. Set true for Gemini 3+ models served under IDs without the version. |
 
 ### `typesafe-system-one`
 

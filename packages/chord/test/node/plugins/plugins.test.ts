@@ -4,6 +4,8 @@
 // over 200 reloads, and end to end a server and a worker loading plugin directories, an edit rolled out, a broken edit
 // kept old on both hosts.
 
+import { getEventListeners } from "node:events";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +14,7 @@ import { hostKind, int, local, method, remote, str } from "../../../src/contract
 import { createHost, defineFacet, type Host, type ReloadReport } from "../../../src/host/index.ts";
 import type { ChordHost } from "../../../src/host/internal.ts";
 import { memoryLinkPair } from "../../../src/link/index.ts";
+import type * as Build from "../../../src/node/plugins/build.ts";
 import {
 	createPlugins,
 	type PluginError,
@@ -41,32 +44,54 @@ import {
 	writePlugin,
 } from "./support.ts";
 
+/** How many facets were built in this file, by anyone; `fail` makes the next build reject (esbuild's service lost). */
+const builds = vi.hoisted(() => ({ count: 0, fail: false }));
+
+vi.mock("../../../src/node/plugins/build.ts", async (importOriginal) => {
+	const original = await importOriginal<typeof Build>();
+	return {
+		...original,
+		buildFacet: (...args: Parameters<typeof Build.buildFacet>) => {
+			builds.count++;
+			if (builds.fail) {
+				builds.fail = false;
+				return Promise.reject(new Error("the build service is gone"));
+			}
+			return original.buildFacet(...args);
+		},
+	};
+});
+
 /** The fixtures' contracts, as the `contracts` fixture declares them. */
 const Worker = hostKind("test.worker");
 const Notes = remote("test.notes", {
 	version: 1,
 	params: {},
 	hostAddress: () => Worker(),
-	variants: { main: { state: { label: str(), count: int() }, methods: { add: method(undefined, int()) } } },
+	state: { label: str(), count: int() },
+	methods: { add: method(undefined, int()) },
 });
 const Index = local("test.index", { version: 1, params: {}, members: { label: str() } });
 const Item = local("test.item", { version: 1, params: {}, members: { label: str() } });
 
 /** A plugin `dir` named `@test/<dir>` serving `Item` labelled `label` from its worker facet. */
 async function itemPlugin(root: string, dir: string, label: string): Promise<void> {
-	await writePlugin(root, dir, `@test/${dir}`, {
-		"worker.ts": [
-			'import { constant, defineFacet, local, str } from "@earendil-works/chord";',
-			`const Item = local("test.${dir}", { version: 1, params: {}, members: { label: str() } });`,
-			`export default defineFacet((host) => host.serve(Item, () => ({ label: constant(${JSON.stringify(label)}) })));`,
-		].join("\n"),
-	});
+	await writePlugin(root, dir, `@test/${dir}`, { "worker.ts": itemSource(dir, label) });
+}
+
+/** The worker facet of `itemPlugin`'s plugin `dir`. */
+function itemSource(dir: string, label: string): string {
+	return [
+		'import { constant, defineFacet, local, str } from "@earendil-works/chord";',
+		`const Item = local("test.${dir}", { version: 1, params: {}, members: { label: str() } });`,
+		`export default defineFacet((host) => host.serve(Item, () => ({ label: constant(${JSON.stringify(label)}) })));`,
+	].join("\n");
 }
 
 /** The report of an in-process step's one host. */
 function reportOf(hosts: readonly RolloutHost[]): ReloadReport {
 	const [entry] = hosts;
-	if (entry === undefined || !("report" in entry)) throw new Error("no report");
+	if (entry === undefined || entry.kind !== "reloaded") throw new Error("no report");
 	return entry.report;
 }
 
@@ -189,6 +214,25 @@ describe("per plugin at reload", () => {
 		plugins.close();
 	});
 
+	it("discovers again for a named plugin the watcher has not reported yet: removed, or new", async () => {
+		const { root, plugins, host } = await loaded();
+		// Built in the same tick as the change, before any file event can arrive: the watcher has marked nothing yet.
+		rmSync(join(root, "c"), { recursive: true });
+		const removed = await plugins.build(["@test/c"], context);
+		expect(removed.removed).toEqual(["@test/c"]);
+		expect(Object.keys(removed.plugins)).toEqual([]);
+		expect((await plugins.reload(host, removed, context)).plugins.removed).toEqual(["@test/c"]);
+		await settleFileEvents();
+		mkdirSync(join(root, "f"));
+		writeFileSync(join(root, "f", "package.json"), JSON.stringify({ name: "@test/f", type: "module" }));
+		writeFileSync(join(root, "f", "worker.ts"), itemSource("f", "f1"));
+		const added = await plugins.build(["@test/f"], context);
+		expect(Object.keys(added.plugins)).toEqual(["@test/f"]);
+		expect((await plugins.reload(host, added, context)).plugins.added).toEqual(["@test/f"]);
+		await host.close(context);
+		plugins.close();
+	});
+
 	it("keeps a consumer edited together with a provider whose new build fails (the closure rule through builds)", async () => {
 		const root = await tempRoot();
 		const provider = (version: number) =>
@@ -241,7 +285,7 @@ describe("rollout", () => {
 		reload: async () => {
 			order.push(name);
 			if (outcome.error !== undefined) throw outcome.error;
-			return { hosts: outcome.hosts ?? [{ host: name, report: outcome.report! }] };
+			return { hosts: outcome.hosts ?? [{ kind: "reloaded", host: name, report: outcome.report! }] };
 		},
 	});
 	const report = (failed: readonly string[]): ReloadReport => ({
@@ -285,7 +329,7 @@ describe("rollout", () => {
 		await plugins.build([], context);
 		await writeFile(join(root, "a", "worker.ts"), "// a\n");
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
-		const stopped: RolloutHost[] = [{ host: "session|S1", stopped: true }];
+		const stopped: RolloutHost[] = [{ kind: "stopped", host: "session|S1" }];
 		await plugins.rollout(
 			[step("workers", [], { hosts: stopped })],
 			await plugins.build(["@test/a"], context),
@@ -295,8 +339,8 @@ describe("rollout", () => {
 		await writeFile(join(root, "a", "worker.ts"), "// a again\n");
 		await vi.waitFor(() => expect(plugins.state.value).toMatchObject({ dirty: ["@test/a"] }), { timeout: 5_000 });
 		const crashed: RolloutHost[] = [
-			{ host: "session|S1", report: report([]) },
-			{ host: "session|S2", error: new Error("crashed") },
+			{ kind: "reloaded", host: "session|S1", report: report([]) },
+			{ kind: "failed", host: "session|S2", error: new Error("crashed") },
 		];
 		const result = await plugins.rollout(
 			[step("workers", [], { hosts: crashed })],
@@ -388,6 +432,73 @@ describe("current sets (slice 10 D11)", () => {
 		expect(await digests()).not.toEqual(first);
 		plugins.close();
 	});
+
+	it("first uses at once share one making: each facet is built once, not once per caller (Astra S4)", async () => {
+		const root = await tempRoot();
+		for (const dir of ["a", "b", "c"]) await itemPlugin(root, dir, dir);
+		const { plugins } = await component(root);
+		const before = builds.count;
+		// A server's start resuming eight working sessions: each worker's start asks for the worker set at once.
+		const sets = await Promise.all(Array.from({ length: 8 }, () => plugins.scripts("worker", context)));
+		expect(builds.count - before).toBe(3);
+		for (const set of sets) expect(set.map(({ built }) => built)).toEqual(sets[0]!.map(({ built }) => built));
+		plugins.close();
+	});
+
+	it("forgets a first making that failed: the next use makes the set again", async () => {
+		const root = await tempRoot();
+		await itemPlugin(root, "a", "a");
+		const { plugins } = await component(root);
+		builds.fail = true;
+		await expect(plugins.scripts("worker", context)).rejects.toThrow("the build service is gone");
+		expect((await plugins.scripts("worker", context)).map(({ plugin }) => plugin.name)).toEqual(["@test/a"]);
+		plugins.close();
+	});
+
+	// Opus S5 and Astra S1, review round 3 of ERNDL-954: the making ran in the first caller's context, so one start going
+	// away failed every start waiting for the same first build, and a waiter going away kept its abort listener.
+	it("a first use going away fails only its own wait, first or second, and leaves no abort listener", async () => {
+		for (const first of [true, false]) {
+			const root = await tempRoot();
+			await itemPlugin(root, "a", "a");
+			const { plugins } = await component(root);
+			const gone = new AbortController();
+			const staying = new AbortController();
+			const waiting = withAbortSignal(gone.signal, context);
+			const healthy = withAbortSignal(staying.signal, context);
+			const [one, two] = first
+				? [plugins.scripts("worker", waiting), plugins.scripts("worker", healthy)]
+				: [plugins.scripts("worker", healthy), plugins.scripts("worker", waiting)];
+			gone.abort(new Error("the hold ended"));
+			const [left, stayed] = first ? [one, two] : [two, one];
+			await expect(left).rejects.toThrow("the hold ended");
+			expect((await stayed).map(({ plugin }) => plugin.name)).toEqual(["@test/a"]);
+			expect(getEventListeners(staying.signal, "abort")).toEqual([]);
+			plugins.close();
+		}
+	});
+
+	it("a close aborts a first making under way", async () => {
+		const root = await tempRoot();
+		await itemPlugin(root, "a", "a");
+		const { plugins } = await component(root);
+		const making = plugins.scripts("worker", context);
+		plugins.close();
+		await expect(making).rejects.toThrow("plugins: the component closed");
+	});
+
+	// Astra S2, review round 4 of ERNDL-954: with discovery and the builds done already, the making had nothing left to
+	// check its abort at, and published the current set after the close.
+	it("a close aborts a first making whose builds are done, and publishes no current set", async () => {
+		const root = await tempRoot();
+		await itemPlugin(root, "a", "a");
+		const { plugins } = await component(root);
+		await plugins.build([], context);
+		const making = plugins.scripts("worker", context);
+		plugins.close();
+		await expect(making).rejects.toThrow("plugins: the component closed");
+		expect(plugins.current("worker")).toBeUndefined();
+	});
 });
 
 describe("installs through the component", () => {
@@ -406,6 +517,7 @@ describe("installs through the component", () => {
 			},
 			context,
 		);
+		await settleFileEvents();
 		await plugins.build([], context);
 		await writeFile(
 			join(root, "a", "package.json"),
@@ -496,11 +608,15 @@ describe("the app's API, required roots and installs (slice 12 §1, §5)", () =>
 			context,
 		);
 		await plugins.build([], context);
-		expect(await plugins.installPlugin({ git: repository.url, ref: "v1" }, root, context)).toEqual(["@bob/hello"]);
+		expect(await plugins.installPlugin({ kind: "git", git: repository.url, ref: "v1" }, root, context)).toEqual([
+			"@bob/hello",
+		]);
 		expect(plugins.state.value).toMatchObject({ set: true });
 		const built = await plugins.build([], context);
 		expect(Object.keys(built.plugins)).toEqual(["@bob/hello"]);
-		expect(await rejection(plugins.installPlugin({ git: repository.url, ref: "v1" }, tools, context))).toMatchObject({
+		expect(
+			await rejection(plugins.installPlugin({ kind: "git", git: repository.url, ref: "v1" }, tools, context)),
+		).toMatchObject({
 			message: `plugins.installPlugin: ${tools} is not one of the roots`,
 		});
 		plugins.close();
@@ -783,6 +899,7 @@ describe("fix round 1", () => {
 			},
 			context,
 		);
+		await settleFileEvents();
 		expect((await plugins.build([], context)).facets.map(({ kind }) => kind)).toEqual(["script"]);
 		await writeFiles(dir, {
 			"package.json": JSON.stringify({ name: "@test/a", type: "module", dependencies: { "new-dep": "1.0.0" } }),

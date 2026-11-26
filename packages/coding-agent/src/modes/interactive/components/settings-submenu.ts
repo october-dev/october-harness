@@ -11,6 +11,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import { getSelectListTheme, theme } from "../theme/theme.ts";
+import { keyText } from "./keybinding-hints.ts";
 
 const SUBMENU_SELECT_LIST_LAYOUT: SelectListLayoutOptions = {
 	minPrimaryColumnWidth: 12,
@@ -85,9 +86,8 @@ export class SelectSubmenu extends Container {
 
 		// Hint
 		this.addChild(new Spacer(1));
-		const hint = submenuOptions?.searchable
-			? "  Type to filter \u00b7 Enter to select \u00b7 Esc to go back"
-			: "  Enter to select \u00b7 Esc to go back";
+		const keysHint = `${keyText("tui.select.confirm")} to select \u00b7 ${keyText("tui.select.cancel")} to go back`;
+		const hint = submenuOptions?.searchable ? `  Type to filter \u00b7 ${keysHint}` : `  ${keysHint}`;
 		this.addChild(new Text(theme.fg("dim", hint), 0, 0));
 	}
 
@@ -130,8 +130,11 @@ export class SelectSubmenu extends Container {
 			if (isNav) {
 				this.selectList.handleInput(data);
 			} else {
+				// Cursor keys leave the query as it is and must not move the selection.
+				const previousQuery = this.searchInput.getValue();
 				this.searchInput.handleInput(data);
-				this.applyFilter(this.searchInput.getValue());
+				const query = this.searchInput.getValue();
+				if (query !== previousQuery) this.applyFilter(query);
 			}
 		} else {
 			this.selectList.handleInput(data);
@@ -246,7 +249,7 @@ export class SteppedSubmenu extends Container {
 		);
 	}
 
-	render(width: number): string[] {
+	render(width: number): readonly string[] {
 		return this.activeComponent.render(width);
 	}
 

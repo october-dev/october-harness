@@ -201,7 +201,7 @@ const OpenAICompletionsCompatProperties = {
 	),
 	supportsDeveloperRole: optionalCompatBoolean({
 		description:
-			"Whether the provider supports the developer role instead of system. Default: auto-detected from URL.",
+			"Whether to send system messages of reasoning models (the system prompt and mid-conversation system messages) with the developer role instead of system. Default: true only for api.openai.com.",
 	}),
 	supportsReasoningEffort: opt(
 		bool({
@@ -273,11 +273,10 @@ const OpenAICompletionsCompatProperties = {
 				stringLiteral("chat-template"),
 				stringLiteral("qwen-chat-template"),
 				stringLiteral("string-thinking"),
-				stringLiteral("ant-ling"),
 			],
 			{
 				description:
-					'Format for reasoning or thinking parameters. When omitted, Pi auto-detects the format from the provider URL. "openai" uses reasoning_effort, "openrouter" uses reasoning.effort, "deepseek" uses thinking.type plus reasoning_effort when supported, "together" uses reasoning.enabled plus reasoning_effort when supported, "baseten" uses configurable chat_template_args plus reasoning_effort when supported, "zai" uses thinking.type, "qwen" uses top-level enable_thinking, "qwen-chat-template" uses chat_template_kwargs.enable_thinking and preserve_thinking, "chat-template" uses configurable chat_template_kwargs, "string-thinking" uses top-level thinking, and "ant-ling" uses reasoning.effort only when the mapped effort is non-null.',
+					'Format for reasoning or thinking parameters. When omitted, Pi auto-detects the format from the provider URL. "openai" uses reasoning_effort, "openrouter" uses reasoning.effort, "deepseek" uses thinking.type plus reasoning_effort when supported, "together" uses reasoning.enabled plus reasoning_effort when supported, "baseten" uses configurable chat_template_args plus reasoning_effort when supported, "zai" uses thinking.type, "qwen" uses top-level enable_thinking, "qwen-chat-template" uses chat_template_kwargs.enable_thinking and preserve_thinking, "chat-template" uses configurable chat_template_kwargs, and "string-thinking" uses top-level thinking.',
 			},
 		),
 	),
@@ -425,7 +424,7 @@ const OpenAIResponsesCompatProperties = {
 	supportsMidConvoEffort: opt(
 		bool({
 			description:
-				"Whether thinking level changes are sent as configuration_update input items instead of changing reasoning.effort, so a change keeps the prompt cache. Only used by the openai-responses API, and ignored with Sign in with ChatGPT on the openai provider.",
+				"Whether thinking level changes are sent as configuration_update input items instead of changing reasoning.effort, so a change keeps the prompt cache. Used by the openai-responses and openai-codex-responses APIs, and ignored with Sign in with ChatGPT on the openai provider.",
 			default: false,
 		}),
 	),
@@ -518,7 +517,7 @@ const AnthropicMessagesCompatProperties = {
 	),
 	supportsMessageThreads: optionalCompatBoolean({
 		description:
-			"Whether the endpoint supports Anthropic message threads, which let a request with a session id send only the new messages and continue from the previous reply. Default: true for provider anthropic with a baseUrl on api.anthropic.com, false otherwise. Set true for gateways that forward the thread request field.",
+			"Whether the endpoint supports Anthropic message threads, which let a request with a session id send only the new messages and continue from the previous reply. Default: true for a baseUrl on api.anthropic.com, false otherwise. Set true for gateways that forward the thread request field.",
 	}),
 	allowedFallbackModels: opt(
 		arr(AnthropicAllowedFallbackModelSchema, {
@@ -539,6 +538,11 @@ const BedrockCompatProperties = {
 		description: "Whether the model supports Bedrock strict tool schemas.",
 		default: false,
 	}),
+	supportsReasoningReplay: optionalCompatBoolean({
+		description:
+			"Whether the model accepts reasoning blocks from earlier assistant messages. When false, earlier reasoning is not sent back. The generated catalog disables this for Kimi K3 models, which fail on Converse when it is sent.",
+		default: true,
+	}),
 };
 
 export const BedrockCompatSchema = openObject(BedrockCompatProperties, {
@@ -552,10 +556,26 @@ const MistralConversationsCompatProperties = {
 			"Whether the exact model accepts system messages after the conversation has started. When false, later system messages are folded into the leading system message.",
 		default: false,
 	}),
+	supportsStrictMode: optionalCompatBoolean({
+		description: "Whether the model supports strict (schema-constrained) function tools.",
+		default: false,
+	}),
 };
 
 export const MistralConversationsCompatSchema = openObject(MistralConversationsCompatProperties, {
 	description: "Compatibility settings for the Mistral chat API.",
+	additionalProperties: true,
+});
+
+const GoogleCompatProperties = {
+	supportsStrictMode: optionalCompatBoolean({
+		description:
+			"Whether the model enforces strict tools through Gemini's VALIDATED function-calling mode. Default: true for model IDs containing gemini-3 or a later version, such as gemini-3-pro or vendor-gemini-4-argon, false otherwise. Set true for Gemini 3+ models served under IDs without the version.",
+	}),
+};
+
+export const GoogleCompatSchema = openObject(GoogleCompatProperties, {
+	description: "Compatibility settings for the Google Generative AI and Vertex APIs.",
 	additionalProperties: true,
 });
 
@@ -595,7 +615,7 @@ const ProviderCompatPropertyOverrides = {
 	}),
 	supportsMidConvoEffort: optionalCompatBoolean({
 		description:
-			"Whether thinking level changes are sent inside the conversation instead of changing the request's effort, so a change keeps the prompt cache. Used by the anthropic-messages and openai-responses APIs.",
+			"Whether thinking level changes are sent inside the conversation instead of changing the request's effort, so a change keeps the prompt cache. Used by the anthropic-messages, openai-responses, and openai-codex-responses APIs.",
 		default: false,
 	}),
 	supportsLongCacheRetention: optionalCompatBoolean({
@@ -669,6 +689,8 @@ export const CompatSchemasByApi = {
 	"anthropic-messages": AnthropicMessagesCompatSchema,
 	"bedrock-converse-stream": BedrockCompatSchema,
 	"mistral-conversations": MistralConversationsCompatSchema,
+	"google-generative-ai": GoogleCompatSchema,
+	"google-vertex": GoogleCompatSchema,
 	"typesafe-system-one": SystemOneCompatSchema,
 	"cloudflare-workers-ai-system-one": SystemOneCompatSchema,
 } as const;
@@ -680,6 +702,7 @@ const ProviderCompatProperties = mergeCompatProperties(
 		AnthropicMessagesCompatProperties,
 		BedrockCompatProperties,
 		MistralConversationsCompatProperties,
+		GoogleCompatProperties,
 		SystemOneCompatProperties,
 	],
 	ProviderCompatPropertyOverrides,
@@ -713,5 +736,7 @@ export interface AnthropicMessagesCompat extends Static<typeof AnthropicMessages
 export interface BedrockCompat extends Static<typeof BedrockCompatSchema> {}
 /** Compatibility settings for the Mistral chat API. */
 export interface MistralConversationsCompat extends Static<typeof MistralConversationsCompatSchema> {}
+/** Compatibility settings for the Google Generative AI and Vertex APIs. */
+export interface GoogleCompat extends Static<typeof GoogleCompatSchema> {}
 /** Compatibility settings for System One classifier APIs. */
 export interface SystemOneCompat extends Static<typeof SystemOneCompatSchema> {}

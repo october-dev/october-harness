@@ -399,7 +399,7 @@ The model request runs these hooks in order:
 2. `context_with_system` (can modify the full transcript)
 3. `before_provider_headers` (can mutate headers)
 4. `before_provider_request` (can inspect or replace the payload)
-5. `after_provider_response` (status and headers, before the stream is consumed)
+5. `after_provider_response` (status and headers of each HTTP response, including errors and retried attempts; successful responses fire before their stream is consumed)
 6. `provider_stream_event` (raw parsed stream events) and `message_start` / `message_update` / `message_end` for the assistant message
 
 A tool call that executes runs these hooks in order:
@@ -926,7 +926,7 @@ The payload is the full request. Providers that continue from a previous respons
 
 #### after_provider_response
 
-Fired after an HTTP response is received and before its stream body is consumed. Handlers run in extension load order.
+Fired for each HTTP response the provider receives, including error responses (4xx/5xx) and responses to retried attempts, so one request can fire it more than once. Successful responses fire before their stream body is consumed. Handlers run in extension load order.
 
 ```typescript
 pi.on("after_provider_response", (event, ctx) => {
@@ -938,7 +938,7 @@ pi.on("after_provider_response", (event, ctx) => {
 });
 ```
 
-Header availability depends on provider and transport. Providers that abstract HTTP responses may not expose headers.
+Coverage depends on provider and transport. Some providers report empty headers or only some responses. It does not fire for errors that arrive inside an already started SSE stream, or for WebSocket transports, including a WebSocket connection that fails to open.
 
 #### provider_stream_event
 
@@ -1269,7 +1269,7 @@ Use `ctx.modelRegistry.streamSimple(model, context, options)` for provider-neutr
 
 `streamSimple()` returns an `AssistantMessageEventStream`. Iterate it for response events and await `.result()` for the final message. Setup failures produce error events and error results.
 
-For non-chat models, `findOfType()`, `getModelsOfType()`, `getAvailableOfType()`, and `getModelOfType()` look up image and classifier models, and `classify()` and `generateImages()` call them. See [Use classifier models](models.md#use-classifier-models) and [Use image models](models.md#use-image-models).
+For non-chat models, `findOfType()`, `getModelsOfType()`, `getAvailableOfType()`, and `getModelOfType()` look up image and decision (`"classifier"`) models, and `classify()` and `generateImages()` call them. See [Use decision models](models.md#use-decision-models) and [Use image models](models.md#use-image-models).
 
 ### ctx.signal
 
@@ -1947,7 +1947,7 @@ const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 // result.stdout, result.stderr, result.code, result.killed, result.truncated
 ```
 
-Options: `signal` and `timeout` terminate the command, `cwd` sets the working directory, and `maxBuffer` limits stdout and stderr combined (default 256 MiB). When output exceeds `maxBuffer`, pi terminates the command and returns the output up to the limit with `truncated: true`, `killed: true`, and a nonzero `code`. `killed` is true whenever pi terminated the command: timeout, abort, or `maxBuffer`. A command that dies from a signal reports a nonzero `code`, whether pi or something else sent it. A command that ignores SIGTERM gets SIGKILL after 5 seconds.
+Options: `signal` and `timeout` terminate the command, `cwd` sets the working directory, and `maxBuffer` limits stdout and stderr combined (default 256 MiB). When output exceeds `maxBuffer`, pi terminates the command and returns the output up to the limit with `truncated: true`, `killed: true`, and a nonzero `code`. `killed` is true whenever October terminated the command: timeout, abort, or `maxBuffer`. A command that ignores SIGTERM gets SIGKILL after 5 seconds. A command terminated by a signal, by October or otherwise, reports 128 + the signal number as `code`, like a shell: 143 for SIGTERM, 137 for SIGKILL.
 
 ### pi.execBash(command, options?)
 
@@ -2044,7 +2044,7 @@ import { createProvider, openAICompletionsApi } from "@earendil-works/pi-ai/comp
 const provider = createProvider({
   id: "local-server",
   name: "Local Server",
-  baseUrl: "http://localhost:8080/v1",
+  baseUrl: "http://localhost:9931/v1",
   auth: {
     apiKey: {
       name: "Local server setup",
@@ -2088,11 +2088,11 @@ pi.registerProvider("my-proxy", {
 
 // Register a live llama.cpp catalog without persisting discovered models
 pi.registerProvider("llama.cpp", {
-  baseUrl: "http://localhost:8080/v1",
+  baseUrl: "http://localhost:9931/v1",
   apiKey: "local",
   api: "openai-completions",
   async refreshModels({ signal }) {
-    const response = await fetch("http://localhost:8080/v1/models", { signal });
+    const response = await fetch("http://localhost:9931/v1/models", { signal });
     const { data } = (await response.json()) as { data: Array<{ id: string }> };
     return data.map(({ id }) => ({
       id,
@@ -2942,6 +2942,16 @@ if (confirmed) {
 ```
 
 See [examples/extensions/timed-confirm.ts](../examples/extensions/timed-confirm.ts) for complete examples.
+
+#### Program Status Kind
+
+While a dialog waits, terminals that support [program status](terminal-setup.md#program-status) show pi as blocked, with the first line of the title as the message. `confirm()` reports `"permission"`, `select()` and `input()` report `"question"`. Pass `blockedKind` when the dialog asks for something else, for example a select that approves an action:
+
+```typescript
+const choice = await ctx.ui.select("Deploy to production?", ["Deploy", "Deploy and tag", "Cancel"], {
+  blockedKind: "permission", // "permission" | "question" | "auth"
+});
+```
 
 ### Widgets, Status, and Footer
 

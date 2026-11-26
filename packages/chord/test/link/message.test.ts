@@ -29,6 +29,8 @@ const error = { kind: "chord", error: { code: "released", message: "gone" } } as
 /** One message of every kind, with the optional fields both present and absent; parts are JSON text. */
 const EVERY_KIND: Message[] = [
 	{ kind: "hello", protocol: 1, incarnation, calls: 256 },
+	// No call window: a trusted link's (decision "Call windows only for untrusted links").
+	{ kind: "hello", protocol: 1, incarnation },
 	{
 		kind: "hold",
 		hold: 300,
@@ -65,13 +67,13 @@ const EVERY_KIND: Message[] = [
 	{ kind: "abort", call: 3 },
 	{
 		kind: "bound",
-		holds: [{ hold: 0, variant: 1, members: [{ member: 0, value: '[1,"a"]' }], failed: [{ member: 1, error }] }],
+		holds: [{ hold: 0, granted: [1], members: [{ member: 0, value: '[1,"a"]' }], failed: [{ member: 1, error }] }],
 	},
 	{
 		kind: "bound",
 		holds: [
-			{ hold: 0, variant: 0, members: [], failed: [] },
-			{ hold: 5, variant: 2, members: [{ member: 1, value: "null" }], failed: [] },
+			{ hold: 0, granted: [], members: [], failed: [] },
+			{ hold: 5, granted: [2], members: [{ member: 1, value: "null" }], failed: [] },
 		],
 	},
 	{
@@ -106,6 +108,12 @@ const EVERY_KIND: Message[] = [
 		hold: 0,
 		cause: { kind: "waiting", error: { kind: "chord", error: { code: "contract_mismatch", message: "m" } } },
 	},
+	// An admission refused the caller (slice 14 §2.4): no backoff window, the decision wakes it.
+	{
+		kind: "failed",
+		hold: 0,
+		cause: { kind: "denied", error: { kind: "chord", error: { code: "forbidden", message: "no access" } } },
+	},
 	// The wire error format in `failed` and `gone`: a plugin's error travels too.
 	{ kind: "failed", hold: 0, cause: { kind: "broken", error: { kind: "plugin", code: "config", message: "m" } } },
 	{ kind: "gone", hold: 1, error: { kind: "plugin", code: "config", message: "m", details: { at: 1 } } },
@@ -125,7 +133,19 @@ const EVERY_KIND: Message[] = [
 	{ kind: "gone", hold: 0, error: { kind: "chord", error: { code: "released", message: "m" } } },
 	{ kind: "ack" },
 	{ kind: "ack", origin: 1 },
+	// Event acks (decision "Events: fire-and-forget members"): the event messages consumed, never a state ack.
+	{ kind: "ack", events: 1 },
+	{ kind: "ack", origin: 300, events: 4000 },
 	{ kind: "closed", origin: 300 },
+	// Events: `at` a whole `Date.now()`, several holds and members in one message, and none (a relay's filtered one).
+	{
+		kind: "event",
+		events: [
+			{ hold: 0, member: 0, at: 1_762_819_200_123, value: '{"t":1,"y":0.5}' },
+			{ hold: 300, member: 2, at: 0, value: "null" },
+		],
+	},
+	{ kind: "event", origin: 7, events: [] },
 	{
 		kind: "hold",
 		origin: 2,
@@ -140,7 +160,7 @@ const EVERY_KIND: Message[] = [
 	{ kind: "call", origin: 2, call: 1, hold: 3, method: 0, args: "[1]" },
 	{ kind: "abort", origin: 2, call: 1 },
 	{ kind: "retry", origin: 2, hold: 3, hops: 16 },
-	{ kind: "bound", origin: 2, holds: [{ hold: 3, variant: 0, members: [], failed: [] }] },
+	{ kind: "bound", origin: 2, holds: [{ hold: 3, granted: [], members: [], failed: [] }] },
 	{ kind: "state", origin: 2, holds: [] },
 	{
 		kind: "failed",
@@ -235,6 +255,8 @@ function plain(message: Message): Message {
 					members: entry.members.map(({ member, ops }) => ({ member, ops: partText(ops) })),
 				})),
 			};
+		case "event":
+			return { ...message, events: message.events.map((entry) => ({ ...entry, value: partText(entry.value) })) };
 		default:
 			return message;
 	}
@@ -265,9 +287,10 @@ forEachCodec(() => {
 				{ kind: "result", call: 0, value: deflated(), segments: [new Uint8Array([7])] },
 				{
 					kind: "bound",
-					holds: [{ hold: 0, variant: 0, members: [{ member: 0, value: deflated() }], failed: [] }],
+					holds: [{ hold: 0, granted: [], members: [{ member: 0, value: deflated() }], failed: [] }],
 				},
 				{ kind: "state", holds: [{ hold: 0, members: [{ member: 0, ops: deflated() }], failed: [], retired: [] }] },
+				{ kind: "event", origin: 2, events: [{ hold: 0, member: 1, at: 5, value: deflated() }] },
 			];
 			for (const message of messages) {
 				const decoded = checkMessage(codec.decode(codec.encode(message)), context);
@@ -412,6 +435,10 @@ forEachCodec(() => {
 describe("the binary codec", () => {
 	it("writes ids as varints, the incarnation as 16 and the fingerprint as 8 raw bytes, no outer length", () => {
 		expect(binaryCodec.encode({ kind: "hello", protocol: 1, incarnation, calls: 1 })).toHaveLength(1 + 1 + 16 + 1);
+		// No call window is written as 0 (a window is at least 1) and read back as absent.
+		const none = binaryCodec.encode({ kind: "hello", protocol: 1, incarnation });
+		expect(none.at(-1)).toBe(0);
+		expect(binaryCodec.decode(none)).toEqual({ kind: "hello", protocol: 1, incarnation });
 		expect([...binaryCodec.encode({ kind: "release", hold: 300 })]).toEqual([2, 0xac, 0x02]);
 		const hold = binaryCodec.encode({
 			kind: "hold",
@@ -425,23 +452,27 @@ describe("the binary codec", () => {
 		// kind, id, type, version, fingerprint, params, the address's kind and params, the optional fields' flags
 		expect(hold).toHaveLength(1 + 1 + 2 + 1 + 8 + 3 + 7 + 3 + 1);
 		expect([...binaryCodec.encode({ kind: "ack" })]).toEqual([13]);
+		// An event ack: the kind byte's third flag, then its count (a state ack stays one byte).
+		expect([...binaryCodec.encode({ kind: "ack", events: 3 })]).toEqual([13 | 0x20, 3]);
+		expect(binaryCodec.decode(binaryCodec.encode({ kind: "ack", events: 3 }))).toEqual({ kind: "ack", events: 3 });
+		expect(() => binaryCodec.decode(new Uint8Array([14 | 0x20, 1]))).toThrow("binary: an unknown kind");
 		// An origin: the kind byte's high bit, then the origin as a varint.
 		expect([...binaryCodec.encode({ kind: "ack", origin: 300 })]).toEqual([13 | 0x80, 0xac, 0x02]);
 		expect([...binaryCodec.encode({ kind: "closed", origin: 1 })]).toEqual([14 | 0x80, 1]);
 	});
 
-	it("writes a failure's cause as one byte, 0 transient, 1 broken, 2 waiting (dependency model §2); refuses another", () => {
+	it("writes a failure's cause as one byte, 0 transient, 1 broken, 2 waiting, 3 denied (slice 14 §2.4); refuses another", () => {
 		const error = { kind: "chord", error: { code: "unavailable", message: "m" } } as const;
-		const failed = (kind: "transient" | "broken" | "waiting"): Message => ({
+		const failed = (kind: "transient" | "broken" | "waiting" | "denied"): Message => ({
 			kind: "failed",
 			hold: 0,
 			cause: { kind, error },
 		});
 		expect(
-			["transient", "broken", "waiting"].map((kind) => binaryCodec.encode(failed(kind as "waiting"))[2]),
-		).toEqual([0, 1, 2]);
+			["transient", "broken", "waiting", "denied"].map((kind) => binaryCodec.encode(failed(kind as "denied"))[2]),
+		).toEqual([0, 1, 2, 3]);
 		const unknown = binaryCodec.encode(failed("waiting"));
-		unknown[2] = 3;
+		unknown[2] = 4;
 		expect(() => binaryCodec.decode(unknown)).toThrow("an unknown failure kind");
 	});
 
@@ -529,7 +560,7 @@ describe("the binary codec", () => {
 			{ member: 0, value },
 			{ member: 1, value: "1" },
 		];
-		const bytes = binaryCodec.encode({ kind: "bound", holds: [{ hold: 0, variant: 0, members, failed: [] }] });
+		const bytes = binaryCodec.encode({ kind: "bound", holds: [{ hold: 0, granted: [], members, failed: [] }] });
 		expect(bytes.buffer.byteLength - bytes.byteLength).toBeLessThanOrEqual(4096);
 		const small = binaryCodec.encode({ kind: "release", hold: 1 });
 		expect(small.buffer.byteLength).toBe(small.byteLength);
@@ -560,8 +591,8 @@ describe("the text codec", () => {
 		expect(text({ kind: "release", hold: 3 })).toBe('["R",3]');
 		expect(text({ kind: "call", call: 1, hold: 0, method: 2 })).toBe('["c",1,0,2]');
 		const members = [{ member: 0, value: "5" }];
-		expect(text({ kind: "bound", holds: [{ hold: 0, variant: 1, members, failed: [] }] })).toBe(
-			'["b",[[0,1,[[0,[0,5]]]]]]',
+		expect(text({ kind: "bound", holds: [{ hold: 0, granted: [1, 3], members, failed: [] }] })).toBe(
+			'["b",[[0,[1,3],[[0,[0,5]]]]]]',
 		);
 		expect(text({ kind: "retry", hold: 2, hops: 16 })).toBe('["T",2,16]');
 		expect(text({ kind: "loading", hold: 2 })).toBe('["l",2]');
@@ -578,8 +609,15 @@ describe("the text codec", () => {
 		expect(text({ kind: "failed", hold: 2, cause: { ...cause, kind: "waiting" } })).toBe(
 			'["f",2,"w",{"kind":"chord","error":{"code":"unavailable","message":"m"}}]',
 		);
+		expect(text({ kind: "failed", hold: 2, cause: { ...cause, kind: "denied" } })).toBe(
+			'["f",2,"d",{"kind":"chord","error":{"code":"unavailable","message":"m"}}]',
+		);
 		expect(() => textCodec.decode(new TextEncoder().encode('["f",2,"x",{}]'))).toThrow("an unknown failure kind");
 		expect(text({ kind: "ack" })).toBe('["a"]');
+		expect(text({ kind: "ack", events: 2 })).toBe('["a",2]');
+		expect(text({ kind: "event", events: [{ hold: 1, member: 0, at: 9, value: '{"y":1}' }] })).toBe(
+			'["E",[[1,0,9,[0,{"y":1}]]]]',
+		);
 		// An origin wraps the message's own tuple.
 		expect(text({ kind: "release", origin: 4, hold: 3 })).toBe('["@",4,["R",3]]');
 		expect(text({ kind: "closed", origin: 4 })).toBe('["@",4,["C"]]');
@@ -716,7 +754,7 @@ describe("the binary codec's strings", () => {
 				{ member: 0, value: jsonPart("€".repeat(length)) },
 				{ member: 1, value: "1" },
 			];
-			const message: Message = { kind: "bound", holds: [{ hold: 1, variant: 0, members, failed: [] }] };
+			const message: Message = { kind: "bound", holds: [{ hold: 1, granted: [], members, failed: [] }] };
 			expect(plain(binaryCodec.decode(binaryCodec.encode(message)))).toEqual(message);
 		}
 	});

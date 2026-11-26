@@ -14,10 +14,10 @@ import { after, before, describe, it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@p2/app/v1";
 import { Devices } from "../../plugins/devices/contract.ts";
 import { PROXY_MARKER_HEADER } from "../../plugins/proxy-marker/contract.ts";
-import { Sessions } from "../../plugins/sessions/contract.ts";
+import { SESSIONS_OWNER, Sessions } from "../../plugins/sessions/contract.ts";
 import { Sharing } from "../../plugins/sharing/contract.ts";
-import { Browser, browserTests } from "./browser.ts";
-import { type Fixture, holdIn, http, startFixture, until } from "./helpers.ts";
+import { Browser, browserTests, COMPOSER } from "./browser.ts";
+import { type Fixture, holdWith, http, startFixture, until } from "./helpers.ts";
 
 function localNetwork(url: string): boolean {
 	const host = new URL(url).hostname
@@ -165,7 +165,7 @@ describe("clients through a public-origin proxy", { skip: !browserTests }, () =>
 		const owner = fixture.browser();
 		session = (
 			await (
-				await holdIn(owner, Sessions, {}, "owner")
+				await holdWith(owner, Sessions, {}, ...SESSIONS_OWNER)
 			).create({ cwd: fixture.workspace, title: "Network fixture" }, BACKGROUND_CONTEXT)
 		).id;
 		const sharing = owner.hold(Sharing, { session }, BACKGROUND_CONTEXT);
@@ -205,10 +205,10 @@ describe("clients through a public-origin proxy", { skip: !browserTests }, () =>
 		await browser.wait(
 			`document.querySelector('nav[aria-label="Shared session"]') && !document.querySelector('.offline')`,
 		);
-		// Let the version poll and any late request happen inside the observed window.
+		// Let any late request happen inside the observed window.
 		await new Promise((resolve) => setTimeout(resolve, 1500));
 		assertPublicOnly(requests, websockets);
-		assert(requests.some((url) => new URL(url).pathname.startsWith("/__p2_web/app-")));
+		assert(requests.some((url) => new URL(url).pathname.startsWith("/_chord/web/base.")));
 		assert.equal(await browser.evaluate<string>('getComputedStyle(document.querySelector(".app")).display'), "flex");
 	});
 	it("a signed-out visitor gets only the sign-in page, never the app or a connection", async () => {
@@ -217,16 +217,17 @@ describe("clients through a public-origin proxy", { skip: !browserTests }, () =>
 		await browser.wait('document.querySelector("#sign-in #token")');
 		assertPublicOnly(requests, websockets);
 		assert.equal(websockets.length, 0);
-		assert(!requests.some((url) => new URL(url).pathname.startsWith("/__p2_web/")));
+		assert(!requests.some((url) => new URL(url).pathname.startsWith("/_chord/web/")));
 	});
 	it("a proxied owner loads the app with same-origin requests only, Providers included", async () => {
 		const { browser, requests, websockets } = await startBrowser(ownerCookie);
 		await browser.metrics(1280, 900);
 		await browser.open(origin);
-		await browser.wait('document.querySelector(".composer textarea") && !document.querySelector(".offline")');
+		await browser.wait(`document.querySelector('${COMPOSER}') && !document.querySelector('.offline')`);
 		// Remote owners (not only the device) may sign in to model providers.
+		await browser.click(".drawer-foot .settings-open");
 		await browser.wait(
-			'[...document.querySelectorAll("button")].some((button) => button.textContent === "Providers")',
+			'[...document.querySelectorAll(".settings-nav-item")].some((item) => item.textContent === "Providers")',
 		);
 		await new Promise((resolve) => setTimeout(resolve, 1500));
 		assertPublicOnly(requests, websockets);

@@ -1,5 +1,5 @@
 // How the `send_file` tool shows in the chat: "Sent <name>", and the file as a card after the turn's answer that opens
-// the viewer.
+// the viewer (images and videos with a thumbnail).
 import {
 	CodeBlock,
 	detailsOf,
@@ -18,6 +18,7 @@ import {
 	stringOf,
 	type ToolActivity,
 	type ToolView,
+	ViewerHref,
 } from "@p2/app/v1/web";
 import { useContext } from "react";
 import type { DownloadInfo } from "../files/contract.ts";
@@ -38,15 +39,19 @@ function sentFileOf(tool: ToolView): DownloadInfo | undefined {
 function SentFile({ tool }: { tool: ToolView }) {
 	const sessionId = useContext(SessionId);
 	const openViewer = useContext(OpenViewer);
+	const viewerHref = useContext(ViewerHref);
 	const file = sentFileOf(tool);
 	if (!sessionId || !file) return null;
+	const url = fileUrl(sessionId, file);
 	return (
 		<FileCard
 			icon={<FileIcon />}
 			title={file.name}
 			meta={fileMeta(file)}
-			href={fileUrl(sessionId, file)}
+			href={url}
 			download={file.name}
+			thumbnail={url}
+			openHref={viewerHref({ kind: "file", file })}
 			onOpen={() => openViewer({ kind: "file", file })}
 		/>
 	);
@@ -68,6 +73,7 @@ function SendFileDetail({ step }: { step: Step }) {
 }
 
 export const sendFileActivity: ToolActivity = {
+	brief: "Sending file",
 	describe: (step) => ({
 		label: {
 			kind: "file",

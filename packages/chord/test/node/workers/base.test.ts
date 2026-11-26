@@ -2,8 +2,9 @@
 // code bundled once (an edit after the build runs nowhere, every imported module runs), split at dynamic imports (a
 // lazily imported module and the packages it imports load only when imported, still from the snapshot), installed
 // packages external and Node builtins kept, a workspace package linked into `node_modules` inlined, the child's
-// `--conditions`, module locations and stack traces naming the source files, a broken entry rejected, and the files in a
-// private directory restored when a cleaner removed one.
+// `--conditions`, module locations, stack traces naming the source files through the maps beside the bundle's files
+// (with `--enable-source-maps`), a broken entry rejected, and the files in a private directory restored when a cleaner
+// removed one.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
@@ -102,6 +103,26 @@ describe("the snapshot", () => {
 		expect(readdirSync(dirname(base.file())).length).toBeGreaterThan(1);
 	});
 
+	it("is minified but for the names: no comments, no indentation, `name` as the source has it", async () => {
+		const dir = await project({
+			"entry.ts": [
+				"// A comment the base drops, with a character that would make V8 keep the text as UTF-16: §.",
+				"function describeTheWorker(): string {",
+				"\tconst unusedButKept = 1;",
+				'\treturn describeTheWorker.name + " " + unusedButKept;',
+				"}",
+				"class TheBase {}",
+				"console.log(describeTheWorker(), TheBase.name);",
+			].join("\n"),
+		});
+		const base = await built(join(dir, "entry.ts"));
+		expect(run(base)).toBe("describeTheWorker 1 TheBase");
+		const text = await readFile(base.file(), "utf8");
+		expect(text).not.toContain("A comment the base drops");
+		expect(text).not.toContain("\tconst");
+		expect(text).not.toContain("§");
+	});
+
 	it("a broken entry rejects with esbuild's failure", async () => {
 		const dir = await project({ "entry.ts": 'import { label } from "./missing.ts";\nconsole.log(label);\n' });
 		await expect(buildWorkerBase(join(dir, "entry.ts"), [])).rejects.toThrow(/Could not resolve "\.\/missing\.ts"/);
@@ -128,9 +149,9 @@ describe("what stays external", () => {
 		await symlink(join(dir, "workspace", "linked"), join(dir, "node_modules", "linked"), "dir");
 		const base = await built(join(dir, "entry.ts"));
 		const bundle = await readFile(base.file(), "utf8");
-		expect(bundle).toContain(`from "${pathToFileURL(join(dir, "node_modules", "installed", "index.js")).href}"`);
+		expect(bundle).toContain(`from"${pathToFileURL(join(dir, "node_modules", "installed", "index.js")).href}"`);
 		expect(bundle).toContain(JSON.stringify(join(dir, "node_modules", "required", "index.js")));
-		expect(bundle).toContain('from "node:path"');
+		expect(bundle).toContain('from"node:path"');
 		expect(base.inputs.has(join(dir, "workspace", "linked", "index.js"))).toBe(true);
 		// The linked package is base code (in the snapshot); installed packages load from disk at each fork.
 		await writeFile(join(dir, "workspace", "linked", "index.js"), 'export const where = "linked v2";\n');
@@ -288,7 +309,7 @@ describe("the bundle's file", () => {
 		});
 		const base = await built(join(dir, "entry.ts"));
 		const first = base.file();
-		const chunks = readdirSync(dirname(first)).filter((name) => name !== "worker.mjs");
+		const chunks = readdirSync(dirname(first)).filter((name) => name !== "worker.mjs" && !name.endsWith(".map"));
 		expect(chunks).toHaveLength(1);
 		expect(statSync(join(dirname(first), chunks[0]!)).mode & 0o777).toBe(0o600);
 		await rm(join(dirname(first), chunks[0]!));
@@ -315,7 +336,7 @@ describe("the bundle's file", () => {
 		await writeFile(join(named, "worker-old.mjs"), "stale");
 		const base = await buildWorkerBase(join(dir, "entry.ts"), [], named);
 		expect(base.file()).toBe(join(named, "worker.mjs"));
-		expect(readdirSync(named)).toEqual(["worker.mjs"]);
+		expect(readdirSync(named).sort()).toEqual(["worker.mjs", "worker.mjs.map"]);
 		expect(statSync(named).mode & 0o777).toBe(0o700);
 		await rm(join(named, "worker.mjs"));
 		expect(base.file()).toBe(join(named, "worker.mjs"));

@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../src/context/index.ts";
-import { hostKind, int, local, method, obj, remote, str } from "../../src/contracts/index.ts";
+import { event, hostKind, int, local, method, obj, remote, str } from "../../src/contracts/index.ts";
 import { defineState } from "../../src/documents/index.ts";
 import {
 	createHost,
@@ -106,11 +106,11 @@ describe("staging: a throw keeps the plugin on its old code, reported", () => {
 			version: 1,
 			params: {},
 			hostAddress: () => Server(),
-			variants: { v: { state: { n: int() } } },
+			state: { n: int() },
 		});
 		const host = createHost({ principal: { kind: "server" }, onError: () => {} });
 		await host.load([], context);
-		const facet = defineFacet((h) => h.serve(Remote, () => ({ variant: "v", members: { n: constant(1) } })));
+		const facet = defineFacet((h) => h.serve(Remote, () => ({ n: constant(1) })));
 		expect((await failedReload(host, [{ name: "@test/app", facet }])).message).toContain(
 			"a host without an address serves only local types",
 		);
@@ -142,6 +142,29 @@ describe("staging: recorded declarations decide the fate", () => {
 		// Neither staging nor the restart opened it: the new attempt parks on the missing `Dep` first.
 		expect(opened).toEqual([]);
 		expect(store.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
+		await host.close(context);
+	});
+
+	it('hands out an inert event source: an emit in staging delivers nothing (decision "Events: fire-and-forget members")', async () => {
+		const Ticks = local("app.ticks", { version: 1, params: {}, members: { ticks: event(obj({ y: int() })) } });
+		const host = createHost({ onError: () => {} });
+		const facet = (label: string) =>
+			defineFacet((h: FacetHost) =>
+				h.serve(Ticks, (_, self) => {
+					const ticks = self.events<{ y: number }>();
+					// Staging runs this against a recording self: its handle is inert, the emit does nothing.
+					ticks.emit({ y: label.length });
+					return { ticks };
+				}),
+			);
+		await host.load([{ name: "@test/app", facet: facet("v1") }], context);
+		const ticks = await host.get(Ticks, {}, context);
+		const seen: unknown[] = [];
+		await ticks.ticks.on(({ value }) => void seen.push(value.y), context);
+		const report = await host.reload([{ name: "@test/app", facet: facet("v2!") }], context);
+		expect(report.failed).toEqual([]);
+		await flushed();
+		expect(seen).toEqual([]);
 		await host.close(context);
 	});
 
@@ -399,7 +422,7 @@ describe("staging per plugin (slice 7c §4)", () => {
 				version: 1,
 				params: { id: int() },
 				hostAddress: ({ id }) => (only && id !== 1 ? Elsewhere() : Here()),
-				variants: { main: { state: { n: int() } } },
+				state: { n: int() },
 			});
 		const Consumer = local("app.consumer", { version: 1, params: {}, members: { n: int() } });
 		const consumer = (id: number) =>
@@ -412,9 +435,7 @@ describe("staging per plugin (slice 7c §4)", () => {
 				// The provider's own code places every id but 1 on another host.
 				{
 					name: "@test/provider",
-					facet: defineFacet((h) =>
-						h.serve(placed(true), ({ id }) => ({ variant: "main", members: { n: constant(id) } })),
-					),
+					facet: defineFacet((h) => h.serve(placed(true), ({ id }) => ({ n: constant(id) }))),
 				},
 				{ name: "@test/consumer", facet: consumer(1) },
 			],
