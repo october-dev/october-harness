@@ -31,6 +31,7 @@ import { Keyed, type KeyedSlot, type SealToken, Singleton } from "../documents/i
 import type { JsonValue } from "../json.ts";
 import { RETRY_HOPS } from "../link/internal.ts";
 import { appended, NO_ITEMS } from "../lists.ts";
+import { SmallSet } from "../small-set.ts";
 import { type Batch, Constant, type DeriveSource, Source } from "../state/internal.ts";
 import { storedText } from "../store/text.ts";
 import type { NativeWatchable, Watch, Watchable } from "../watch.ts";
@@ -325,7 +326,7 @@ export class Binding implements Holder, UnboundRequest {
 	/** Its grant at its version (`to`), by its target's it was read from: made when seen live, dropped by a denial. */
 	#projection: { readonly from: ReadonlySet<string>; readonly to: ReadonlySet<string> } | undefined;
 	/** Who reads its object's named queries: each told when another instance is live (`followInstance`). */
-	#instanceFollowers: Set<() => void> | undefined;
+	#instanceFollowers: SmallSet<() => void> | undefined;
 	/** The instance its followers were told of last, held weakly: an ended instance is kept by nothing here. */
 	#followedInstance: WeakRef<object> | undefined;
 
@@ -505,7 +506,7 @@ export class Binding implements Holder, UnboundRequest {
 		// A live instance is an object (an attempt, a remote object's binding).
 		if (typeof instance !== "object" || instance === null || instance === this.#followedInstance?.deref()) return;
 		this.#followedInstance = new WeakRef(instance);
-		for (const moved of [...followers]) moved();
+		for (const moved of followers.snapshot()) moved();
 	}
 
 	/**
@@ -513,7 +514,8 @@ export class Binding implements Holder, UnboundRequest {
 	 * successor: the readers of its named queries read that one's, slice 14 §3.2), until the returned release.
 	 */
 	followInstance(moved: () => void): () => void {
-		this.#instanceFollowers ??= new Set();
+		// Most references have one reader of its named queries: no `Set` for it (184 B for as long as it reads).
+		this.#instanceFollowers ??= new SmallSet();
 		const followers = this.#instanceFollowers;
 		followers.add(moved);
 		const instance: unknown = this.target?.instance;
@@ -1084,8 +1086,27 @@ export class Binding implements Holder, UnboundRequest {
 		// At its own version (an older consumer has only its version's names), the same set while its target's is.
 		const granted = this.#state.kind === "bound" ? this.#state.target.granted : NO_GRANTS;
 		if (this.#projection?.from !== granted) {
-			const kept = [...granted].filter((name) => currentVersion(this.contract).grants.includes(name));
-			this.#projection = { from: granted, to: kept.length === granted.size ? granted : new Set(kept) };
+			const { grants } = currentVersion(this.contract);
+			// One pass, each name tested once. Most bindings are of the target's version: every name is theirs, the
+			// target's set is handed on and no list is made; an older one's set starts at its first missing name.
+			let kept: Set<string> | undefined;
+			let seen = 0;
+			for (const name of granted) {
+				if (grants.includes(name)) {
+					if (kept !== undefined) kept.add(name);
+					else seen++;
+					continue;
+				}
+				if (kept !== undefined) continue;
+				kept = new Set();
+				// The names before the first missing one were all kept.
+				let at = 0;
+				for (const before of granted) {
+					if (at++ === seen) break;
+					kept.add(before);
+				}
+			}
+			this.#projection = { from: granted, to: kept ?? granted };
 		}
 		this.#wasLive = this.#decided = true;
 	}
