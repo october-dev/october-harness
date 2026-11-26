@@ -4,12 +4,16 @@ import {
 	type Focusable,
 	fuzzyFilter,
 	getKeybindings,
+	getSelectPageIndex,
 	Input,
 	Spacer,
 	TruncatedText,
+	type TUI,
 } from "@earendil-works/pi-tui";
+import { isPreferredProvider } from "../../../core/preferred-providers.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
+import { getProviderBrandStyle, type ProviderBrandStyle, startBrandAnimation } from "./provider-brand.ts";
 
 export type AuthSelectorProvider = {
 	id: string;
@@ -17,16 +21,49 @@ export type AuthSelectorProvider = {
 	authType: "oauth" | "api_key";
 	method?: ApiKeyAuth | OAuthAuth;
 	status?: AuthCheck;
+	/**
+	 * Whether the provider's OAuth sign-in is backed by a subscription. `false` labels it as an account;
+	 * unset keeps the "subscription" label.
+	 */
+	subscription?: boolean;
 };
 
-export function formatAuthSelectorProviderType(authType: AuthSelectorProvider["authType"]): string {
-	return authType === "oauth" ? "subscription" : "API key";
+export function formatAuthSelectorProviderType(
+	authType: AuthSelectorProvider["authType"],
+	subscription?: boolean,
+): string {
+	if (authType === "api_key") return "API key";
+	return subscription === false ? "account" : "subscription";
 }
 
+/** Themed suffix describing whether and how a login option is configured, for example " ✓ configured". */
+export function formatAuthSelectorProviderStatus(provider: AuthSelectorProvider): string {
+	if (!provider.status) return theme.fg("muted", " • not configured");
+	if (provider.status.type !== provider.authType) {
+		const label = `${formatAuthSelectorProviderType(provider.status.type, provider.subscription)} configured`;
+		return theme.fg("muted", " • ") + theme.fg("warning", label);
+	}
+	if (
+		!provider.status.source ||
+		provider.status.source === "OAuth" ||
+		provider.status.source === "stored credential"
+	) {
+		return theme.fg("success", " ✓ configured");
+	}
+	const source = /^[A-Z][A-Z0-9_]*(?:, [A-Z][A-Z0-9_]*)*$/.test(provider.status.source)
+		? `env: ${provider.status.source}`
+		: provider.status.source;
+	return theme.fg("success", ` ✓ ${source}`);
+}
+
+const MAX_VISIBLE = 8;
+
 /**
- * Component that renders an auth provider selector
+ * Component that renders an auth provider selector. With `tui`, the selected row of a preferred partner provider
+ * shows its animated brand style.
  */
 export class OAuthSelectorComponent extends Container implements Focusable {
+	readonly capturesViewportInput: boolean = true;
 	private searchInput: Input;
 
 	// Focusable implementation - propagate to search input for IME cursor positioning
@@ -47,6 +84,8 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	private onSelectCallback: (providerId: string, authType: AuthSelectorProvider["authType"]) => void;
 	private onCancelCallback: () => void;
 	private showAuthTypeLabels: boolean;
+	private readonly animationStart = performance.now();
+	private stopAnimation: (() => void) | undefined;
 
 	constructor(
 		mode: "login" | "logout",
@@ -54,6 +93,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		onSelect: (providerId: string, authType: AuthSelectorProvider["authType"]) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
+		tui?: TUI,
 	) {
 		super();
 
@@ -97,6 +137,25 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 		// Initial render
 		this.filterProviders(initialSearchInput ?? "");
+
+		if (tui) this.stopAnimation = startBrandAnimation(tui, () => this.getSelectedBrandStyle() !== undefined);
+	}
+
+	override render(width: number): string[] {
+		// The list is built from styled text, so an animated row needs a rebuild for each frame.
+		if (this.stopAnimation && this.getSelectedBrandStyle()) this.updateList();
+		return super.render(width);
+	}
+
+	/** Stops the brand animation. */
+	dispose(): void {
+		this.stopAnimation?.();
+		this.stopAnimation = undefined;
+	}
+
+	private getSelectedBrandStyle(): ProviderBrandStyle | undefined {
+		const selectedProvider = this.filteredProviders[this.selectedIndex];
+		return selectedProvider && getProviderBrandStyle(selectedProvider.id);
 	}
 
 	private filterProviders(query: string): void {
@@ -114,12 +173,11 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	private updateList(): void {
 		this.listContainer.clear();
 
-		const maxVisible = 8;
 		const startIndex = Math.max(
 			0,
-			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredProviders.length - maxVisible),
+			Math.min(this.selectedIndex - Math.floor(MAX_VISIBLE / 2), this.filteredProviders.length - MAX_VISIBLE),
 		);
-		const endIndex = Math.min(startIndex + maxVisible, this.filteredProviders.length);
+		const endIndex = Math.min(startIndex + MAX_VISIBLE, this.filteredProviders.length);
 
 		for (let i = startIndex; i < endIndex; i++) {
 			const provider = this.filteredProviders[i];
@@ -127,18 +185,23 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 			const isSelected = i === this.selectedIndex;
 
-			const statusIndicator = this.formatStatusIndicator(provider);
+			const statusIndicator = formatAuthSelectorProviderStatus(provider);
+			// U+2726 is single-width in every terminal, unlike star emoji or ambiguous-width symbols such as U+2605.
+			const partnerMarker = isPreferredProvider(provider.id) ? theme.fg("muted", " ✦") : "";
 			const authTypeLabel = this.showAuthTypeLabels
-				? theme.fg("muted", ` [${formatAuthSelectorProviderType(provider.authType)}]`)
+				? theme.fg("muted", ` [${formatAuthSelectorProviderType(provider.authType, provider.subscription)}]`)
 				: "";
 			let line = "";
 			if (isSelected) {
 				const prefix = theme.fg("accent", "→ ");
-				const text = theme.fg("accent", provider.name);
-				line = prefix + text + authTypeLabel + statusIndicator;
+				const brandStyle = this.stopAnimation && getProviderBrandStyle(provider.id);
+				const text = brandStyle
+					? brandStyle(provider.name, performance.now() - this.animationStart)
+					: theme.fg("accent", provider.name);
+				line = prefix + text + partnerMarker + authTypeLabel + statusIndicator;
 			} else {
 				const text = `  ${theme.fg("text", provider.name)}`;
-				line = text + authTypeLabel + statusIndicator;
+				line = text + partnerMarker + authTypeLabel + statusIndicator;
 			}
 
 			this.listContainer.addChild(new TruncatedText(line, 1, 0));
@@ -161,27 +224,9 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		}
 	}
 
-	private formatStatusIndicator(provider: AuthSelectorProvider): string {
-		if (!provider.status) return theme.fg("muted", " • unconfigured");
-		if (provider.status.type !== provider.authType) {
-			const label = provider.status.type === "oauth" ? "subscription configured" : "API key configured";
-			return theme.fg("muted", " • ") + theme.fg("warning", label);
-		}
-		if (
-			!provider.status.source ||
-			provider.status.source === "OAuth" ||
-			provider.status.source === "stored credential"
-		) {
-			return theme.fg("success", " ✓ configured");
-		}
-		const source = /^[A-Z][A-Z0-9_]*(?:, [A-Z][A-Z0-9_]*)*$/.test(provider.status.source)
-			? `env: ${provider.status.source}`
-			: provider.status.source;
-		return theme.fg("success", ` ✓ ${source}`);
-	}
-
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
+		const pageIndex = getSelectPageIndex(kb, keyData, this.selectedIndex, this.filteredProviders.length, MAX_VISIBLE);
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
 			if (this.filteredProviders.length === 0) return;
@@ -192,6 +237,12 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		else if (kb.matches(keyData, "tui.select.down")) {
 			if (this.filteredProviders.length === 0) return;
 			this.selectedIndex = Math.min(this.filteredProviders.length - 1, this.selectedIndex + 1);
+			this.updateList();
+		}
+		// Page up/down
+		else if (pageIndex !== undefined) {
+			if (this.filteredProviders.length === 0) return;
+			this.selectedIndex = pageIndex;
 			this.updateList();
 		}
 		// Enter

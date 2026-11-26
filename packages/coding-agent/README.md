@@ -191,7 +191,13 @@ october --team --team-id builder --team-name Builder
 
 The first terminal checksum-installs and starts Bus when needed. Both terminals reuse the project scope and link to reachable peers automatically. The launcher injects execution-scoped credentials; the scope token is not passed to the model-facing process. Idle sessions wake for new messages, persist delivery state in the session, and acknowledge exact message IDs only after a successful settled turn. Failed or aborted turns remain unacknowledged and require `/inbox retry`.
 
+Use `/inbox pause` to keep working in your own conversation while peer deliveries wait. Pausing does not acknowledge or discard unread messages. A peer turn that has already started may settle and be acknowledged, but no further peer batch starts until `/inbox resume`. The choice is stored in the session, shown in the team status line and `/cockpit`, and restored on reload. `/inbox status` reports it. Hosts can use `session.getTeamInboxDispatch()` / `session.setTeamInboxDispatch()` or the RPC commands `get_team_inbox` and `set_team_inbox` without a model call. Peer messages cannot change the pause choice.
+
+Use `/verify run <command>` to record a check you chose: the command, directory, timing, observed exit status, and git revision, including hashes of dirty files when a commit alone is not enough. The outcome comes from that process. Text that says the tests passed does not. `/verify status` reports whether the workspace still matches the check. `/verify share` keeps the full output in the session and previews it on a Bus context item titled `Verification evidence`. After that, a `message_peer` response carries the item, and `complete_task` appends a one-line note. Requests are left unchanged. `/verify unshare`, or running a newer check, stops attachment. Copies of the reserved `Verification evidence` format that the model wrote itself are removed from results even when sharing is off.
+
 Use `/team` for peer presence, `/tasks` for the shared board, `/inbox` for delivery state, `/delegate` for a bounded task request, and `/handoff` to include a capped excerpt of the current session. A delegation can tighten the receiving turn to `read-only` or `accept-edits`; it cannot relax the receiver's local permission policy.
+
+Use `/cockpit` in the interactive TUI to inspect the Bus connection, peers, shared tasks, and messages in one read-only view. Enter opens an item's details; Escape goes back or closes. The view reads a snapshot when it opens, so reopen it to refresh. It never claims tasks, sends messages, or reads the inbox: the messages shown are the ones this session has already recorded (deliveries, replies, and `/delegate` or `/handoff` requests), and queued messages that have not been delivered yet are not previewed. A message's detail view fetches its current Bus delivery receipt.
 
 For an existing local or remote Bus, set `OCTOBER_BUS_ADDRESS` and `OCTOBER_BUS_SCOPE_TOKEN` before `october --team`. Use `--team-connect-to <peer>` for a specific additional link and `--team-bus <path>` to select a preinstalled runtime.
 
@@ -268,6 +274,10 @@ October adds three explicit tool-permission modes:
 | `bypass` | Allow | Allow | Allow |
 
 Set the process policy with `--permission-mode`, then `OCTOBER_PERMISSION_MODE`, then global `~/.october/agent/settings.json` (in that precedence order). The default is `bypass`. Trusted project `.october/settings.json` may only tighten that policy; untrusted project settings are ignored. Policy is fixed for the session, so tool edits cannot grant more authority. Restart with an explicit user-selected mode to change it. Non-interactive operations requiring approval are blocked.
+
+Run `/permissions` to see the policy this session is using: the selected mode and where it came from, whether trusted project settings tightened it, any active delegation ceiling, and whether read, edit and command tools are allowed, will ask, or are blocked. Denials and approval prompts name the same layer, for example `blocked by permission mode ask in non-interactive mode (from trusted project settings)`. The explanation comes from the locked session policy, so settings edited after startup do not change it.
+
+SDK sessions expose the locked permission explanation through `session.getPermissionInfo()`, and RPC clients through `RpcClient.getPermissions()` using the `get_permissions` command. These interfaces return information only when the October permission gate is loaded and locked. The CLI loads the gate; the default `createAgentSession()` does not. SDK inspection returns `undefined`, and RPC inspection returns `null`, when no locked gate is available.
 
 Bus-delivered delegations may add a temporary `read-only` or `accept-edits` ceiling for their processing turn. The strongest restriction wins, it is cleared when the turn settles, and remote context can never broaden the process-owned policy.
 
@@ -352,7 +362,7 @@ October adds these community Pi packages to your `packages` setting on first run
 | [`@narumitw/pi-plan-mode`](https://www.npmjs.com/package/@narumitw/pi-plan-mode) | A read-only planning mode (`/plan`) |
 | [`pi-lens`](https://www.npmjs.com/package/pi-lens) | LSP, linter, formatter, and type-check feedback while editing |
 
-They are ordinary packages: `october list` shows them, `october remove <source>` removes one for good, and a version you install yourself takes precedence. October Desktop-managed sessions and offline runs skip this step. These packages are maintained by their authors, not by October.
+They are ordinary packages: `october list` shows them, `october remove <source>` removes one for good, and a version you install yourself takes precedence. When October moves a default to a newer reviewed version, an installation still on the previous October pin is updated to it on the next online start; a version you chose is left alone. October Desktop-managed sessions and offline runs skip this step. These packages are maintained by their authors, not by October.
 
 Also worth a look, installed with `october install npm:<name>`: `pi-subagents` for scripted multi-agent workflows, `pi-background-tasks` for durable background shell tasks, `pi-goal-x` for tracked `/goal` planning, and observability integrations such as `@langfuse/pi-observability-plugin` and `@braintrust/pi-extension`.
 
@@ -395,10 +405,13 @@ The open harness should be enough to run, study, extend, and use as a reference 
 | [`@earendil-works/pi-agent-core`](https://github.com/october-dev/october-harness/blob/main/packages/agent) | Agent loop, tool calling, and state management |
 | [`@earendil-works/pi-ai`](https://github.com/october-dev/october-harness/blob/main/packages/ai) | Unified multi-provider model API |
 | [`@earendil-works/pi-tui`](https://github.com/october-dev/october-harness/blob/main/packages/tui) | Differentially rendered terminal UI |
-| [`@earendil-works/pi-protocol`](https://github.com/october-dev/october-harness/blob/main/packages/protocol) | RPC protocol types and transport contract |
-| [`@earendil-works/pi-client`](https://github.com/october-dev/october-harness/blob/main/packages/client) | Client for remote agent sessions |
-| [`@earendil-works/pi-server`](https://github.com/october-dev/october-harness/blob/main/packages/server) | Server runtime for remote sessions |
 | [`@earendil-works/pi-telemetry`](https://github.com/october-dev/october-harness/blob/main/packages/telemetry) | Shared, privacy-aware telemetry primitives |
+
+| [`@earendil-works/pi-schema`](https://github.com/october-dev/october-harness/blob/main/packages/schema) | JSON Schema validation |
+| [`@earendil-works/pi-codemode`](https://github.com/october-dev/october-harness/blob/main/packages/codemode) | Sandboxed JavaScript tool orchestration |
+| [`@earendil-works/pi-mcp`](https://github.com/october-dev/october-harness/blob/main/packages/mcp) | MCP client and server primitives |
+| [`@earendil-works/pi-durable`](https://github.com/october-dev/october-harness/blob/main/packages/durable) | Durable conversation, task, and document runtime |
+| [`@earendil-works/pi-env`](https://github.com/october-dev/october-harness/blob/main/packages/env) | Execution environments |
 
 ## Contributing and upstream sync
 

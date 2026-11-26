@@ -1,6 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
+import { isAbsolute, join, resolve as nodeResolvePath, posix, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnProcessSync } from "./child-process.ts";
 
@@ -33,6 +33,50 @@ export function canonicalizePath(path: string): string {
 	}
 }
 
+/**
+ * Key for comparing filesystem paths: the resolved absolute path, case-folded
+ * on Windows because Windows paths are case-insensitive (`c:\Users` and
+ * `C:\Users` are the same directory). NTFS can enable per-directory case
+ * sensitivity, but it is rarely used outside WSL interop, so it is ignored
+ * here (https://learn.microsoft.com/en-us/windows/wsl/case-sensitivity).
+ * Does not touch the filesystem; call `canonicalizePath` first when symlinks
+ * must compare equal. Use only for comparison, never for display or
+ * filesystem access.
+ */
+export function getPathComparisonKey(path: string): string {
+	const pathApi = getPlatformPathApi();
+	const resolvedPath = pathApi.resolve(path);
+	return pathApi === win32 ? resolvedPath.toLowerCase() : resolvedPath;
+}
+
+/** `node:path` rules for the current platform, read at call time so tests can simulate Windows. */
+function getPlatformPathApi(): typeof win32 {
+	return process.platform === "win32" ? win32 : posix;
+}
+
+/** True when both paths name the same location (see `getPathComparisonKey`). */
+export function pathsEqual(left: string, right: string): boolean {
+	return getPathComparisonKey(left) === getPathComparisonKey(right);
+}
+
+/** True when `child` is `parent` or inside it (see `getPathComparisonKey`). */
+export function isPathWithin(parent: string, child: string): boolean {
+	const parentKey = getPathComparisonKey(parent);
+	const childKey = getPathComparisonKey(child);
+	if (childKey === parentKey) return true;
+	// Filesystem roots (`/`, `C:\`) already end with a separator.
+	const pathSep = getPlatformPathApi().sep;
+	return childKey.startsWith(parentKey.endsWith(pathSep) ? parentKey : `${parentKey}${pathSep}`);
+}
+
+/** Replace a leading home directory with `~` for display. Relative paths are returned unchanged. */
+export function shortenHomePath(path: string, homeDir: string = homedir()): string {
+	const pathApi = getPlatformPathApi();
+	if (!homeDir || !pathApi.isAbsolute(path) || !isPathWithin(homeDir, path)) return path;
+	const relativePath = pathApi.relative(homeDir, path);
+	return relativePath ? `~${pathApi.sep}${relativePath}` : "~";
+}
+
 export function getFileRevision(path: string): string | undefined {
 	try {
 		const stats = statSync(path, { bigint: true });
@@ -43,9 +87,9 @@ export function getFileRevision(path: string): string | undefined {
 }
 
 /**
- * Returns true if the value is NOT a package source (npm:, git:, etc.)
- * or a remote URL protocol. Bare names, relative paths, and file: URLs
- * are considered local.
+ * Returns true if the value is NOT a package source (npm:, git:, etc.),
+ * a built-in extension (builtin:), or a remote URL protocol. Bare names,
+ * relative paths, and file: URLs are considered local.
  */
 export function isLocalPath(value: string): boolean {
 	const trimmed = value.trim();
@@ -56,7 +100,8 @@ export function isLocalPath(value: string): boolean {
 		trimmed.startsWith("github:") ||
 		trimmed.startsWith("http:") ||
 		trimmed.startsWith("https:") ||
-		trimmed.startsWith("ssh:")
+		trimmed.startsWith("ssh:") ||
+		trimmed.startsWith("builtin:")
 	) {
 		return false;
 	}

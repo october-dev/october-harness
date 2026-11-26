@@ -1,6 +1,6 @@
-import type { JsonValue } from "../types.ts";
+import type { JsonValue } from "../json.ts";
 
-export type { JsonValue } from "../types.ts";
+export type { JsonValue } from "../json.ts";
 
 const isObj = (value: unknown): value is object => value !== null && typeof value === "object";
 
@@ -109,11 +109,25 @@ export function overlap(a: string, b: string, scan: number, probe = 64, maxCandi
 	return 0;
 }
 
+/**
+ * `text.slice(start, end)` as a string of its own. V8 represents a slice of 13 or more characters as a view that keeps
+ * all of `text` alive, so an append op cut from a long, growing string would retain that whole string for as long as
+ * the op lives: in a delta chain, a watch backlog, or a value built by applying the op. Appending a character and
+ * slicing it off again makes V8 copy just the slice.
+ */
+export function ownedSlice(text: string, start: number, end = text.length): string {
+	return `${text.slice(start, end)} `.slice(0, -1);
+}
+
 // ─── Immutable revision tracking ─────────────────────────────────────────────
 
 export { diffRevisions } from "./diff.ts";
 export type { Draft } from "./draft.ts";
-export { type Change, type Prepared, type Tracker, track } from "./tracker.ts";
+export { appendText, type Change, type Prepared, type StringKeys, type Tracker, track } from "./tracker.ts";
+
+// ─── Pending ops of a slow consumer ──────────────────────────────────────────
+
+export { PendingOps, type PendingTake } from "./pending.ts";
 
 // ─── Path safety ─────────────────────────────────────────────────────────────
 
@@ -405,46 +419,98 @@ function applyOps<T>(target: T | undefined, ops: readonly Op[]): T {
 	return root as unknown as T;
 }
 
-/** Apply decoded operations without mutating the previous immutable value. */
+/** Apply one decoded operation batch without mutating the previous immutable value. */
 export function applyImmutable<T>(target: T | undefined, ops: readonly Op[]): T {
+	return applyImmutableBatches(target, [ops]);
+}
+
+/**
+ * Apply decoded operation batches as one final-result-only replay.
+ *
+ * Containers copied for an earlier batch may be mutated while applying a later
+ * batch, so this deliberately exposes no intermediate revisions.
+ */
+export function applyImmutableBatches<T>(target: T | undefined, batches: Iterable<readonly Op[]>): T {
 	let root = target as unknown as JsonValue;
-	for (const op of ops) {
-		assertValidOp(op);
-		if (op[0] === "r") {
-			root = op[1];
-			continue;
+	const owned = new WeakSet<object>();
+	for (const ops of batches) {
+		for (const op of ops) {
+			assertValidOp(op);
+			if (op[0] === "r") {
+				root = op[1];
+				continue;
+			}
+			if (op[0] === "p") {
+				const appended = appendCopy(root, op, owned);
+				if (appended !== undefined) {
+					root = appended;
+					continue;
+				}
+			}
+			root = copyContainers(root, op[0] === "p" || op[0] === "m" ? op[1] : op[1].slice(0, -1), owned);
+			root = applyOps(root, [op]);
 		}
-		root = copyContainers(root, op[0] === "p" || op[0] === "m" ? op[1] : op[1].slice(0, -1));
-		root = applyOps(root, [op]);
 	}
 	return root as unknown as T;
 }
 
-function copyContainers(root: JsonValue, path: Path): JsonValue {
+/**
+ * An append to an array not yet copied in this replay, built as one copy with the items (`concat`) instead of a copy that
+ * the insert then grows, which copies it again. `undefined` for any other splice and for any path that is not a plain
+ * walk over own properties, which takes the general path and so fails with its errors.
+ */
+function appendCopy(root: JsonValue, op: Extract<Op, { 0: "p" }>, owned: WeakSet<object>): JsonValue | undefined {
+	const [, path, index, deleteCount, items] = op;
+	if (deleteCount !== 0) return undefined;
+	let target: JsonValue = root;
+	for (const segment of path) {
+		const valid =
+			typeof segment === "string"
+				? !RESERVED_SEGMENTS.has(segment) && isObj(target) && !Array.isArray(target)
+				: Number.isInteger(segment) && segment >= 0 && Array.isArray(target);
+		if (!valid || !Object.hasOwn(target as object, segment)) return undefined;
+		target = (target as Record<Seg, JsonValue>)[segment]!;
+	}
+	if (!Array.isArray(target) || owned.has(target) || index !== target.length) return undefined;
+	const appended = target.concat(items);
+	owned.add(appended);
+	if (path.length === 0) return appended;
+	const parentPath = path.slice(0, -1);
+	const copiedRoot = copyContainers(root, parentPath, owned);
+	Object.defineProperty(resolve(copiedRoot, parentPath), path[path.length - 1]!, {
+		value: appended,
+		writable: true,
+		enumerable: true,
+		configurable: true,
+	});
+	return copiedRoot;
+}
+
+function copyContainers(root: JsonValue, path: Path, owned: WeakSet<object>): JsonValue {
 	const copy = (value: JsonValue): JsonValue[] | Record<string, JsonValue> => {
 		if (Array.isArray(value)) return value.slice();
 		if (!isObj(value)) throw new PathError(path);
-		const result = Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype) as Record<
-			string,
-			JsonValue
-		>;
-		for (const key of Object.keys(value)) {
-			Object.defineProperty(result, key, {
-				value: (value as Record<string, JsonValue>)[key],
-				writable: true,
-				enumerable: true,
-				configurable: true,
-			});
-		}
-		return result;
+		// Spread and `Object.assign()` onto a null-prototype object define own data properties, `__proto__` included,
+		// as `Object.defineProperty()` per key does, at a fraction of its cost.
+		return Object.getPrototypeOf(value) === null ? Object.assign(Object.create(null), value) : { ...value };
 	};
-	const copiedRoot = copy(root);
-	let source = root;
+	if (!isObj(root)) throw new PathError(path);
+	let copiedRoot: JsonValue[] | Record<string, JsonValue>;
+	if (owned.has(root)) copiedRoot = root as JsonValue[] | Record<string, JsonValue>;
+	else {
+		copiedRoot = copy(root);
+		owned.add(copiedRoot);
+	}
 	let destination = copiedRoot;
 	for (const segment of path) {
-		if (!isObj(source) || !Object.hasOwn(source, segment)) throw new PathError(path);
-		if (Array.isArray(source) && typeof segment !== "number") throw new UnsafePathError(segment);
-		const child = (source as Record<Seg, JsonValue>)[segment]!;
+		if (!Object.hasOwn(destination, segment)) throw new PathError(path);
+		if (Array.isArray(destination) && typeof segment !== "number") throw new UnsafePathError(segment);
+		const child = (destination as Record<Seg, JsonValue>)[segment]!;
+		if (!isObj(child)) throw new PathError(path);
+		if (owned.has(child)) {
+			destination = child as JsonValue[] | Record<string, JsonValue>;
+			continue;
+		}
 		const copiedChild = copy(child);
 		Object.defineProperty(destination, segment, {
 			value: copiedChild,
@@ -452,7 +518,7 @@ function copyContainers(root: JsonValue, path: Path): JsonValue {
 			enumerable: true,
 			configurable: true,
 		});
-		source = child;
+		owned.add(copiedChild);
 		destination = copiedChild;
 	}
 	return copiedRoot;
@@ -481,6 +547,10 @@ function resolve(root: JsonValue, path: Path): JsonValue {
 //
 // Path interning and arity omission live between the tracker and a boundary;
 // `Op` and `apply` know nothing about them.
+//
+// Consecutive batches of one encoder may be concatenated into one batch (links
+// coalesce waiting state this way): only path ids span batches, and every batch
+// starts with an explicit path.
 //
 // ONE PAIR PER INDEPENDENT STATE STREAM. Every decoder must observe exactly the
 // batches encoded by its matching encoder, beginning with that state's base.
@@ -593,7 +663,8 @@ export function encoder(): Encoder {
 }
 
 export interface Decoder {
-	decode(wire: readonly WireOp[]): Op[];
+	/** Ops as received: each is validated (`assertValidWireOp`) before use. */
+	decode(wire: readonly unknown[]): Op[];
 }
 
 export function decoder(): Decoder {

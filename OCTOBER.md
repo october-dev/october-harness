@@ -14,8 +14,12 @@ This repository is October's fork of [pi](https://github.com/earendil-works/pi) 
 October can ship a first-party agent: one that carries October's own inference endpoint and joins
 the october-bus with **no configuration injected from outside**.
 
-**The design test: if october-desktop has to write a single file to make this work, the design is
-wrong.**
+**The design test: October's own endpoint, sign-in and bus must work with zero configuration. If
+october-desktop has to write a file to make *those* work, the design is wrong.** User-chosen custom
+endpoints are a separate matter and are allowed: a user may add providers in
+`~/.october/agent/models.json` (the upstream pi mechanism, see `packages/coding-agent/docs/models.md`),
+and Desktop may later offer a UI that writes that file on the user's behalf. Secrets in it should
+use `$ENV` interpolation, not literal keys.
 
 `README.md` is upstream's and stays that way. This file is the only October-owned doc at the root.
 
@@ -516,6 +520,20 @@ discard October's commits.
 | 2026-09-05 | `da840b6216578c2a571d0374ac6a2091a83f9d91` | 0.85.1 |
 | 2026-09-22 | `95fbc04997eaee961eb673fa7923e9220609ebd5` | 0.87.0 |
 | 2026-09-22 (follow-up) | `d201760ffee16564aa8d9a759e0c85b70db33674` | 0.87.0 |
+| 2026-11-02 | `642e30b68930a644050794011555a04ed9027eb4` | 1.5.0 |
+| 2026-11-09 | `4ea8837927564c592b1d184c956ab7d28c88119b` | 1.5.1 |
+
+2026-11-09: merged 343 upstream commits through `4ea883792` (Pi 1.5.1): shell
+`auth login`/`auth logout`, idle prompt cache warming (new default), Anthropic message threads,
+bash timeout reporting when background processes hold the pipes, graceful RPC/print shutdown on
+a single signal, prerelease-safe changelog version compare, Fork option for a missing session
+cwd, and the upstream `apps/p2`/`apps/p3` workspaces. October keeps its top-level
+`login`/`logout`, SIGINT graceful shutdown (exit 130), the October default model, function-valued
+runtime credentials with store fallback, suppressed startup changelog, and "no catalog without a
+configured base URL". Workspace dependencies move to Pi 1.5.1, and the October package version
+moves to `1.5.1-october.1` for the release candidate. Root and installer lockfiles were regenerated
+without lifecycle scripts; undici is unchanged at 8.12.3. October's default packages were upgraded
+in the same change, with a one-time migration of previous October pins.
 
 2026-09-22 follow-up: merged the two additional upstream commits through `d201760ff`
 (`8158b0321` and the upstream merge commit). These add versioned document storage in

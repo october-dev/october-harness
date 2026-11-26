@@ -9,7 +9,7 @@ Example code for the pi-coding-agent SDK, process integration, and extensions.
 Build the coding-agent package before running it from a repository checkout:
 
 ```bash
-npx tsx examples/rpc-client.ts "Explain this repository"
+node examples/rpc-client.ts "Explain this repository"
 ```
 
 ## Directories
@@ -33,9 +33,6 @@ Example extensions demonstrating:
 - System prompt modifications and custom compaction
 - External integrations (SSH, file watchers, system theme sync)
 - Custom providers (Anthropic with custom streaming, GitLab Duo)
-
-### [plugins/pi-example-plugin/](plugins/pi-example-plugin/)
-An experimental plugin package that Pi automatically builds into separate Session-worker and TUI Chord facets.
 
 ## Documentation
 

@@ -7,7 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { afterEach, describe, expect, it } from "vitest";
 import { GenericMcpConnection } from "../src/extensions/mcp/client.ts";
 import { createSecretRedactor, parseMcpServers } from "../src/extensions/mcp/config.ts";
-import { mapMcpContent, mcpToolName } from "../src/extensions/mcp/index.ts";
+import { mapMcpContent, mcpToolName } from "../src/extensions/mcp/settings-extension.ts";
 import { classifyTool } from "../src/extensions/october/permissions.ts";
 
 type McpHttpRequest = Parameters<StreamableHTTPServerTransport["handleRequest"]>[0];

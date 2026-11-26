@@ -1,4 +1,5 @@
 import {
+	type ClientIdentity,
 	createInitialSystemMessage,
 	getCurrentSystemMessage,
 	getCurrentSystemPrompt,
@@ -119,6 +120,7 @@ export interface AgentOptions {
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 	onPayload?: SimpleStreamOptions["onPayload"];
 	onResponse?: SimpleStreamOptions["onResponse"];
+	onProviderStreamEvent?: SimpleStreamOptions["onProviderStreamEvent"];
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 	afterToolCall?: (context: AfterToolCallContext, signal?: AbortSignal) => Promise<AfterToolCallResult | undefined>;
 	finishTurn?: FinishTurn;
@@ -137,6 +139,11 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	/**
+	 * How requests identify the app to providers, merged field by field over `DEFAULT_AGENT_IDENTITY`
+	 * (`{ attribution: PI_ATTRIBUTION }`). Pass `{ attribution: null }` to send no attribution headers.
+	 */
+	identity?: ClientIdentity;
 }
 
 class PendingMessageQueue {
@@ -196,6 +203,7 @@ export class Agent {
 	public getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
 	public onPayload?: SimpleStreamOptions["onPayload"];
 	public onResponse?: SimpleStreamOptions["onResponse"];
+	public onProviderStreamEvent?: SimpleStreamOptions["onProviderStreamEvent"];
 	public beforeToolCall?: (
 		context: BeforeToolCallContext,
 		signal?: AbortSignal,
@@ -224,6 +232,8 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	/** Request identity forwarded to the stream function, over `DEFAULT_AGENT_IDENTITY`. */
+	public identity?: ClientIdentity;
 
 	constructor(options: AgentOptions) {
 		// Older compiled consumers may omit options or streamFn even though the current API requires them.
@@ -235,6 +245,7 @@ export class Agent {
 		this.getApiKey = runtimeOptions.getApiKey;
 		this.onPayload = runtimeOptions.onPayload;
 		this.onResponse = runtimeOptions.onResponse;
+		this.onProviderStreamEvent = runtimeOptions.onProviderStreamEvent;
 		this.beforeToolCall = runtimeOptions.beforeToolCall;
 		this.afterToolCall = runtimeOptions.afterToolCall;
 		this.finishTurn = runtimeOptions.finishTurn;
@@ -248,6 +259,7 @@ export class Agent {
 		this.transport = runtimeOptions.transport ?? "auto";
 		this.maxRetryDelayMs = runtimeOptions.maxRetryDelayMs;
 		this.toolExecution = runtimeOptions.toolExecution ?? "parallel";
+		this.identity = runtimeOptions.identity;
 	}
 
 	/**
@@ -469,9 +481,11 @@ export class Agent {
 			sessionId: this.sessionId,
 			onPayload: this.onPayload,
 			onResponse: this.onResponse,
+			onProviderStreamEvent: this.onProviderStreamEvent,
 			transport: this.transport,
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
+			identity: this.identity,
 			toolExecution: this.toolExecution,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,

@@ -2,17 +2,22 @@
 
 # Command Line
 
-This page documents Pi's built-in command-line commands and options. Run `pi --help` or append `--help` to a command for the exact interface in your installed version. The top-level help also includes options registered by loaded extensions.
+This page documents October's built-in command-line commands and options. Run `october --help` or append `--help` to a command for the exact interface in your installed version. The top-level help also includes options registered by loaded extensions.
 
 ```sh
-pi [options] [--] [@files...] [messages...]
-pi install <source> [options]
-pi remove <source> [options]
-pi uninstall <source> [options]
-pi update [target] [options]
-pi list
-pi config [options]
-pi auth <check|print-api-key|print-bearer-token> [options]
+october [options] [--] [@files...] [messages...]
+october install <source> [options]
+october remove <source> [options]
+october uninstall <source> [options]
+october update [target] [options]
+october list
+october doctor [--json] [--probe] [--timeout <ms>]
+october config [options]
+october auth login <provider> [--api-key] [--no-browser]
+october auth logout <provider>
+october auth <check|print-api-key|print-bearer-token> [options]
+october mcp <add|remove|list|login|logout> [options]
+october local-models [--url <url>] [--provider <id>] [--timeout <ms>] [--yes]
 ```
 
 <a id="modes"></a>
@@ -20,13 +25,13 @@ pi auth <check|print-api-key|print-bearer-token> [options]
 ## Invocation and output
 
 ```sh
-pi
-pi --print "Summarize this repository"
-git diff | pi --print "Review this change"
-pi --mode json "Inspect this repository" > events.jsonl
+october
+october --print "Summarize this repository"
+git diff | october --print "Review this change"
+october --mode json "Inspect this repository" > events.jsonl
 ```
 
-With terminal stdin and stdout, Pi opens the terminal UI unless `--print`, `--mode json`, or `--mode rpc` selects another interface. When either stream is redirected and neither JSON nor RPC mode is selected, Pi uses print mode. See [CLI Integration](cli-integration.md) for choosing between interactive, print, JSON, RPC, and SDK integration.
+With terminal stdin and stdout, October opens the terminal UI unless `--print`, `--mode json`, or `--mode rpc` selects another interface. When either stream is redirected and neither JSON nor RPC mode is selected, October uses print mode. See [CLI Integration](cli-integration.md) for choosing between interactive, print, JSON, RPC, and SDK integration.
 
 | Input | Behavior |
 |---|---|
@@ -35,9 +40,9 @@ With terminal stdin and stdout, Pi opens the terminal UI unless `--print`, `--mo
 | Piped stdin | Prepend its contents to the first prompt |
 | `--` | Stop option parsing so a prompt can begin with `-` |
 
-Pi resolves `@path` from the current working directory. The working directory also controls project configuration, resource discovery, and session grouping.
+October resolves `@path` from the current working directory. The working directory also controls project configuration, resource discovery, and session grouping.
 
-`--print` controls whether Pi runs once and exits. `--mode` selects the output interface. `--mode text` does not force one-shot execution when stdin and stdout are terminals; use `--print` for that behavior.
+`--print` controls whether October runs once and exits. `--mode` selects the output interface. `--mode text` does not force one-shot execution when stdin and stdout are terminals; use `--print` for that behavior.
 
 | Option | Behavior |
 |---|---|
@@ -57,21 +62,21 @@ RPC mode rejects `@file` arguments. JSON and RPC modes reserve stdout for protoc
 ## Models
 
 ```sh
-pi --model sonnet:high
+october --model sonnet:high
 ```
 
-See [Choose a Model](models.md) for model selection and [Provider Authentication](providers.md) for credentials.
+See [Choose a Model](models.md) for model selection and [Providers](providers.md) for credentials.
 
 - `--provider <name>`<br>
-  Restricts `--model` lookup to one provider.
+  Restricts `--model` lookup to one provider. It requires `--model`.
 - `--model <pattern>`<br>
-  Selects by exact ID or fuzzy ID/name match. It accepts `provider/id` and an optional `:<thinking>` suffix.
+  Selects by exact ID or fuzzy ID/name match. It accepts `provider/id` and an optional `:<thinking>` suffix. If several providers match, October prefers the one with credentials, otherwise it asks for `--provider`.
 - `--api-key <key>`<br>
-  Uses a non-persistent API-key override. It requires a model selected through `--model` or `--models`.
+  Uses a non-persistent API-key override. It requires a model selected through `--model` or `--models`. It does not choose between providers that offer the same model.
 - `--thinking <level>`<br>
   Sets `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. It overrides a `--model` suffix and is clamped to the model's capabilities.
 - `--models <patterns>`<br>
-  Sets a comma-separated scope for startup and cycling. It accepts exact IDs, fuzzy matches, case-insensitive globs, and optional `:<thinking>` suffixes.
+  Sets a comma-separated scope for startup and cycling. It accepts exact IDs, fuzzy matches, case-insensitive globs, and optional `:<thinking>` suffixes. A model offered by several providers is added for each, with a warning.
 - `--list-models [search]`<br>
   Lists available models, optionally filtered by a fuzzy search, then exits.
 
@@ -80,23 +85,23 @@ See [Choose a Model](models.md) for model selection and [Provider Authentication
 ## Sessions
 
 ```sh
-pi --continue
+october --continue
 ```
 
 See [Sessions and Context](sessions.md) for resuming, forking, naming, and storing sessions.
 
 - `-c`, `--continue`<br>
-  Continues the most recent session for the current project.
+  Continues the most recent session for the current directory.
 - `-r`, `--resume`<br>
-  Opens the session selector.
+  Opens the session selector and resumes the chosen session in its working directory. Press Tab to include sessions from other directories.
 - `--session <path|id>`<br>
-  Opens by file path, exact ID, or partial ID. Pi searches the current project first and offers to fork a cross-project match.
+  Opens a session by file path or full/partial ID, and resumes it in its working directory. If the ID only matches sessions stored for another directory, October offers to fork it into the current directory instead.
 - `--session-id <id>`<br>
-  Opens the exact project session ID or creates it if absent. IDs accept letters, numbers, `.`, `_`, and `-`.
+  Opens the current directory's existing session with the ID, or creates it otherwise. IDs accept letters, numbers, `.`, `_`, and `-`.
 - `--fork <path|id>`<br>
-  Forks an existing session into a new session for the current project.
+  Forks a session, chosen by file path or full/partial ID, into a new session in the current directory.
 - `--session-dir <dir>`<br>
-  Overrides storage and lookup. It takes precedence over `PI_CODING_AGENT_SESSION_DIR` and the `sessionDir` setting.
+  Overrides storage and lookup. It takes precedence over `OCTOBER_CODING_AGENT_SESSION_DIR` and the `sessionDir` setting.
 - `--no-session`<br>
   Uses an in-memory session that is not persisted.
 - `-n`, `--name <name>`<br>
@@ -113,21 +118,31 @@ Constraints:
 ## Tools
 
 ```sh
-pi --tools read,grep,find,ls --print "Review this project"
+october --tools read,grep,find,ls --print "Review this project"
 ```
 
 See [Settings](settings.md#tools) for configuring the default tool selection.
 
 - `-t`, `--tools <list>`<br>
-  Replaces the default selection with a comma-separated allowlist of built-in, extension, or custom tools.
+  Replaces the default selection with a comma-separated allowlist of built-in, extension, or custom tools. Entries are tool names or patterns where `*` matches any characters. MCP tools are kept unless an entry starts with `mcp__` (see [MCP tools](#mcp-tools)). A list of only `+name` and `-name` entries is not an allowlist; it changes the default selection instead.
 - `-xt`, `--exclude-tools <list>`<br>
-  Disables comma-separated tool names after all other selection options.
+  Disables comma-separated tool names or patterns after all other selection options, MCP tools included.
 - `-nbt`, `--no-builtin-tools`<br>
   Disables default built-in tools while retaining extension and custom tools.
 - `-nt`, `--no-tools`<br>
-  Starts with all built-in, extension, and custom tools disabled.
+  Starts with all built-in, extension, custom, and MCP tools disabled.
 
-Default enabled tools are `read`, `bash`, `edit`, and `write`, unless `defaultTools` changes them.
+Default enabled tools are `read`, `bash`, `edit`, and `write`, unless `defaultTools` changes them. `--tools` with plain names replaces the whole selection, so name every tool you want. Like `defaultTools`, it also accepts a list of only `+name` and `-name` entries, which adds tools to or removes them from the default selection: `october --tools +codemode,-write` keeps the other default tools, enables `codemode`, and disables `write`. These entries take exact tool names, not `*` patterns; use `--exclude-tools` to disable tools by pattern. Plain names and `+name`/`-name` entries cannot be mixed. `/reload` enables tools newly added to `defaultTools`, but a tool removed with `-name` stays removed.
+
+<a id="mcp-tools"></a>
+
+`--tools` selects the tools declared to the model. It does not remove MCP tools, whose reach is set by their [exposure](mcp.md#control-tool-exposure): `october --tools read,codemode` keeps every MCP tool callable from codemode scripts. An MCP tool that no entry names or matches is never declared directly, whatever its exposure; only `tool_search`, if listed, can load it. Once an entry starts with `mcp__`, `--tools` filters MCP tools too, so this keeps only the tools of the `radius` server:
+
+```sh
+october --tools read,bash,codemode,'mcp__radius__*'
+```
+
+The MCP resource tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) count as MCP tools. To remove MCP tools, use `--exclude-tools 'mcp__*'` or [`--no-mcp`](#resource-options).
 
 | Built-in | Purpose |
 |---|---|
@@ -140,20 +155,55 @@ Default enabled tools are `read`, `bash`, `edit`, and `write`, unless `defaultTo
 | `find` | Find paths using glob patterns |
 | `ls` | List directory contents |
 
+Built-in extensions add two more tools. They are off by default; the MCP extension turns them on when an MCP server needs them (see [MCP](mcp.md#control-tool-exposure)). To enable them yourself, name them in `--tools` or `defaultTools`.
+
+| Built-in extension | Purpose |
+|---|---|
+| `codemode` | Run JavaScript that calls the other tools, for example in parallel with `Promise.allSettled`; only the script's output reaches the model |
+| `tool_search` | Search tools that are not declared to the model (`codemode` and `deferred` exposure, such as MCP tools) and declare the matches for the next call |
+
+### Enable codemode
+
+To turn on `codemode` for every session, add it to the default tools in `~/.october/agent/settings.json` or a project's `.october/settings.json`:
+
+```json
+{
+  "defaultTools": ["+codemode"]
+}
+```
+
+This keeps `read`, `bash`, `edit`, and `write` and adds `codemode`. For one invocation, add it with `--tools`:
+
+```sh
+october --tools +codemode
+```
+
+Codemode is useful without MCP: scripts can run several tool calls in parallel, filter large output before it reaches the model, call classifier models such as TypeSafe's Jev through `models.classify()` (see [Classifier models](models.md#use-classifier-models)), and generate images through `models.generateImages()` (see [Image models](models.md#use-image-models)).
+
+### How codemode works
+
+Scripts run in a QuickJS sandbox and reach the other tools through `tools.<name>(args)`. [Codemode](codemode.md) describes the script API, how tools are listed and found, the `store()` and `models` globals, and the limits.
+
+### Tool search
+
+`tool_search` is off by default; enable it with `"defaultTools": ["+tool_search"]` or `--tools`. It uses the same ranking as `searchTools()` over tools that are not declared yet and declares the matches for the next model call. Loaded tools are recorded in the session like other tool changes, so they stay declared on that branch.
+
 <a id="resource-options"></a>
 
 ## Resources
 
 ```sh
-pi --extension ./review.ts
+october --extension ./review.ts
 ```
 
-See [Configuration](configuration.md) for conventional directories and project trust, [Settings](settings.md#resources) for configured paths, and [Pi Packages](packages.md) for package sources.
+See [Configuration](configuration.md) for conventional directories and project trust, [Settings](settings.md#resources) for configured paths, and [October Packages](packages.md) for package sources.
 
 - `-e`, `--extension <path>`<br>
-  Loads an extension file or directory and is repeatable.
+  Loads an extension file or directory, or a built-in extension such as `builtin:mcp`, and is repeatable.
 - `-ne`, `--no-extensions`<br>
-  Disables discovered and configured extensions. Explicit `-e` paths still load.
+  Disables discovered, configured, and built-in extensions. Explicit `-e` paths still load, so `october -ne -e builtin:mcp` keeps only the built-in MCP support.
+- `--no-mcp`<br>
+  Disables the built-in MCP support for this run: no servers connect, and there are no MCP tools or `/mcp`. It does not affect an extension that replaces the built-in MCP support.
 - `--skill <path>`<br>
   Loads a skill file or directory and is repeatable.
 - `-ns`, `--no-skills`<br>
@@ -178,7 +228,7 @@ Resource paths apply only to the current process. Relative paths resolve from th
 ## Prompts and process
 
 ```sh
-pi --append-system-prompt ./instructions.md
+october --append-system-prompt ./instructions.md
 ```
 
 See [Configuration](configuration.md) for saved configuration, [Security](security.md#understand-project-trust) for project trust, and [Environment Variables](environment-variables.md) for process controls.
@@ -188,7 +238,7 @@ See [Configuration](configuration.md) for saved configuration, [Security](securi
 - `--append-system-prompt <text|path>`<br>
   Appends text or an existing file to the system prompt and is repeatable.
 - `--tui-mode <mode>`<br>
-  Uses `regular` or `fullscreen` terminal mode.
+  Uses `fullscreen` (default) or `regular` terminal mode.
 - `--verbose`<br>
   Shows verbose interactive startup information, overriding `quietStartup`.
 - `-a`, `--approve`<br>
@@ -200,64 +250,87 @@ See [Configuration](configuration.md) for saved configuration, [Security](securi
 - `-h`, `--help`<br>
   Shows help, including flags registered by loaded extensions, then exits.
 - `-v`, `--version`<br>
-  Shows the Pi version, then exits.
+  Shows the October version, then exits.
 
 Extensions may register additional long-form options. Unknown short options are rejected.
 
 ## Package commands
 
 ```sh
-pi install npm:@scope/package
+october install npm:@scope/package
 ```
 
-See [Pi Packages](packages.md) for source formats, filtering, installation, and project scope.
+See [October Packages](packages.md) for source formats, filtering, installation, and project scope.
 
 ### Common tasks
 
 | Task | Command |
 |---|---|
-| Install a package | `pi install <source>` |
-| List configured packages | `pi list` |
-| Remove a package and its settings entry | `pi remove <source>` |
-| Configure which package resources load | `pi config` |
+| Install a package | `october install <source>` |
+| List configured packages | `october list` |
+| Remove a package and its settings entry | `october remove <source>` |
+| Configure which package resources load | `october config` |
 
 Add `--local` or `-l` to `install`, `remove`, `uninstall`, or `config` to use project settings instead of global settings.
 
-### Update Pi or packages
+### Update October or packages
 
-Running `pi update` without a target updates Pi itself.
+Running `october update` without a target updates October itself.
 
 | Task | Command |
 |---|---|
-| Update Pi | `pi update` |
-| Update all installed packages | `pi update --extensions` |
-| Update one installed package | `pi update <source>` |
-| Refresh model catalogs | `pi update --models` |
-| Update Pi and all installed packages | `pi update --all` |
+| Update October | `october update` |
+| Update all installed packages | `october update --extensions` |
+| Update one installed package | `october update <source>` |
+| Refresh model catalogs | `october update --models` |
+| Update October and all installed packages | `october update --all` |
 
-Add `--force` to reinstall Pi when the selected update includes Pi.
+Add `--force` to reinstall October when the selected update includes October.
+
+`october update` cannot update October when another package manager provides it, such as Nix. Update October with that package manager, for example `nix profile upgrade october`. Package and model catalog updates still work.
+
+#### Custom update command
+
+If a wrapper or another package manager provides October, set `PI_SELF_UPDATE_COMMAND` so `october update` runs its update command:
+
+```sh
+export PI_SELF_UPDATE_COMMAND="mise use -g npm:{packageName}@{version}"
+```
+
+`october update` runs it only when npm has a newer October release, replacing `{packageName}`, `{version}`, and `{installSpec}` (`{packageName}@{version}`) with that release. The value is split on spaces. For arguments with spaces, use the `selfUpdateCommand` setting in `~/.october/agent/settings.json` instead, an argv array such as `["nix", "profile", "upgrade", "october"]`.
 
 ### Aliases and command options
 
-- `pi uninstall <source>` is an alias for `pi remove <source>`.
-- `pi update --self`, `pi update self`, and `pi update pi` are aliases for `pi update`.
-- `pi update --extension <source>` is an alias for `pi update <source>`.
+- `october uninstall <source>` is an alias for `october remove <source>`.
+- `october update --self`, `october update self`, and `october update october` are aliases for `october update`.
+- `october update --extension <source>` is an alias for `october update <source>`.
 - `-a`, `--approve` trusts project-local files for one command. `-na`, `--no-approve` ignores trust-gated project-local files.
 - Append `-h` or `--help` to a command for its exact usage and option constraints.
 
 ## Credential commands
 
+`pi auth login <provider>` logs in to a provider in the terminal and exits, without starting a session. It signs in with an account and opens the browser, like `/login <provider>`. Providers without account sign-in ask for an API key. Logging in to Radius also adds the Radius MCP server to `~/.pi/agent/mcp.json` when no global server uses that login yet. It requires an interactive terminal.
+
+| Option | Description |
+|---|---|
+| `--api-key` | Save an API key instead of signing in with an account; the key is read without echoing it |
+| `--no-browser` | Do not open a browser; use the provider's other sign-in method, such as a device code, for example over SSH. Asks when there are several. Not allowed with `--api-key` |
+
+`pi auth logout <provider>` removes the credentials that `pi auth login` or `/login` stored, like `/logout`. Environment variables and `models.json` config are unchanged. It exits with status `0` when nothing is stored, so it is safe to repeat.
+
 ```sh
-pi auth check --provider openai --json
+october auth login radius
+october auth logout radius
+october auth check --provider openai --json
 ```
 
-Authentication commands require `--provider <provider>` or `--model <model>`. See [Provider Authentication](providers.md) for supported methods.
+The other authentication commands require `--provider <provider>` or `--model <model>`. See [Providers](providers.md) for supported methods.
 
 | Command | Description |
 |---|---|
-| `pi auth check` | Print `ready`, `not_ready`, or `invalid`; exit with status `0`, `1`, or `2`, respectively |
-| `pi auth print-api-key` | Print the resolved API key |
-| `pi auth print-bearer-token` | Print a resolved OAuth bearer token |
+| `october auth check` | Print `ready`, `not_ready`, or `invalid`; exit with status `0`, `1`, or `2`, respectively |
+| `october auth print-api-key` | Print the resolved API key |
+| `october auth print-bearer-token` | Print a resolved OAuth bearer token |
 
 | Option | Applies to | Description |
 |---|---|---|
@@ -269,3 +342,66 @@ Authentication commands require `--provider <provider>` or `--model <model>`. Se
 | `--min-expiry <duration>` | `print-bearer-token` | Require remaining token lifetime using `ms`, `s`, `m`, or `h`, such as `30m` |
 
 Credential-printing commands write secrets to stdout.
+
+## Setup diagnostics
+
+```sh
+october doctor
+october doctor --json --probe
+```
+
+`october doctor` checks the local setup and prints one line per check with a suggested fix for each problem. It exits with `1` when a check fails and `0` otherwise, warnings included.
+
+By default it only reads files and environment variables. It does not load extensions, start services, install packages, or write anything, including settings lock files and the debug log. An October session injected by October Desktop or another launching app is inspected as it is: doctor never refreshes it, contacts the Desktop token route, or runs `OCTOBER_TOKEN_COMMAND`, so an expired session is reported as unverified rather than refreshed. `--probe` adds checks that leave the machine: an HTTP request without credentials to the default model's provider, and `october-bus doctor --json`, whose result is summarized rather than repeated. Each probe stops after `--timeout <ms>` (default 3000, at most 60000).
+
+The model checks use the global `~/.october/agent/settings.json` only: `defaultProvider`, `defaultModel`, and `enabledModels` overrides in a project's `.october/settings.json` are not applied, because doctor does not consult project trust. Project settings are still parsed for errors.
+
+| Check | Reports |
+|---|---|
+| `executable` | Version, entry point, and install method. When `october` on `PATH` is a different file, it is listed; it is a warning only when that file belongs to another installed copy of October, not for wrappers or version-manager shims |
+| `runtime` | Node.js or Bun version and platform. On a Node.js older than the minimum, `october` stops before any command runs and prints the required version |
+| `assets` | Themes, HTML export templates, and other files shipped with the package |
+| `config.settings` | Parse errors in the global and project `settings.json`, and an `httpProxy` value that is not a URL string |
+| `config.models` | Parse and schema errors in `~/.october/agent/models.json` |
+| `config.auth` | Parse errors in `~/.october/agent/auth.json`, and which providers have stored credentials |
+| `october.session` | The October session injected by October Desktop or another launching app: missing, valid, due for refresh, or expired, and whether it can be refreshed. Skipped outside such an app |
+| `models.default` | Whether the default model exists and its provider has credentials. A default October model that is not in the offline catalog is a warning, because that catalog lists only the built-in model and doctor does not ask the gateway |
+| `models.enabled` | `enabledModels` patterns that match no model with credentials |
+| `bus.env` | Incomplete or invalid `OCTOBER_BUS_*` variables, including an `OCTOBER_BUS_ADDRESS` that is not an http or https URL |
+| `bus.binary` | Which October Bus executable `october --team` would use |
+| `bus.scopes` | Whether `team-scopes.json` is valid and readable only by its owner |
+| `probe.proxy` | With `--probe`: whether the `httpProxy` setting or the `HTTPS_PROXY` and `HTTP_PROXY` variables (either case) can be used. When they cannot, the provider probe is skipped. Doctor sets up the proxy only here, so a malformed proxy variable does not stop the other checks |
+| `probe.provider` | With `--probe`: whether the default provider answers |
+| `bus.doctor` | With `--probe`: health and protocol version reported by October Bus |
+
+`--json` prints a report with `schemaVersion`, `version`, `ok`, `probe`, and `checks`. Each check has a stable `id`, a `status` of `pass`, `warn`, `fail`, or `skip`, a `summary`, and a `remediation` for problems. Credentials, tokens, and secret configuration values are replaced with `<redacted>`, and paths under the home directory start with `~`, so the output can be attached to an issue.
+
+## MCP commands
+
+These commands work outside a session, so agents can run them through `bash`. See [MCP Servers](mcp.md).
+
+| Command | Description |
+|---|---|
+| `october mcp add <server> [options] -- <command> [args...]` | Add or replace a stdio server in `mcp.json`; `--env KEY=VALUE` (repeatable) and `--cwd <dir>` set its environment and working directory. Arguments after the command are passed to it |
+| `october mcp add <server> [options] --url <url>` | Add or replace a streamable HTTP server; `--header KEY=VALUE` (repeatable), `--bearer-token-env-var <NAME>` (sends `Authorization: Bearer ${NAME}`), `--oauth-client-id`, `--oauth-client-secret`, `--oauth-callback-port`, `--oauth-client-name`, and `--oauth-client-registration` (`auto`, `cimd`, or `dcr`) configure authentication |
+| `october mcp remove <server>` | Remove a server from `mcp.json`; stored OAuth credentials are kept |
+| `october mcp list [--json]` | Connect to every enabled server and print its state, tools, and errors; exit with `1` when a config entry is invalid or an enabled server is not connected |
+| `october mcp login <server> [-l] [--timeout <seconds>]` | Sign in to an OAuth server: open the authorization page and wait for the browser; a terminal also accepts the pasted redirect URL. `--timeout` limits the whole sign-in, including requests to the authorization server (default 300 seconds). `-l` requires the server to be defined in the project's `.october/mcp.json` |
+| `october mcp logout <server> [-l]` | Delete the stored OAuth credentials of a server |
+
+`add` and `remove` change `~/.october/agent/mcp.json`, or `.october/mcp.json` in the current directory with `--local` (`-l`). `add` also takes `--exposure <mode>` (see [Exposure](mcp.md#control-tool-exposure)) and `--description <text>` and does not connect; run `october mcp list` to check the server.
+
+Project `.october/mcp.json` files are only read for projects that are already trusted.
+
+## Local model discovery
+
+`october local-models` asks inference servers on this machine which models they serve and offers to add them to `~/.october/agent/models.json`. It runs only when you start it. See [Find local models automatically](models.md#find-local-models-automatically).
+
+| Command | Description |
+|---|---|
+| `october local-models` | Probe Ollama (`127.0.0.1:11434`), LM Studio (`127.0.0.1:1234`), and vLLM (`127.0.0.1:8000`), preview the entries, and ask before writing |
+| `october local-models --url <url> [--provider <id>]` | Probe one OpenAI-compatible server on `localhost`, `127.0.0.0/8`, or `[::1]` instead. `--provider` names it (default `local-<port>`); names of providers October already ships, such as `openai` or `llama.cpp`, are refused |
+| `--timeout <ms>` | Time limit per endpoint, from 1 to 60000 (default 1500) |
+| `--yes`, `-y` | Write without asking. Required when stdin is not a terminal |
+
+The command exits with `1` when no server answers, when `models.json` is invalid or has comments, when a discovered provider name conflicts with an existing provider at another address, or when nothing was written because confirmation was unavailable.

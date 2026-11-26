@@ -2,6 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { OCTOBER_SESSION_REFRESHED_CODE } from "../../src/extensions/october/auth.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 function normalizeEventOrder(events: Harness["events"]): string[] {
@@ -50,6 +51,33 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
 		expect(harness.faux.state.callCount).toBe(2);
 		expect(harness.session.isRetrying).toBe(false);
+	});
+
+	it("retries after October replaced a session token the gateway rejected", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: `October rejected the session token (HTTP 401); OCTOBER_TOKEN_COMMAND supplied a new one (${OCTOBER_SESSION_REFRESHED_CODE}).`,
+			}),
+			fauxAssistantMessage("recovered"),
+		]);
+
+		await harness.session.prompt("test");
+
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
+	});
+
+	it("does not retry a plain 401", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("", { stopReason: "error", errorMessage: "401 invalid_api_key" })]);
+
+		await harness.session.prompt("test");
+
+		expect(harness.faux.state.callCount).toBe(1);
 	});
 
 	it("retries multiple transient failures and succeeds on the final attempt", async () => {

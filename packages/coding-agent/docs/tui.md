@@ -1,6 +1,6 @@
 # Terminal UI
 
-`@earendil-works/pi-tui` provides the terminal component system used by Pi. Extensions use it when built-in dialogs, notifications, status text, and widgets are not enough for the interaction they need.
+`@earendil-works/pi-tui` provides the terminal component system used by October. Extensions use it when built-in dialogs, notifications, status text, and widgets are not enough for the interaction they need.
 
 Start with `ctx.ui` methods from an [extension](extensions.md#interact-with-the-user). Build a custom component only when the UI needs its own rendering, keyboard or mouse input, focus, layout, or lifecycle.
 
@@ -15,7 +15,7 @@ Start with `ctx.ui` methods from an [extension](extensions.md#interact-with-the-
 | Temporary interactive screen or overlay | `ctx.ui.custom()` |
 | Custom rendering for a tool or session entry | An extension renderer |
 
-These APIs receive Pi’s active theme and keybindings where needed. Do not create a second terminal renderer inside an extension.
+These APIs receive October’s active theme and keybindings where needed. Do not create a second terminal renderer inside an extension.
 
 ## Understand the component model
 
@@ -23,7 +23,7 @@ A component renders an array of terminal lines for an available width. It can op
 
 Every rendered line must fit within the supplied width. Measure visible terminal columns rather than string length because ANSI escapes, wide characters, emoji, and combining characters change display width.
 
-Use `visibleWidth()`, `truncateToWidth()`, `sliceByColumn()`, and `wrapTextWithAnsi()` instead of implementing terminal-width handling yourself. Pi resets styling and hyperlinks after every line, so reapply styles on each rendered line.
+Use `visibleWidth()`, `truncateToWidth()`, `sliceByColumn()`, and `wrapTextWithAnsi()` instead of implementing terminal-width handling yourself. October resets styling and hyperlinks after every line, so reapply styles on each rendered line.
 
 After changing component state, invalidate the affected component and call the injected `tui.requestRender()`. The TUI coalesces render requests and updates the terminal.
 
@@ -39,17 +39,17 @@ The package includes components for common layouts and controls:
 - `Loader` and `CancellableLoader` report ongoing work.
 - `MouseRegion` adds pointer behavior around another component.
 
-Prefer these components over rebuilding selection, scrolling, text editing, or width handling. The extension examples show how to combine them with Pi’s borders and themes.
+Prefer these components over rebuilding selection, scrolling, text editing, or width handling. The extension examples show how to combine them with October’s borders and themes.
 
 ## Handle keyboard input and focus
 
 Use `matchesKey()` and `Key` for terminal keyboard input. The parser accounts for supported terminal protocols and key modifiers. Extension components should use the injected `KeybindingsManager` for configurable application actions.
 
-A component that displays a text cursor should implement `Focusable` and place `CURSOR_MARKER` immediately before its visual cursor. The TUI uses that marker to position the hardware cursor for input method editors.
+A component that displays a text cursor should implement `Focusable` and place `CURSOR_MARKER` immediately before its visual cursor. Wrap the cursor cell in `renderFakeCursor()` so the TUI draws it in reverse video, or hides it after `CURSOR_MARKER` when the hardware cursor is shown. The TUI uses the marker to position the hardware cursor for input method editors.
 
 Containers that wrap an `Input` or `Editor` must propagate their `focused` state to that child. Without propagation, Chinese, Japanese, Korean, and other IME candidate windows can appear at the wrong screen position.
 
-Extend Pi’s `CustomEditor` when replacing the main editor. It preserves application shortcuts and agent controls.
+Extend October’s `CustomEditor` when replacing the main editor. It preserves application shortcuts and agent controls.
 
 Forward keys your editor does not own to the base implementation, and restore the default by clearing the custom editor factory.
 
@@ -65,6 +65,78 @@ Regular mode leaves mouse input to the terminal because the terminal owns scroll
 
 `ctx.ui.custom()` temporarily gives one component control of the interactive area and resolves when that component calls the supplied completion callback.
 
+### Build a minimal custom screen
+
+This complete extension shows the custom-component lifecycle: render within the supplied width, use injected keybindings, invalidate cached output after state changes, request a render, and finish through `done()`.
+
+```typescript
+import type { ExtensionAPI } from "@october-dev/october";
+import { truncateToWidth } from "@earendil-works/pi-tui";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerCommand("pick-target", {
+    description: "Pick a deployment target",
+    handler: async (_args, ctx) => {
+      if (ctx.mode !== "tui") {
+        ctx.ui.notify("pick-target requires interactive mode", "error");
+        return;
+      }
+
+      const choices = ["development", "staging", "production"];
+      const selected = await ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+        let selectedIndex = 0;
+        let cachedWidth: number | undefined;
+        let cachedLines: string[] | undefined;
+
+        const invalidate = () => {
+          cachedWidth = undefined;
+          cachedLines = undefined;
+        };
+
+        return {
+          render(width: number): string[] {
+            if (cachedLines && cachedWidth === width) return cachedLines;
+
+            cachedWidth = width;
+            cachedLines = [
+              theme.fg("accent", "Choose a deployment target"),
+              ...choices.map((choice, index) => `${index === selectedIndex ? "> " : "  "}${choice}`),
+              theme.fg("dim", "up/down move, enter selects, escape cancels"),
+            ].map((line) => truncateToWidth(line, width));
+            return cachedLines;
+          },
+          handleInput(data: string): void {
+            if (keybindings.matches(data, "tui.select.up")) {
+              selectedIndex = (selectedIndex - 1 + choices.length) % choices.length;
+            } else if (keybindings.matches(data, "tui.select.down")) {
+              selectedIndex = (selectedIndex + 1) % choices.length;
+            } else if (keybindings.matches(data, "tui.select.confirm")) {
+              done(choices[selectedIndex]);
+              return;
+            } else if (keybindings.matches(data, "tui.select.cancel")) {
+              done(undefined);
+              return;
+            } else {
+              return;
+            }
+
+            invalidate();
+            tui.requestRender();
+          },
+          invalidate,
+        };
+      });
+
+      if (selected) ctx.ui.notify(`Selected ${selected}`, "info");
+    },
+  });
+}
+```
+
+This component does not display a text cursor, so it does not need `Focusable`. A component containing `Input` or `Editor` must implement `Focusable` and propagate its `focused` value to that child.
+
+Custom components do not report pi as waiting for the user, because `ctx.ui.custom()` also hosts loaders and other non-blocking UI. When a component waits for an answer, pass `blocked: { kind: "question", message: "Pick a color" }` so terminals that support [program status](terminal-setup.md#program-status) show pi as blocked. `kind` is `"question"`, `"permission"`, or `"auth"`. An inline component reports blocked while it is visible: a newer dialog or component shown in its place reports its own status instead. An overlay reports blocked from when it is shown until it calls `done()`, also while it is hidden with `setHidden()` or covered by another overlay. When several blocking prompts are open, the most recently shown one supplies `kind` and `message`.
+
 Pass `overlay: true` to draw above existing content. Overlay options control size, anchors, offsets, margins, and responsive visibility. An overlay handle can change focus or temporarily hide and show the overlay with `setHidden()` while the interaction remains active.
 
 Focused overlays retain input ownership across ordinary renders. If another component should receive input while an overlay remains visible, explicitly release or redirect focus through the handle.
@@ -79,11 +151,29 @@ See [`overlay-qa-tests.ts`](../examples/extensions/overlay-qa-tests.ts) for posi
 
 Use the theme passed to the extension or component callback. Theme helpers produce ANSI-styled strings for semantic colors such as accent, muted text, success, warnings, errors, tool output, and Markdown.
 
+Use `theme.style()` to combine foreground and background colors with text attributes:
+
+```typescript
+return new Text(
+  theme.style("Done!", {
+    fg: "success",
+    bg: "toolSuccessBg",
+    bold: true,
+  }),
+  0,
+  0,
+);
+```
+
+A style color can be a semantic theme token or a concrete `Color`. Foreground tokens are accepted as `fg` and background tokens as `bg`; to use a token's color in the other position, pass its concrete color, for example `{ fg: theme.colors.userMessageBg }`. Access concrete colors through `theme.colors` and use utilities such as `mixColors()` from `@earendil-works/pi-tui` when color math is needed. Tokens that a theme sets to the terminal default render with the terminal's own color; `theme.colors` reports the color the terminal announced for them, or a guess when it did not. Use `theme.appearance` (`"dark"` or `"light"`) to decide, for example, whether to lighten or darken a color. October converts the result to truecolor or 256-color output based on terminal capabilities. Theme tokens are converted once per theme; compute concrete colors outside the render path when possible.
+
+The existing `theme.fg()` and `theme.bg()` helpers remain available for applying one semantic color.
+
 Do not permanently store strings with theme colors unless `invalidate()` rebuilds them. A theme change clears render caches, but it cannot remove old ANSI colors embedded in application state.
 
 Theme callbacks evaluated during rendering do not need special rebuilding. Stateless components can also calculate themed output on every render.
 
-Use [Themes](themes.md) to create terminal palettes. Use Pi’s `getMarkdownTheme()` when rendering Markdown that should match the active application theme.
+Use [Themes](themes.md) to create terminal palettes. Use October’s `getMarkdownTheme()` when rendering Markdown that should match the active application theme.
 
 ## Keep rendering responsive
 
@@ -104,4 +194,4 @@ The checked extension examples cover the main patterns:
 - [`widget-placement.ts`](../examples/extensions/widget-placement.ts) places persistent content around the editor.
 - [`doom-overlay/`](../examples/extensions/doom-overlay/) demonstrates a continuously rendered overlay.
 
-The public exports are defined in [`packages/tui/src/index.ts`](https://github.com/earendil-works/pi/blob/main/packages/tui/src/index.ts). See [Extensions](extensions.md) for extension lifecycle, state, tools, events, and mode behavior.
+The public exports are defined in [`packages/tui/src/index.ts`](https://github.com/october-dev/october-harness/blob/main/packages/tui/src/index.ts). See [Extensions](extensions.md) for extension lifecycle, state, tools, events, and mode behavior.

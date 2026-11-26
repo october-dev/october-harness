@@ -1,6 +1,12 @@
 import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { highlightCode, initTheme } from "../src/modes/interactive/theme/theme.ts";
+import {
+	getLanguageFromPath,
+	getMarkdownTheme,
+	highlightCode,
+	initTheme,
+	theme,
+} from "../src/modes/interactive/theme/theme.ts";
 import {
 	highlight,
 	loadAllHighlightLanguages,
@@ -39,6 +45,14 @@ describe("syntax highlight renderer", () => {
 		expect(uncommonLanguageLoadedAtStartup).toBe(false);
 		await loadAllHighlightLanguages();
 		expect(supportsLanguage("ada")).toBe(true);
+	});
+
+	it("maps file extensions of eagerly loaded languages to their language", () => {
+		expect(getLanguageFromPath("lib/main.dart")).toBe("dart");
+		expect(getLanguageFromPath("flake.nix")).toBe("nix");
+		expect(getLanguageFromPath("script.groovy")).toBe("groovy");
+		expect(getLanguageFromPath("build.gradle")).toBe("groovy");
+		expect(getLanguageFromPath("src/Main.kt")).toBe("kotlin");
 	});
 
 	it("renders highlighted spans with the provided theme", () => {
@@ -96,18 +110,35 @@ describe("theme syntax highlighting", () => {
 		resetCapabilitiesCache();
 	});
 
+	// #10143
+	it("colors each line of Python docstrings independently", () => {
+		const code = '"""\nline one\n\nline two\n"""\nafter';
+		const ansi = theme.getFgAnsi("syntaxString");
+		const expected = [
+			`${ansi}"""\x1b[39m`,
+			`${ansi}line one\x1b[39m`,
+			"",
+			`${ansi}line two\x1b[39m`,
+			`${ansi}"""\x1b[39m`,
+			"after",
+		];
+
+		expect(highlightCode(code, "python")).toEqual(expected);
+		expect(getMarkdownTheme().highlightCode?.(code, "python")).toEqual(expected);
+	});
+
 	it("colors diff additions and deletions in fenced diff blocks", () => {
 		const lines = highlightCode("-old\n+new\n", "diff");
 
-		expect(lines[0]).toBe("\x1b[38;2;204;102;102m-old\x1b[39m");
-		expect(lines[1]).toBe("\x1b[38;2;181;189;104m+new\x1b[39m");
+		expect(lines[0]).toBe(`${theme.getFgAnsi("toolDiffRemoved")}-old\x1b[39m`);
+		expect(lines[1]).toBe(`${theme.getFgAnsi("toolDiffAdded")}+new\x1b[39m`);
 	});
 
 	it("keeps cli-highlight default styled scopes mapped to theme styles", () => {
 		expect(highlightCode("const re = /foo+/gi;", "javascript")[0]).toContain(
-			"\x1b[38;2;206;145;120m/foo+/gi\x1b[39m",
+			`${theme.getFgAnsi("syntaxString")}/foo+/gi\x1b[39m`,
 		);
-		expect(highlightCode("@decorator", "python")[0]).toBe("\x1b[38;2;128;128;128m@decorator\x1b[39m");
-		expect(highlightCode("<div></div>", "html")[0]).toContain("\x1b[38;2;86;156;214mdiv\x1b[39m");
+		expect(highlightCode("@decorator", "python")[0]).toBe(`${theme.getFgAnsi("muted")}@decorator\x1b[39m`);
+		expect(highlightCode("<div></div>", "html")[0]).toContain(`${theme.getFgAnsi("syntaxKeyword")}div\x1b[39m`);
 	});
 });

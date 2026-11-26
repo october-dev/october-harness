@@ -1,6 +1,6 @@
-import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { basename, join, parse, resolve } from "node:path";
-import { resolvePath } from "../utils/paths.ts";
+import { constants, copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { basename, join, parse } from "node:path";
+import { pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
@@ -159,9 +159,10 @@ export class AgentSessionRuntime {
 	}
 
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
-		// Settle any active response first so the aborted turn (including tool
-		// results) is persisted to the outgoing session before it is replaced.
-		await this.session.abort();
+		// Settle any active response and user bash commands first so the aborted turn (including
+		// tool results) is persisted to the outgoing session before it is replaced. The next session
+		// works in the same workspace, so old commands and their runner cleanup must finish first.
+		await Promise.all([this.session.abort(), this.session.abortBashAndWait()]);
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason,
@@ -304,9 +305,7 @@ export class AgentSessionRuntime {
 			}
 
 			if (!existsSync(currentSessionFile)) {
-				throw new Error(
-					"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
-				);
+				throw new Error("This session has not been saved yet. Send a message before cloning or forking it.");
 			}
 			const sessionManager = SessionManager.open(currentSessionFile, sessionDir);
 			const forkedSessionPath = sessionManager.createBranchedSession(targetLeafId);
@@ -407,7 +406,7 @@ export class AgentSessionRuntime {
 		}
 
 		let destinationPath = join(sessionDir, basename(resolvedPath));
-		const sourceAlreadyStored = resolve(destinationPath) === resolvedPath;
+		const sourceAlreadyStored = pathsEqual(destinationPath, resolvedPath);
 		if (!sourceAlreadyStored) {
 			const { name, ext } = parse(destinationPath);
 			let suffix = 1;
@@ -426,7 +425,13 @@ export class AgentSessionRuntime {
 		}
 
 		const sessionManager = SessionManager.open(destinationPath, sessionDir, cwdOverride);
-		assertSessionCwdExists(sessionManager, this.cwd);
+		try {
+			assertSessionCwdExists(sessionManager, this.cwd);
+		} catch (error) {
+			// The import did not happen; drop the copy so a retry with a cwd override or a fork leaves no stray file.
+			if (!sourceAlreadyStored) rmSync(destinationPath, { force: true });
+			throw error;
+		}
 		await this.teardownCurrent("resume", sessionManager.getSessionFile());
 		this.apply(
 			await this.createRuntime({
@@ -440,13 +445,20 @@ export class AgentSessionRuntime {
 		return { cancelled: false };
 	}
 
+	/**
+	 * Dispose the session for process exit. Also waits for credential writes in progress: an OAuth
+	 * refresh may already have spent the old single-use refresh token, so exiting before the new one
+	 * is saved would lose the login (#11692).
+	 */
 	async dispose(): Promise<void> {
+		await this.session.abort();
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason: "quit",
 		});
 		this.beforeSessionInvalidate?.();
 		this.session.dispose();
+		await this.services.modelRuntime.settleCredentialWrites();
 	}
 }
 

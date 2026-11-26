@@ -6,9 +6,8 @@ interface CodingAgentPackageJson {
 	main: string;
 	exports: {
 		".": { import: string; types: string };
-		"./client": { source: string };
-		"./experimental/plugin": { source: string };
 		"./rpc-entry": { import: string };
+		"./testing": { import: string; types: string };
 	};
 }
 
@@ -22,11 +21,7 @@ describe("package distribution entrypoints", () => {
 		expect(packageJson.main).toBe("./dist/index.js");
 		expect(packageJson.exports["."].import).toBe("./dist/index.js");
 		expect(packageJson.exports["./rpc-entry"].import).toBe("./dist/bundle/rpc-entry.js");
-	});
-
-	// Regression for #9132: internal experimental entrypoints must not be published runtime exports.
-	test("keeps experimental exports source-only", () => {
-		expect(packageJson.exports["./client"]).toEqual({ source: "./src/client/index.ts" });
-		expect(packageJson.exports["./experimental/plugin"]).toEqual({ source: "./src/experimental/plugin.ts" });
+		expect(packageJson.exports["./testing"].import).toBe("./dist/testing.js");
+		expect(packageJson.exports["./testing"].types).toBe("./dist/testing.d.ts");
 	});
 });

@@ -7,11 +7,17 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { SessionStats } from "../../core/agent-session.ts";
+import type {
+	PromptDisposition,
+	QueuedInputDisposition,
+	SessionStats,
+	TeamInboxDispatchState,
+} from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { PortableSessionDiagnostic } from "../../core/session-portable.ts";
+import type { OctoberPermissionExplanation } from "../../extensions/october/permissions.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
@@ -193,25 +199,32 @@ export class RpcClient {
 
 	/**
 	 * Send a prompt to the agent.
-	 * Returns immediately after sending; use onEvent() to receive streaming events.
-	 * Use waitForIdle() to wait for completion.
+	 * Returns the prompt's disposition after acceptance; use onEvent() to receive streaming events.
+	 * If the disposition is "handled", no run started for this prompt, so don't wait for agent_settled.
 	 */
-	async prompt(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "prompt", message, images });
+	async prompt(
+		message: string,
+		images?: ImageContent[],
+		streamingBehavior?: "steer" | "followUp",
+	): Promise<PromptDisposition> {
+		const response = await this.send({ type: "prompt", message, images, streamingBehavior });
+		return this.getData<{ disposition: PromptDisposition }>(response).disposition;
 	}
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
 	 */
-	async steer(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "steer", message, images });
+	async steer(message: string, images?: ImageContent[]): Promise<QueuedInputDisposition> {
+		const response = await this.send({ type: "steer", message, images });
+		return this.getData<{ disposition: QueuedInputDisposition }>(response).disposition;
 	}
 
 	/**
 	 * Queue a follow-up message to be processed after the agent finishes.
 	 */
-	async followUp(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "follow_up", message, images });
+	async followUp(message: string, images?: ImageContent[]): Promise<QueuedInputDisposition> {
+		const response = await this.send({ type: "follow_up", message, images });
+		return this.getData<{ disposition: QueuedInputDisposition }>(response).disposition;
 	}
 
 	/**
@@ -244,6 +257,27 @@ export class RpcClient {
 	 */
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.send({ type: "get_state" });
+		return this.getData(response);
+	}
+
+	/** Get the locked October permission policy explanation, or null when the gate is unavailable. */
+	async getPermissions(): Promise<OctoberPermissionExplanation | null> {
+		const response = await this.send({ type: "get_permissions" });
+		return this.getData(response);
+	}
+
+	/** Read automatic public Bus inbox dispatch. Does not call the model. */
+	async getTeamInbox(): Promise<TeamInboxDispatchState> {
+		const response = await this.send({ type: "get_team_inbox" });
+		return this.getData(response);
+	}
+
+	/**
+	 * Pause or resume automatic public Bus inbox dispatch. Does not call the model.
+	 * Fails when this session has no public Bus delivery loop.
+	 */
+	async setTeamInbox(paused: boolean): Promise<TeamInboxDispatchState> {
+		const response = await this.send({ type: "set_team_inbox", paused });
 		return this.getData(response);
 	}
 
@@ -544,8 +578,9 @@ export class RpcClient {
 				return;
 			}
 
-			// Otherwise it's an event
-			for (const listener of this.eventListeners) {
+			// Otherwise it's an event. Iterate a snapshot so listeners that unsubscribe during dispatch
+			// do not cause later listeners to miss this event.
+			for (const listener of [...this.eventListeners]) {
 				listener(data as JsonAgentSessionEvent);
 			}
 		} catch {

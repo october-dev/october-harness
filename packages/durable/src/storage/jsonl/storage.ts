@@ -1,17 +1,28 @@
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { FileError, FileSystem } from "../../env/index.ts";
+import { StorageRequestError } from "../../errors.ts";
+import { idFromNumber, seqFromNumber } from "../../ids.ts";
 import type {
+	CommitResult,
+	ConversationId,
+	ConversationQuery,
 	Cursor,
 	DocumentAddress,
 	DocumentContent,
 	DocumentCreate,
+	DocumentId,
 	DocumentPoint,
 	DocumentQuery,
+	EntryId,
 	EntryQuery,
 	Id,
 	Seq,
 	Storage,
 	StorageWrite,
+	SubmissionId,
+	SubmissionQuery,
+	TaskId,
 	TaskQuery,
 	TaskRecord,
 } from "../../types.ts";
@@ -20,6 +31,8 @@ import { MemoryStorage } from "../memory.ts";
 const FORMAT_VERSION = 1;
 const MAIN_FILE = "main.jsonl";
 const RECLAIM_SUFFIX = ".reclaim";
+/** Read-only opens retried after racing a writer's commits; each retry means another commit landed meanwhile. */
+const READ_ONLY_OPEN_ATTEMPTS = 5;
 const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
@@ -27,9 +40,9 @@ type StoredTask = TaskRecord<JsonValue, JsonValue, JsonValue>;
 type MainOperation =
 	| Extract<StorageWrite, { readonly type: "conversation" | "entry" | "submission" | "document.retire" }>
 	| { readonly type: "task"; readonly value: StoredTask }
-	| { readonly type: "task.sidecar"; readonly id: Id; readonly ordinal: number }
+	| { readonly type: "task.sidecar"; readonly id: TaskId; readonly ordinal: number }
 	| { readonly type: "document.create"; readonly record: DocumentCreate; readonly ordinal: number }
-	| { readonly type: "document.change"; readonly id: Id; readonly ordinal: number };
+	| { readonly type: "document.change"; readonly id: DocumentId; readonly ordinal: number };
 
 type MainMarker = {
 	readonly format: typeof FORMAT_VERSION;
@@ -40,7 +53,7 @@ type MainMarker = {
 
 type SidecarPayload =
 	| { readonly type: "task"; readonly value: StoredTask }
-	| { readonly type: "document"; readonly id: Id; readonly content: DocumentContent };
+	| { readonly type: "document"; readonly id: DocumentId; readonly content: DocumentContent };
 
 type SidecarRecord = {
 	readonly format: typeof FORMAT_VERSION;
@@ -58,6 +71,8 @@ type ParsedLine<T> = {
 type ParsedFile<T> = {
 	readonly path: string;
 	readonly lines: readonly ParsedLine<T>[];
+	/** Bytes read, a torn final line included; 0 for a missing file. */
+	readonly size: number;
 };
 
 type EncodedCommit = {
@@ -68,12 +83,26 @@ type EncodedCommit = {
 export type JsonlStorageOptions = {
 	/** Flush every affected sidecar before appending the main marker. Defaults to false. */
 	readonly fsync?: boolean;
+	/**
+	 * Open without writing, for a viewer of a directory another process may be writing: recovery skips torn final lines
+	 * and unconfirmed sidecar tails in memory instead of truncating them, reclaims nothing, and creates no directory.
+	 * The storage holds the state committed at open and `commit()` rejects. Defaults to false.
+	 */
+	readonly readOnly?: boolean;
 };
 
 export class JsonlCorruptionError extends Error {
 	constructor(message: string, cause?: Error) {
 		super(message, cause === undefined ? undefined : { cause });
 		this.name = "JsonlCorruptionError";
+	}
+}
+
+/** `commit()` on a storage opened with `readOnly: true`. Nothing was written. */
+export class JsonlStorageReadOnlyError extends Error {
+	constructor() {
+		super("JSONL storage is open read-only");
+		this.name = "JsonlStorageReadOnlyError";
 	}
 }
 
@@ -89,7 +118,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 
 const isSafeInteger = (value: unknown): value is number => Number.isSafeInteger(value);
 
-const sidecarFileName = (kind: "doc" | "task", id: Id): string => `${kind}-${id}.jsonl`;
+const sidecarFileName = (kind: "doc" | "task", id: DocumentId | TaskId): string => `${kind}-${id}.jsonl`;
 
 const isSidecarFileName = (name: string): boolean => /^(?:doc|task)-(?:0|[1-9]\d*)\.jsonl$/.test(name);
 
@@ -100,11 +129,7 @@ const isCurrentOnly = (record: DocumentCreate): boolean =>
 
 const sidecarKey = (file: string, seq: Seq, ordinal: number): string => JSON.stringify([file, seq, ordinal]);
 
-const jsonLine = (value: unknown): string => {
-	const encoded = JSON.stringify(value);
-	if (encoded === undefined) throw new TypeError("JSONL record is not serializable");
-	return `${encoded}\n`;
-};
+const jsonLine = (value: MainMarker | SidecarRecord): string => `${JSON.stringify(value)}\n`;
 
 const errorFromFile = (action: string, error: FileError): Error =>
 	new Error(`JSONL ${action} failed: ${error.message}`, { cause: error });
@@ -183,7 +208,7 @@ const parseMainMarker = (text: string, line: number): MainMarker => {
 	return {
 		format: FORMAT_VERSION,
 		type: "commit",
-		seq: value.seq,
+		seq: seqFromNumber(value.seq),
 		writes: value.writes.map((write) => validateMainOperation(write, description)),
 	};
 };
@@ -218,7 +243,7 @@ const parseSidecarRecord = (text: string, file: string, line: number): SidecarRe
 			!isObject(value.payload.value) ||
 			!isSafeInteger(value.payload.value.id) ||
 			!isObject(value.payload.value.state) ||
-			(value.payload.value.state.status !== "pending" && value.payload.value.state.status !== "running")
+			value.payload.value.state.status === "terminal"
 		) {
 			throw new JsonlCorruptionError(`Invalid live task record in ${description}`);
 		}
@@ -239,20 +264,29 @@ export class JsonlStorage implements Storage {
 	private readonly directory: string;
 	private readonly mainPath: string;
 	private readonly fsync: boolean;
+	private readonly readOnly: boolean;
 	private readonly memory = new MemoryStorage();
-	private readonly currentOnlyDocuments = new Set<Id>();
-	private readonly liveTaskSidecars = new Set<Id>();
+	private readonly currentOnlyDocuments = new Set<DocumentId>();
+	private readonly liveTaskSidecars = new Set<TaskId>();
 	private closed = false;
+	/** Bytes of `main.jsonl` recovery read (`mainChanged()`). */
+	private mainSize = 0;
 	private poisonError: JsonlStoragePoisonedError | undefined;
+	/** Settles once the batch being appended is; its batches are in memory already (`commit()`). */
+	private writing: Promise<void> | undefined;
 
 	private constructor(fs: FileSystem, directory: string, mainPath: string, options: JsonlStorageOptions) {
 		this.fs = fs;
 		this.directory = directory;
 		this.mainPath = mainPath;
 		this.fsync = options.fsync ?? false;
+		this.readOnly = options.readOnly ?? false;
 	}
 
-	/** Open or create a JSONL storage directory using the supplied filesystem. */
+	/**
+	 * Open or create a JSONL storage directory using the supplied filesystem. With `readOnly`, open an existing one
+	 * without writing; a recovery that fails while `main.jsonl` changes raced a writer's commit and is retried.
+	 */
 	static async open(
 		directory: string,
 		fs: FileSystem,
@@ -261,28 +295,99 @@ export class JsonlStorage implements Storage {
 	): Promise<JsonlStorage> {
 		const absolute = await fs.absolutePath(directory, context);
 		if (!absolute.ok) throw errorFromFile("path resolution", absolute.error);
-		const created = await fs.createDir(absolute.value, { recursive: true }, context);
-		if (!created.ok) throw errorFromFile("directory creation", created.error);
+		if (options.readOnly !== true) {
+			const created = await fs.createDir(absolute.value, { recursive: true }, context);
+			if (!created.ok) throw errorFromFile("directory creation", created.error);
+		}
 		const mainPathResult = await fs.joinPath([absolute.value, MAIN_FILE], context);
 		if (!mainPathResult.ok) throw errorFromFile("path join", mainPathResult.error);
-		const storage = new JsonlStorage(fs, absolute.value, mainPathResult.value, options);
-		await storage.recover(context);
-		return storage;
+		for (let attempt = 1; ; attempt++) {
+			const storage = new JsonlStorage(fs, absolute.value, mainPathResult.value, options);
+			try {
+				await storage.recover(context);
+				return storage;
+			} catch (error) {
+				if (
+					!storage.readOnly ||
+					attempt === READ_ONLY_OPEN_ATTEMPTS ||
+					!(error instanceof JsonlCorruptionError) ||
+					!(await storage.mainChanged(context))
+				) {
+					throw error;
+				}
+			}
+		}
 	}
 
-	async commit(writes: readonly StorageWrite[], context: Context): Promise<Seq> {
+	/**
+	 * Commit `batches` with one append per affected file: every batch's sidecar records first, then their markers in one
+	 * write of `main.jsonl`. Each batch is checked against the state the earlier ones left, so memory applies each one
+	 * as it passes, and reads wait until the appends are done; the first batch refused ends the batch. A torn append of
+	 * the markers recovers a shorter complete prefix; any failure once a batch applied poisons the storage.
+	 */
+	async commit(
+		batches: readonly (readonly StorageWrite[])[],
+		receive: (index: number, seq: Seq) => void,
+		context: Context,
+	): Promise<CommitResult> {
 		this.assertUsable();
-		const prepared = this.memory.prepareCommit(writes);
-		const encoded = this.encodeCommit(prepared.seq, prepared.writes);
-		const reclamations = this.planReclamations(prepared.writes, encoded);
+		if (this.readOnly) throw new JsonlStorageReadOnlyError();
+		const seqs: Seq[] = [];
+		const encoded: EncodedCommit[] = [];
+		const reclamations = new Map<string, string>();
+		let refused: { readonly error: unknown } | undefined;
+		const writing = Promise.withResolvers<void>();
+		this.writing = writing.promise;
+		try {
+			for (const writes of batches) {
+				let prepared: ReturnType<MemoryStorage["prepareCommit"]>;
+				try {
+					prepared = this.memory.prepareCommit(writes);
+				} catch (error) {
+					refused = { error };
+					break;
+				}
+				const commit = this.encodeCommit(prepared.seq, prepared.writes);
+				// A sidecar an earlier batch replaces keeps what the later ones append, unless they replace it again.
+				for (const [file, content] of commit.sidecars) {
+					const replacement = reclamations.get(file);
+					if (replacement !== undefined) reclamations.set(file, replacement + content);
+				}
+				for (const [file, content] of this.planReclamations(prepared.writes, commit))
+					reclamations.set(file, content);
+				seqs.push(prepared.apply());
+				this.adoptSidecarState(prepared.writes);
+				encoded.push(commit);
+			}
+			if (encoded.length > 0) await this.append(encoded, context);
+		} catch (error) {
+			// Memory runs ahead of the file: once a batch applied, any failure poisons the storage before the reads
+			// waiting on the append go on, so none of them returns what is not stored.
+			if (seqs.length === 0) throw error;
+			throw this.poison(error instanceof Error ? error : new Error("JSONL commit failed", { cause: error }));
+		} finally {
+			this.writing = undefined;
+			writing.resolve();
+		}
+		// The markers are appended: the batches are durable. Reclaiming sidecars comes after the receipts.
+		for (const [index, seq] of seqs.entries()) receive(index, seq);
+		await this.reclaimSidecars(reclamations, context);
+		return refused === undefined ? { stored: seqs.length } : { stored: seqs.length, refused: refused.error };
+	}
+
+	/** Append the sidecar records of `commits`, flushed with `fsync`, then their markers in one write of `main.jsonl`. */
+	private async append(commits: readonly EncodedCommit[], context: Context): Promise<void> {
+		const contents = new Map<string, string>();
+		for (const commit of commits) {
+			for (const [file, content] of commit.sidecars) contents.set(file, (contents.get(file) ?? "") + content);
+		}
 		const sidecars = await Promise.all(
-			[...encoded.sidecars].map(async ([file, content]) => ({
+			[...contents].map(async ([file, content]) => ({
 				file,
 				content,
 				path: await this.resolveFile(file, context),
 			})),
 		);
-
 		for (const sidecar of sidecars) {
 			const result = await this.fs.appendFile(sidecar.path, sidecar.content, context);
 			if (!result.ok) throw this.poison(errorFromFile(`append to ${sidecar.file}`, result.error));
@@ -293,64 +398,78 @@ export class JsonlStorage implements Storage {
 				if (!result.ok) throw this.poison(errorFromFile(`flush of ${sidecar.file}`, result.error));
 			}
 		}
-		const marker = await this.fs.appendFile(this.mainPath, encoded.marker, context);
+		const markers = commits.length === 1 ? commits[0]!.marker : commits.map((commit) => commit.marker).join("");
+		const marker = await this.fs.appendFile(this.mainPath, markers, context);
 		if (!marker.ok) throw this.poison(errorFromFile(`append to ${MAIN_FILE}`, marker.error));
-		const seq = prepared.apply();
-		this.adoptSidecarState(prepared.writes);
-		await this.reclaimSidecars(reclamations, context);
-		return seq;
 	}
 
-	async mintId() {
-		return this.store.mintId();
+	async mintId<I extends Id<string>>(): Promise<I> {
+		return this.store.mintId<I>();
 	}
 
-	async conversation(id: Id, context: Context) {
-		return this.store.conversation(id, context);
+	async conversation(id: ConversationId, context: Context) {
+		return (await this.readable()).conversation(id, context);
 	}
 
-	async scanConversations(cursor: Cursor | undefined, limit: number, context: Context) {
-		return this.store.scanConversations(cursor, limit, context);
+	async scanConversations(query: ConversationQuery, limit: number, cursor: Cursor | undefined, context: Context) {
+		return (await this.readable()).scanConversations(query, limit, cursor, context);
 	}
 
-	async entry(id: Id, context: Context) {
-		return this.store.entry(id, context);
+	entry(id: EntryId, context: Context): ReturnType<Storage["entry"]>;
+	entry(conversationId: ConversationId, id: EntryId, context: Context): ReturnType<Storage["entry"]>;
+	async entry(idOrConversationId: EntryId | ConversationId, idOrContext: EntryId | Context, context?: Context) {
+		if (context === undefined)
+			return (await this.readable()).entry(idFromNumber<EntryId>(idOrConversationId), idOrContext as Context);
+		if (typeof idOrContext !== "number") throw new StorageRequestError("Storage.entry() requires an entry ID");
+		return (await this.readable()).entry(
+			idFromNumber<ConversationId>(idOrConversationId),
+			idFromNumber<EntryId>(idOrContext),
+			context,
+		);
 	}
 
-	async findLatestHeadMarker(conversationId: Id, atOrBeforeEntryId: Id | undefined, context: Context) {
-		return this.store.findLatestHeadMarker(conversationId, atOrBeforeEntryId, context);
+	async findLatestHeadMarker(
+		conversationId: ConversationId,
+		atOrBeforeEntryId: EntryId | undefined,
+		context: Context,
+	) {
+		return (await this.readable()).findLatestHeadMarker(conversationId, atOrBeforeEntryId, context);
 	}
 
-	async scanEntries(query: EntryQuery, cursor: Cursor | undefined, limit: number, context: Context) {
-		return this.store.scanEntries(query, cursor, limit, context);
+	async scanEntries(query: EntryQuery, limit: number, cursor: Cursor | undefined, context: Context) {
+		return (await this.readable()).scanEntries(query, limit, cursor, context);
 	}
 
-	async task(id: Id, context: Context) {
-		return this.store.task(id, context);
+	async task(id: TaskId, context: Context) {
+		return (await this.readable()).task(id, context);
 	}
 
-	async scanTasks(query: TaskQuery, cursor: Cursor | undefined, limit: number, context: Context) {
-		return this.store.scanTasks(query, cursor, limit, context);
+	async scanTasks(query: TaskQuery, limit: number, cursor: Cursor | undefined, context: Context) {
+		return (await this.readable()).scanTasks(query, limit, cursor, context);
 	}
 
-	async submission(id: Id, context: Context) {
-		return this.store.submission(id, context);
+	async submission(id: SubmissionId, context: Context) {
+		return (await this.readable()).submission(id, context);
 	}
 
-	async submissionByRequest(conversationId: Id, requestId: string, context: Context) {
-		return this.store.submissionByRequest(conversationId, requestId, context);
+	async scanSubmissions(query: SubmissionQuery, limit: number, cursor: Cursor | undefined, context: Context) {
+		return (await this.readable()).scanSubmissions(query, limit, cursor, context);
+	}
+
+	async submissionByRequest(conversationId: ConversationId, requestId: string, context: Context) {
+		return (await this.readable()).submissionByRequest(conversationId, requestId, context);
 	}
 
 	async findDocument(address: DocumentAddress, at: DocumentPoint, context: Context) {
-		return this.store.findDocument(address, at, context);
+		return (await this.readable()).findDocument(address, at, context);
 	}
 
-	async document(id: Id, at: DocumentPoint, context: Context) {
-		return this.store.document(id, at, context);
+	async document(id: DocumentId, at: DocumentPoint, context: Context) {
+		return (await this.readable()).document(id, at, context);
 	}
 
-	async scanDocuments(query: DocumentQuery, cursor: Cursor | undefined, limit: number, context: Context) {
-		return this.store.scanDocuments(query, cursor, limit, context);
+	async scanDocuments(query: DocumentQuery, limit: number, cursor: Cursor | undefined, context: Context) {
+		return (await this.readable()).scanDocuments(query, limit, cursor, context);
 	}
 
 	async close(context: Context): Promise<void> {
@@ -427,10 +546,10 @@ export class JsonlStorage implements Storage {
 	}
 
 	private planReclamations(writes: readonly StorageWrite[], encoded: EncodedCommit): ReadonlyMap<string, string> {
-		const createdCurrentOnlyDocuments = new Set<Id>();
-		const retiredDocuments = new Set<Id>();
-		const baseDocuments = new Set<Id>();
-		const finalTasks = new Map<Id, StoredTask>();
+		const createdCurrentOnlyDocuments = new Set<DocumentId>();
+		const retiredDocuments = new Set<DocumentId>();
+		const baseDocuments = new Set<DocumentId>();
+		const finalTasks = new Map<TaskId, StoredTask>();
 		for (const write of writes) {
 			switch (write.type) {
 				case "document.create":
@@ -449,7 +568,7 @@ export class JsonlStorage implements Storage {
 		}
 
 		const replacements = new Map<string, string>();
-		const isCurrentOnlyDocument = (id: Id): boolean =>
+		const isCurrentOnlyDocument = (id: DocumentId): boolean =>
 			this.currentOnlyDocuments.has(id) || createdCurrentOnlyDocuments.has(id);
 		for (const id of retiredDocuments) {
 			if (isCurrentOnlyDocument(id)) replacements.set(sidecarFileName("doc", id), "");
@@ -510,13 +629,17 @@ export class JsonlStorage implements Storage {
 		await this.fs.renameFile(temporaryPath.value, path.value, context);
 	}
 
+	/**
+	 * Load the confirmed state. A writable open also repairs the files: it truncates torn lines and unconfirmed sidecar
+	 * tails, removes leftover reclaim files, and reclaims sidecar records later commits made unnecessary. A read-only
+	 * open skips the same records in memory only.
+	 */
 	private async recover(context: Context): Promise<void> {
 		const fs = this.fs;
 		const directory = this.directory;
 		const memory = this.memory;
-		const main = await JsonlStorage.readLines(fs, this.mainPath, MAIN_FILE, context, (text, line) =>
-			parseMainMarker(text, line),
-		);
+		const main = await this.readLines(this.mainPath, MAIN_FILE, context, (text, line) => parseMainMarker(text, line));
+		this.mainSize = main.size;
 		let previousSeq = 0;
 		for (const marker of main.lines) {
 			if (marker.value.seq <= previousSeq) {
@@ -528,7 +651,7 @@ export class JsonlStorage implements Storage {
 		const listed = await fs.listDir(directory, context);
 		if (!listed.ok) throw errorFromFile("directory listing", listed.error);
 		for (const info of listed.value) {
-			if (info.kind === "file" && isReclaimFileName(info.name)) {
+			if (!this.readOnly && info.kind === "file" && isReclaimFileName(info.name)) {
 				await fs.remove(info.path, { force: true }, context);
 			}
 		}
@@ -541,7 +664,7 @@ export class JsonlStorage implements Storage {
 		for (const file of sidecarFiles) {
 			const pathResult = await fs.joinPath([directory, file], context);
 			if (!pathResult.ok) throw errorFromFile("path join", pathResult.error);
-			const parsed = await JsonlStorage.readLines(fs, pathResult.value, file, context, (text, line) =>
+			const parsed = await this.readLines(pathResult.value, file, context, (text, line) =>
 				parseSidecarRecord(text, file, line),
 			);
 			parsedFiles.set(file, parsed);
@@ -559,9 +682,9 @@ export class JsonlStorage implements Storage {
 			}
 		}
 
-		const currentOnlyDocuments = new Set<Id>();
-		const retiredDocuments = new Set<Id>();
-		const finalTaskIsLive = new Map<Id, boolean>();
+		const currentOnlyDocuments = new Set<DocumentId>();
+		const retiredDocuments = new Set<DocumentId>();
+		const finalTaskIsLive = new Map<TaskId, boolean>();
 		for (const { value: marker } of main.lines) {
 			for (const operation of marker.writes) {
 				if (operation.type === "document.create") {
@@ -577,7 +700,7 @@ export class JsonlStorage implements Storage {
 		}
 		const retiredCurrentOnlyDocuments = new Set([...retiredDocuments].filter((id) => currentOnlyDocuments.has(id)));
 
-		const latestBases = new Map<Id, SidecarRecord>();
+		const latestBases = new Map<DocumentId, SidecarRecord>();
 		for (const { value: marker } of main.lines) {
 			for (const operation of marker.writes) {
 				if (operation.type !== "document.create" && operation.type !== "document.change") continue;
@@ -604,7 +727,7 @@ export class JsonlStorage implements Storage {
 			}
 		}
 
-		const isBeforeLatestBase = (id: Id, seq: Seq, ordinal: number): boolean => {
+		const isBeforeLatestBase = (id: DocumentId, seq: Seq, ordinal: number): boolean => {
 			const base = latestBases.get(id);
 			return base !== undefined && (seq < base.seq || (seq === base.seq && ordinal < base.ordinal));
 		};
@@ -705,24 +828,27 @@ export class JsonlStorage implements Storage {
 					unconfirmedAt = line.start;
 				}
 			}
-			if (unconfirmedAt !== undefined) {
+			if (unconfirmedAt !== undefined && !this.readOnly) {
 				const truncated = await fs.truncateFile(parsed.path, unconfirmedAt, context);
 				if (!truncated.ok) throw errorFromFile(`tail truncation of ${file}`, truncated.error);
 			}
 
-			const id = Number(file.slice(file.indexOf("-") + 1, -".jsonl".length));
+			const numericId = Number(file.slice(file.indexOf("-") + 1, -".jsonl".length));
 			const confirmedLines = parsed.lines.filter((line) =>
 				confirmed.has(sidecarKey(file, line.value.seq, line.value.ordinal)),
 			);
 			let retainedLines: readonly ParsedLine<SidecarRecord>[] | undefined;
-			if (file.startsWith("task-") && terminalTasks.has(id)) {
+			if (file.startsWith("task-") && terminalTasks.has(idFromNumber<TaskId>(numericId))) {
 				retainedLines = [];
-			} else if (file.startsWith("doc-") && retiredCurrentOnlyDocuments.has(id)) {
-				retainedLines = [];
-			} else if (file.startsWith("doc-") && latestBases.has(id)) {
-				retainedLines = confirmedLines.filter(
-					(line) => !isBeforeLatestBase(id, line.value.seq, line.value.ordinal),
-				);
+			} else if (file.startsWith("doc-")) {
+				const documentId = idFromNumber<DocumentId>(numericId);
+				if (retiredCurrentOnlyDocuments.has(documentId)) {
+					retainedLines = [];
+				} else if (latestBases.has(documentId)) {
+					retainedLines = confirmedLines.filter(
+						(line) => !isBeforeLatestBase(documentId, line.value.seq, line.value.ordinal),
+					);
+				}
 			}
 			if (
 				retainedLines !== undefined &&
@@ -731,7 +857,7 @@ export class JsonlStorage implements Storage {
 				reclamations.set(file, retainedLines.map((line) => jsonLine(line.value)).join(""));
 			}
 		}
-		await this.reclaimSidecars(reclamations, context);
+		if (!this.readOnly) await this.reclaimSidecars(reclamations, context);
 
 		for (const id of currentOnlyDocuments) this.currentOnlyDocuments.add(id);
 		for (const [id, live] of finalTaskIsLive) {
@@ -758,24 +884,26 @@ export class JsonlStorage implements Storage {
 		return line.value;
 	}
 
-	private static async readLines<T>(
-		fs: FileSystem,
+	/** Parse the complete lines of `path`; a torn final line is truncated, or only skipped when read-only. */
+	private async readLines<T>(
 		path: string,
 		name: string,
 		context: Context,
 		parse: (text: string, line: number) => T,
 	): Promise<ParsedFile<T>> {
-		const read = await fs.readBinaryFile(path, context);
+		const read = await this.fs.readBinaryFile(path, context);
 		if (!read.ok) {
-			if (read.error.code === "not_found") return { path, lines: [] };
+			if (read.error.code === "not_found") return { path, lines: [], size: 0 };
 			throw errorFromFile(`read of ${name}`, read.error);
 		}
 		const bytes = read.value;
 		let completeSize = bytes.length;
 		if (completeSize > 0 && bytes[completeSize - 1] !== 0x0a) {
 			completeSize = bytes.lastIndexOf(0x0a) + 1;
-			const truncated = await fs.truncateFile(path, completeSize, context);
-			if (!truncated.ok) throw errorFromFile(`torn-line truncation of ${name}`, truncated.error);
+			if (!this.readOnly) {
+				const truncated = await this.fs.truncateFile(path, completeSize, context);
+				if (!truncated.ok) throw errorFromFile(`torn-line truncation of ${name}`, truncated.error);
+			}
 		}
 		const lines: ParsedLine<T>[] = [];
 		let start = 0;
@@ -795,7 +923,17 @@ export class JsonlStorage implements Storage {
 			start = end + 1;
 			lineNumber++;
 		}
-		return { path, lines };
+		return { path, lines, size: bytes.length };
+	}
+
+	/**
+	 * Whether `main.jsonl` changed size since recovery read it. A writer reclaims a sidecar only after appending the
+	 * marker that allows it, so sidecars read while `main.jsonl` stayed the same match its markers; a recovery that
+	 * failed while it changed may have read a sidecar a newer commit reclaimed.
+	 */
+	private async mainChanged(context: Context): Promise<boolean> {
+		const info = await this.fs.fileInfo(this.mainPath, context);
+		return info.ok && info.value.size !== this.mainSize;
 	}
 
 	private async resolveFile(file: string, context: Context): Promise<string> {
@@ -807,6 +945,12 @@ export class JsonlStorage implements Storage {
 	private get store(): MemoryStorage {
 		this.assertUsable();
 		return this.memory;
+	}
+
+	/** The state to read once no batch is being appended: memory runs ahead of the file while one is. */
+	private async readable(): Promise<MemoryStorage> {
+		while (this.writing !== undefined) await this.writing;
+		return this.store;
 	}
 
 	private poison(cause: Error): JsonlStoragePoisonedError {

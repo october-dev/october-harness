@@ -157,6 +157,7 @@ describe("unified login menu", () => {
 			ui,
 			startProviderLogin,
 			showLoginProviderSelector,
+			getLoginProviderOptions: () => [],
 			showSelector: (create: (done: () => void) => { component: Component }) => {
 				component = create(done).component;
 			},
@@ -168,7 +169,10 @@ describe("unified login menu", () => {
 		component?.handleInput?.("\r");
 		expect(done).toHaveBeenCalledOnce();
 		if (choice === 0)
-			expect(startProviderLogin).toHaveBeenCalledWith({ id: "october", name: "October", authType: "oauth" });
+			expect(startProviderLogin).toHaveBeenCalledWith(
+				{ id: "october", name: "October", authType: "oauth" },
+				expect.any(Function),
+			);
 		else expect(showLoginProviderSelector).toHaveBeenCalledWith(choice === 1 ? "oauth" : "api_key");
 	});
 

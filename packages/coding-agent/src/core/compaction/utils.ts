@@ -4,6 +4,7 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { contentText, type Message } from "@earendil-works/pi-ai";
+import { sliceHead } from "../tools/truncate.ts";
 
 // ============================================================================
 // File Operation Tracking
@@ -24,9 +25,15 @@ export function createFileOps(): FileOperations {
 }
 
 /**
- * Extract file operations from tool calls in an assistant message.
+ * Extract file operations from tool calls in an assistant message, or from the nested calls
+ * recorded on a tool result.
  */
 export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
+	if (message.role === "toolResult") {
+		// Calls made from codemode scripts are recorded on the script's result.
+		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps);
+		return;
+	}
 	if (message.role !== "assistant") return;
 	if (!("content" in message) || !Array.isArray(message.content)) return;
 
@@ -34,24 +41,23 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 		if (typeof block !== "object" || block === null) continue;
 		if (!("type" in block) || block.type !== "toolCall") continue;
 		if (!("arguments" in block) || !("name" in block)) continue;
+		addFileOp(block.name, block.arguments as Record<string, unknown> | undefined, fileOps);
+	}
+}
 
-		const args = block.arguments as Record<string, unknown> | undefined;
-		if (!args) continue;
-
-		const path = typeof args.path === "string" ? args.path : undefined;
-		if (!path) continue;
-
-		switch (block.name) {
-			case "read":
-				fileOps.read.add(path);
-				break;
-			case "write":
-				fileOps.written.add(path);
-				break;
-			case "edit":
-				fileOps.edited.add(path);
-				break;
-		}
+function addFileOp(toolName: string, args: Record<string, unknown> | undefined, fileOps: FileOperations): void {
+	const path = typeof args?.path === "string" ? args.path : undefined;
+	if (!path) return;
+	switch (toolName) {
+		case "read":
+			fileOps.read.add(path);
+			break;
+		case "write":
+			fileOps.written.add(path);
+			break;
+		case "edit":
+			fileOps.edited.add(path);
+			break;
 	}
 }
 
@@ -95,7 +101,7 @@ const TOOL_RESULT_MAX_CHARS = 2000;
 function truncateForSummary(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
 	const truncatedChars = text.length - maxChars;
-	return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
+	return `${sliceHead(text, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
 }
 
 /**
@@ -105,6 +111,12 @@ function truncateForSummary(text: string, maxChars: number): string {
  *
  * Tool results are truncated to keep the summarization request within
  * reasonable token budgets. Full content is not needed for summarization.
+ *
+ * Thinking is omitted. Providers return summaries of the real reasoning, and
+ * replayed thinking is often not part of the model's live context: for example,
+ * a block that does not match its request is dropped. Including it can make the
+ * summarization request larger than the context it summarizes. Visible text,
+ * tool calls, and tool results record what happened.
  */
 export function serializeConversation(messages: Message[]): string {
 	const parts: string[] = [];
@@ -114,13 +126,10 @@ export function serializeConversation(messages: Message[]): string {
 			const content = contentText(msg.content, "");
 			if (content) parts.push(`[User]: ${content}`);
 		} else if (msg.role === "assistant") {
-			const thinkingParts: string[] = [];
 			const toolCalls: string[] = [];
 
 			for (const block of msg.content) {
-				if (block.type === "thinking") {
-					thinkingParts.push(block.thinking);
-				} else if (block.type === "toolCall") {
+				if (block.type === "toolCall") {
 					const args = block.arguments as Record<string, unknown>;
 					const argsStr = Object.entries(args)
 						.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
@@ -129,9 +138,6 @@ export function serializeConversation(messages: Message[]): string {
 				}
 			}
 
-			if (thinkingParts.length > 0) {
-				parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
-			}
 			if (msg.content.some((block) => block.type === "text")) {
 				parts.push(`[Assistant]: ${contentText(msg.content)}`);
 			}

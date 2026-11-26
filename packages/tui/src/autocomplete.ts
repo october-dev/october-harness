@@ -7,6 +7,8 @@ import { autocompleteBoundaryRegex, autocompleteSeparatorRegex } from "./utils.t
 
 const PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 const tokenStartRegex = new RegExp(`${autocompleteBoundaryRegex.source}$`, "u");
+// Opening wrappers that may precede a path in prose, mapped to their closing counterpart.
+const PATH_WRAPPERS: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">", "`": "`" };
 
 function toDisplayPath(value: string): string {
 	return value.replace(/\\/g, "/");
@@ -19,7 +21,7 @@ function escapeRegex(value: string): string {
 function buildFdPathQuery(query: string): string {
 	const normalized = toDisplayPath(query);
 	if (!normalized.includes("/")) {
-		return normalized;
+		return escapeRegex(normalized);
 	}
 
 	const hasTrailingSeparator = normalized.endsWith("/");
@@ -33,9 +35,6 @@ function buildFdPathQuery(query: string): string {
 		.split("/")
 		.filter(Boolean)
 		.map((segment) => escapeRegex(segment));
-	if (segments.length === 0) {
-		return normalized;
-	}
 
 	let pattern = segments.join(separatorPattern);
 	if (hasTrailingSeparator) {
@@ -56,6 +55,20 @@ function findLastDelimiter(text: string): number {
 	return lastDelimiter;
 }
 
+// Strip opening wrappers before a path, e.g. "(~/Dev" -> "~/Dev" or "`src/ma" -> "src/ma".
+// Keep a wrapper if the token also contains its closer, e.g. "app/[slug]/pa" or "(group)/pa".
+function stripLeadingWrappers(token: string): string {
+	let result = token;
+	while (result.length > 0) {
+		const closer = PATH_WRAPPERS[result[0]!];
+		if (!closer || result.includes(closer, 1)) {
+			break;
+		}
+		result = result.slice(1);
+	}
+	return result;
+}
+
 function findUnclosedQuoteStart(text: string): number | null {
 	let inQuotes = false;
 	let quoteStart = -1;
@@ -73,7 +86,11 @@ function findUnclosedQuoteStart(text: string): number | null {
 }
 
 function isTokenStart(text: string, index: number): boolean {
-	return PATH_DELIMITERS.has(text[index - 1] ?? "") || tokenStartRegex.test(text.slice(0, index));
+	let start = index;
+	while (start > 0 && PATH_WRAPPERS[text[start - 1]!]) {
+		start -= 1;
+	}
+	return PATH_DELIMITERS.has(text[start - 1] ?? "") || tokenStartRegex.test(text.slice(0, start));
 }
 
 function extractQuotedPrefix(text: string): string | null {
@@ -315,11 +332,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			};
 		}
 
-		if (!options.force && textBeforeCursor.startsWith("/")) {
-			const spaceIndex = textBeforeCursor.indexOf(" ");
+		const commandText = textBeforeCursor.trimStart();
+		if (!options.force && commandText.startsWith("/")) {
+			const spaceIndex = commandText.indexOf(" ");
 
 			if (spaceIndex === -1) {
-				const prefix = textBeforeCursor.slice(1);
+				const prefix = commandText.slice(1);
 				const commandItems = this.commands.map((cmd) => {
 					const name = "name" in cmd ? cmd.name : cmd.value;
 					const hint = "argumentHint" in cmd && cmd.argumentHint ? cmd.argumentHint : undefined;
@@ -351,12 +369,12 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 
 				return {
 					items: filtered,
-					prefix: textBeforeCursor,
+					prefix: commandText,
 				};
 			}
 
-			const commandName = textBeforeCursor.slice(1, spaceIndex);
-			const argumentText = textBeforeCursor.slice(spaceIndex + 1);
+			const commandName = commandText.slice(1, spaceIndex);
+			const argumentText = commandText.slice(spaceIndex + 1);
 
 			const command = this.commands.find((cmd) => {
 				const name = "name" in cmd ? cmd.name : cmd.value;
@@ -486,10 +504,10 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		const lastDelimiterIndex = findLastDelimiter(text);
-		const tokenStart = lastDelimiterIndex === -1 ? 0 : lastDelimiterIndex + 1;
+		const token = stripLeadingWrappers(lastDelimiterIndex === -1 ? text : text.slice(lastDelimiterIndex + 1));
 
-		if (text[tokenStart] === "@") {
-			return text.slice(tokenStart);
+		if (token.startsWith("@")) {
+			return token;
 		}
 
 		return null;
@@ -503,7 +521,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		}
 
 		const lastDelimiterIndex = findLastDelimiter(text);
-		const pathPrefix = lastDelimiterIndex === -1 ? text : text.slice(lastDelimiterIndex + 1);
+		const pathPrefix = stripLeadingWrappers(lastDelimiterIndex === -1 ? text : text.slice(lastDelimiterIndex + 1));
 
 		// For forced extraction (Tab key), always return something
 		if (forceExtract) {

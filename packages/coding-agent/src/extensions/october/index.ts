@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "../../core/extensions/types.ts";
 import { registerOctoberDesktopAuth, seedOctoberCredential } from "./auth.ts";
 import { registerOctoberBilling } from "./billing.ts";
+import { registerOctoberCockpit } from "./bus/cockpit.ts";
 import { parseOctoberBusEnv } from "./bus/env.ts";
 import { registerOctoberHooks } from "./bus/hooks.ts";
 import { OctoberMcpClient } from "./bus/mcp-client.ts";
@@ -9,6 +10,7 @@ import { registerOctoberBusTools } from "./bus/tools.ts";
 import { registerOctoberHeader } from "./header.ts";
 import { createOctoberPermissionController, registerOctoberPermissions } from "./permissions.ts";
 import { registerOctoberProvider } from "./provider.ts";
+import { registerVerificationEvidence } from "./verification-evidence.ts";
 
 export default async function octoberExtension(pi: ExtensionAPI): Promise<void> {
 	registerOctoberProvider(pi);
@@ -19,9 +21,11 @@ export default async function octoberExtension(pi: ExtensionAPI): Promise<void> 
 	// Import the signed-in user's October session (if the app injected one) so inference is zero-config.
 	await seedOctoberCredential();
 	registerOctoberDesktopAuth(pi);
+	registerVerificationEvidence(pi);
 	const bus = parseOctoberBusEnv();
-	if (!bus) return;
-	const client = new OctoberMcpClient(bus);
+	const client = bus ? new OctoberMcpClient(bus) : undefined;
+	registerOctoberCockpit(pi, { bus, client });
+	if (!bus || !client) return;
 	if (bus.transport === "desktop") registerOctoberHooks(pi, bus);
 	else registerOctoberPublicBus(pi, bus, client, permissions);
 	await registerOctoberBusTools(pi, bus, client);

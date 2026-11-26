@@ -80,6 +80,54 @@ export function resolveModelSelection(
 	return { provider, id };
 }
 
+export type ResolvedEvalModel = {
+	modelRuntime: ModelRuntime;
+	model: NonNullable<ReturnType<ModelRuntime["getModel"]>>;
+	auth: NonNullable<Awaited<ReturnType<ModelRuntime["getAuth"]>>>;
+	/** The host login file the credential was read from. */
+	authPath: string;
+};
+
+/**
+ * Resolve `selection` to a model with working authentication, from the host's stored login or its
+ * environment. Every eval path uses this so credential handling cannot drift between them. Pass
+ * `modelRuntime` to use a prepared runtime instead (tests).
+ */
+export async function resolveEvalModel(
+	selection: PiCodingAgentModelSelection,
+	hostAgentDir: string,
+	options: { label?: string; modelRuntime?: ModelRuntime } = {},
+): Promise<ResolvedEvalModel> {
+	const label = options.label ?? "Eval";
+	const authPath = join(hostAgentDir, "auth.json");
+	let modelRuntime = options.modelRuntime;
+	let storedCredential: ReturnType<typeof readStoredCredential> | undefined;
+	if (!modelRuntime) {
+		const credentials = new InMemoryCredentialStore();
+		storedCredential = readStoredCredential(selection.provider, authPath);
+		if (storedCredential) await credentials.modify(selection.provider, async () => storedCredential!);
+		modelRuntime = await ModelRuntime.create({ credentials });
+	}
+	const model = modelRuntime.getModel(selection.provider, selection.id);
+	if (!model) throw new Error(`${label} model not found: ${selection.provider}/${selection.id}`);
+	const auth = await modelRuntime.getAuth(model);
+	if (!auth) {
+		throw new Error(`${label} model has no configured authentication: ${selection.provider}/${selection.id}`);
+	}
+	// Hold an environment key in the runtime itself, so the run works after the environment is restricted.
+	if (!options.modelRuntime && !storedCredential && auth.auth.apiKey) {
+		await modelRuntime.setRuntimeApiKey(selection.provider, auth.auth.apiKey);
+	}
+	return { modelRuntime, model, auth, authPath };
+}
+
+/** Whether any tier of the model has a nonzero price, so a reported cost is meaningful. */
+export function hasPricing(model: ResolvedEvalModel["model"]): boolean {
+	return [model.cost, ...(model.cost.tiers ?? [])].some(
+		({ input, output, cacheRead, cacheWrite }) => input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0,
+	);
+}
+
 export function applyIsolatedEnvironment(home: string, agentDir: string): () => void {
 	const overrides = { HOME: home, USERPROFILE: home, OCTOBER_CODING_AGENT_DIR: agentDir };
 	const previous = new Map<string, string | undefined>();
@@ -310,22 +358,9 @@ async function runPiCodingAgent<TOutput extends JsonValue>(
 	let hiddenCredentialEnvironment: { name: string; value: string } | undefined;
 	const restoreEnvironment = applyIsolatedEnvironment(isolatedHome, agentDir);
 	try {
-		const authPath = join(hostAgentDir, "auth.json");
-		const credentials = new InMemoryCredentialStore();
-		const storedCredential = readStoredCredential(selection.provider, authPath);
-		if (storedCredential) await credentials.modify(selection.provider, async () => storedCredential);
-		const modelRuntime = await ModelRuntime.create({ credentials });
+		const { modelRuntime, model, auth, authPath } = await resolveEvalModel(selection, hostAgentDir);
 		await Promise.all([mkdir(workspace), mkdir(agentDir, { recursive: true })]);
 		await seedWorkspace(workspace, options.workspaceFiles);
-		const model = modelRuntime.getModel(selection.provider, selection.id);
-		if (!model) throw new Error(`Eval model not found: ${selection.provider}/${selection.id}`);
-		const auth = await modelRuntime.getAuth(model);
-		if (!auth) {
-			throw new Error(`Eval model has no configured authentication: ${selection.provider}/${selection.id}`);
-		}
-		if (!storedCredential && auth.auth.apiKey) {
-			await modelRuntime.setRuntimeApiKey(selection.provider, auth.auth.apiKey);
-		}
 		if (sandboxIdentity) {
 			await rm(authPath, { force: true });
 			const credentialEnvironmentValue = auth.source ? process.env[auth.source] : undefined;
@@ -390,10 +425,6 @@ async function runPiCodingAgent<TOutput extends JsonValue>(
 		// extension sent; otherwise the replayed transcript prompt is what the provider received.
 		const systemPrompt = forcedSystemPrompt ?? getCurrentSystemPrompt(session.messages);
 		const stats = session.getSessionStats();
-		const hasPricing = [model.cost, ...(model.cost.tiers ?? [])].some(
-			({ input: inputCost, output: outputCost, cacheRead, cacheWrite }) =>
-				inputCost > 0 || outputCost > 0 || cacheRead > 0 || cacheWrite > 0,
-		);
 		runDiagnostics = {
 			events: toTranscriptEvents(session.messages),
 			metadata: { systemPromptSha256: createHash("sha256").update(systemPrompt).digest("hex") },
@@ -407,7 +438,7 @@ async function runPiCodingAgent<TOutput extends JsonValue>(
 				metadata: {
 					cacheReadTokens: stats.tokens.cacheRead,
 					cacheWriteTokens: stats.tokens.cacheWrite,
-					...(hasPricing ? { estimatedCostUsd: stats.cost } : {}),
+					...(hasPricing(model) ? { estimatedCostUsd: stats.cost } : {}),
 				},
 			},
 		};

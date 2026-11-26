@@ -1,4 +1,4 @@
-import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
+import type { Component, Terminal, TUI, WheelScrollLines } from "@earendil-works/pi-tui";
 import { Container, getKeybindings, isViewportTUI, ScrollView, setKeybindings, Text } from "@earendil-works/pi-tui";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
@@ -21,6 +21,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 const clipboardMocks = vi.hoisted(() => ({
 	copyToClipboard: vi.fn<(text: string) => Promise<void>>(),
+	readClipboardFilePaths: vi.fn<() => Promise<string[] | null>>(),
 	readClipboardText: vi.fn<() => Promise<string | null>>(),
 }));
 
@@ -126,7 +127,14 @@ describe("createInteractiveTui", () => {
 		renderer.setFocus(component);
 
 		type SwitchContext = {
-			runtimeHost: { session: { settingsManager: { getFullscreenCopyOnSelect: () => boolean } } };
+			runtimeHost: {
+				session: {
+					settingsManager: {
+						getFullscreenCopyOnSelect: () => boolean;
+						getFullscreenWheelScrollLines: () => WheelScrollLines;
+					};
+				};
+			};
 			renderer: ReturnType<typeof createInteractiveTui>;
 			ui: TUI;
 			fullscreenLayoutRoot: Component;
@@ -135,7 +143,11 @@ describe("createInteractiveTui", () => {
 			extensionTerminalInputSubscriptions: Set<never>;
 		};
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
-			runtimeHost: { session: { settingsManager: { getFullscreenCopyOnSelect: () => true } } },
+			runtimeHost: {
+				session: {
+					settingsManager: { getFullscreenCopyOnSelect: () => true, getFullscreenWheelScrollLines: () => "auto" },
+				},
+			},
 			renderer,
 			ui: undefined as unknown as TUI,
 			fullscreenLayoutRoot: component,
@@ -348,6 +360,46 @@ describe("InteractiveMode copy confirmation", () => {
 
 		expect(showStatus).toHaveBeenCalledWith("Copied last agent message to clipboard");
 		expect(showError).not.toHaveBeenCalled();
+	});
+});
+
+type RenderSessionEntriesContext = {
+	renderer: ReturnType<typeof createInteractiveTui>;
+	renderSessionItems: (items: unknown[]) => void;
+};
+
+describe("InteractiveMode transcript rebuild", () => {
+	it("drops the fullscreen selection when session entries are re-rendered", async () => {
+		// Regression test for #9311: selection coordinates survived session switches.
+		const terminal = new RecordingTerminal(40, 4);
+		const ui = createInteractiveTui({
+			tuiMode: "fullscreen",
+			showHardwareCursor: false,
+			logDirectory: "/tmp",
+			terminal,
+			fullscreenCopyOnSelect: false,
+		});
+		ui.addChild(new Text("alpha\nbeta\ngamma\ndelta", 0, 0));
+		const context: RenderSessionEntriesContext = { renderer: ui, renderSessionItems: vi.fn() };
+		const { renderSessionEntries } = InteractiveMode.prototype as unknown as {
+			renderSessionEntries(this: RenderSessionEntriesContext, entries: unknown[]): void;
+		};
+
+		ui.start();
+		try {
+			await terminal.waitForRender();
+			terminal.sendInput("\x1b[<0;1;1M");
+			terminal.sendInput("\x1b[<32;4;2M");
+			terminal.sendInput("\x1b[<0;4;2m");
+			await terminal.waitForRender();
+			expect(ui.hasActiveSelection()).toBe(true);
+
+			renderSessionEntries.call(context, []);
+
+			expect(ui.hasActiveSelection()).toBe(false);
+		} finally {
+			ui.stop();
+		}
 	});
 });
 

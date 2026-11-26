@@ -14,6 +14,7 @@ import {
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult, createAgentSession } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import type { ShellRunnerSelection } from "./shell-runner.ts";
 
 /**
  * Non-fatal issues collected while creating services or sessions.
@@ -64,6 +65,8 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	/** Process-wide shell runner selection. Pass the same value to every replacement runtime. */
+	shellRunner?: ShellRunnerSelection;
 }
 
 /**
@@ -181,6 +184,18 @@ export async function createAgentSessionServices(
 		}
 	}
 	extensionsResult.runtime.pendingNativeProviderRegistrations = [];
+	for (const { definition, extensionPath } of extensionsResult.runtime.pendingVirtualModelRegistrations) {
+		try {
+			modelRuntime.registerVirtualModel(definition);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			diagnostics.push({
+				type: "error",
+				message: `Extension "${extensionPath}" error: ${message}`,
+			});
+		}
+	}
+	extensionsResult.runtime.pendingVirtualModelRegistrations = [];
 	await modelRuntime.refresh({ allowNetwork: false });
 	diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
 
@@ -219,5 +234,6 @@ export async function createAgentSessionFromServices(
 		noTools: options.noTools,
 		customTools: options.customTools,
 		sessionStartEvent: options.sessionStartEvent,
+		shellRunner: options.shellRunner,
 	});
 }

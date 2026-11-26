@@ -39,7 +39,7 @@ describe("editInExternalEditor", () => {
 
 		expect(result).toEqual({ status: "complete", content: "edited" });
 		expect(dirname(directory)).toBe(tmpdir());
-		expect(basename(directory)).toMatch(/^pi-editor-.+$/);
+		expect(basename(directory)).toMatch(/^october-editor-.+$/);
 		expect(basename(capture.filePath)).toBe("prompt.md");
 		expect(capture.entries).toEqual(["prompt.md"]);
 		expect(capture.content).toBe("original");
@@ -52,12 +52,21 @@ describe("editInExternalEditor", () => {
 	it("keeps the original content when the editor exits unsuccessfully", async () => {
 		const { result, capture } = await runExternalEditor("--fail");
 
-		expect(result).toEqual({ status: "failed" });
+		expect(result).toEqual({ status: "failed", message: "External editor exited with code 1; prompt unchanged" });
 		expect(existsSync(dirname(capture.filePath))).toBe(false);
 	});
 	it("returns empty content when the editor clears the prompt", async () => {
 		const { result } = await runExternalEditor("--empty");
 
 		expect(result).toEqual({ status: "complete", content: "" });
+	});
+
+	// #11592: launch failures must be reported, not silently ignored.
+	it.skipIf(process.platform === "win32")("reports an editor that cannot be launched", async () => {
+		const command = "pi-external-editor-does-not-exist";
+		expect(await editInExternalEditor({ command, content: "original" })).toEqual({
+			status: "failed",
+			message: `Failed to launch external editor: ${command}`,
+		});
 	});
 });

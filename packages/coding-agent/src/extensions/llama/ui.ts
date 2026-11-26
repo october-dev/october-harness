@@ -3,6 +3,7 @@ import {
 	Container,
 	type Focusable,
 	fuzzyFilter,
+	getSelectPageIndex,
 	Input,
 	type SelectItem,
 	SelectList,
@@ -21,8 +22,11 @@ import type { LlamaModelInfo, LlamaProgress } from "./client.ts";
 import type { HuggingFaceModel } from "./huggingface.ts";
 
 const DOWNLOAD_VALUE = "\0download";
+const SEARCH_MAX_VISIBLE = 10;
 
 export type LlamaManagerAction = { type: "model"; model: LlamaModelInfo } | { type: "download" } | { type: "close" };
+
+type InputHandler = Pick<Component, "handleInput" | "capturesViewportInput">;
 
 interface ProgressState extends LlamaProgress {
 	title: string;
@@ -94,6 +98,7 @@ function compactCount(value: number): string {
 }
 
 class HuggingFaceSearch extends Container implements Focusable {
+	readonly capturesViewportInput: boolean = true;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
 	private readonly keybindings: KeybindingsManager;
@@ -105,6 +110,8 @@ class HuggingFaceSearch extends Container implements Focusable {
 	private results: HuggingFaceModel[] = [];
 	private filteredResults: HuggingFaceModel[] = [];
 	private selectedIndex = 0;
+	// Whether the user moved the selection since the query last changed.
+	private selectionTouched = false;
 	private query = "";
 	private status = "Type at least 2 characters";
 	private debounce: ReturnType<typeof setTimeout> | undefined;
@@ -145,12 +152,14 @@ class HuggingFaceSearch extends Container implements Focusable {
 
 	private updateResults(): void {
 		this.resultsContainer.clear();
-		const maxVisible = 10;
 		const start = Math.max(
 			0,
-			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), this.filteredResults.length - maxVisible),
+			Math.min(
+				this.selectedIndex - Math.floor(SEARCH_MAX_VISIBLE / 2),
+				this.filteredResults.length - SEARCH_MAX_VISIBLE,
+			),
 		);
-		const end = Math.min(start + maxVisible, this.filteredResults.length);
+		const end = Math.min(start + SEARCH_MAX_VISIBLE, this.filteredResults.length);
 		for (let index = start; index < end; index++) {
 			const model = this.filteredResults[index];
 			if (!model) continue;
@@ -179,14 +188,16 @@ class HuggingFaceSearch extends Container implements Focusable {
 		this.tui.requestRender();
 	}
 
-	private filterResults(): void {
+	private filterResults(preferredId?: string): void {
 		if (this.query) {
 			const matches = new Set(fuzzyFilter(this.results, this.query, (model) => model.id).map((model) => model.id));
 			this.filteredResults = this.results.filter((model) => matches.has(model.id));
 		} else {
 			this.filteredResults = this.results;
 		}
-		this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredResults.length - 1));
+		const preferredIndex = preferredId ? this.filteredResults.findIndex((model) => model.id === preferredId) : -1;
+		if (preferredIndex >= 0) this.selectedIndex = preferredIndex;
+		else this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredResults.length - 1));
 		this.updateResults();
 	}
 
@@ -218,10 +229,12 @@ class HuggingFaceSearch extends Container implements Focusable {
 			const results = await this.search(query, request.signal);
 			this.cache.set(query.toLowerCase(), results);
 			if (this.closed || request.signal.aborted || this.query !== query) return;
+			// Keep the row the user browsed to while the search was in flight; otherwise show the best match.
+			const selectedId = this.selectionTouched ? this.filteredResults[this.selectedIndex]?.id : undefined;
 			this.results = results;
 			this.selectedIndex = 0;
 			this.status = results.length === 0 ? "No GGUF models found" : "";
-			this.filterResults();
+			this.filterResults(selectedId);
 		} catch (error) {
 			if (this.closed || request.signal.aborted || this.query !== query) return;
 			this.results = [];
@@ -244,6 +257,7 @@ class HuggingFaceSearch extends Container implements Focusable {
 		if (this.keybindings.matches(data, "tui.select.up")) {
 			if (this.filteredResults.length > 0) {
 				this.selectedIndex = this.selectedIndex === 0 ? this.filteredResults.length - 1 : this.selectedIndex - 1;
+				this.selectionTouched = true;
 				this.updateResults();
 			}
 			return;
@@ -251,6 +265,22 @@ class HuggingFaceSearch extends Container implements Focusable {
 		if (this.keybindings.matches(data, "tui.select.down")) {
 			if (this.filteredResults.length > 0) {
 				this.selectedIndex = this.selectedIndex === this.filteredResults.length - 1 ? 0 : this.selectedIndex + 1;
+				this.selectionTouched = true;
+				this.updateResults();
+			}
+			return;
+		}
+		const pageIndex = getSelectPageIndex(
+			this.keybindings,
+			data,
+			this.selectedIndex,
+			this.filteredResults.length,
+			SEARCH_MAX_VISIBLE,
+		);
+		if (pageIndex !== undefined) {
+			if (this.filteredResults.length > 0) {
+				this.selectedIndex = pageIndex;
+				this.selectionTouched = true;
 				this.updateResults();
 			}
 			return;
@@ -269,6 +299,7 @@ class HuggingFaceSearch extends Container implements Focusable {
 		const query = this.input.getValue().trim();
 		if (query === this.query) return;
 		this.query = query;
+		this.selectionTouched = false;
 		this.scheduleSearch();
 	}
 }
@@ -279,7 +310,7 @@ class LlamaView implements LlamaUi, Focusable {
 	private readonly keybindings: KeybindingsManager;
 	private readonly searchCache = new Map<string, HuggingFaceModel[]>();
 	private content: Container;
-	private inputHandler: { handleInput?(data: string): void } | undefined;
+	private inputHandler: InputHandler | undefined;
 	private inputTarget: Focusable | undefined;
 	private progressPromise: Promise<void> | undefined;
 	private progressResolver: (() => void) | undefined;
@@ -302,11 +333,11 @@ class LlamaView implements LlamaUi, Focusable {
 		if (this.inputTarget) this.inputTarget.focused = value;
 	}
 
-	private setContent(
-		content: Container,
-		inputHandler?: { handleInput?(data: string): void },
-		inputTarget?: Focusable,
-	): void {
+	get capturesViewportInput(): boolean {
+		return this.inputHandler?.capturesViewportInput === true;
+	}
+
+	private setContent(content: Container, inputHandler?: InputHandler, inputTarget?: Focusable): void {
 		if (this.inputTarget) this.inputTarget.focused = false;
 		this.progressPromise = undefined;
 		this.progressResolver = undefined;

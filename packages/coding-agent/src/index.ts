@@ -22,6 +22,7 @@ export {
 	type PromptOptions,
 	parseSkillBlock,
 	type SessionStats,
+	type TeamInboxDispatchState,
 } from "./core/agent-session.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
 export type { CacheWarmingDecision, CacheWarmingStatus } from "./core/cache-warmer.ts";
@@ -64,8 +65,10 @@ export type {
 	AppKeybinding,
 	AutocompleteProviderFactory,
 	BashToolCallEvent,
+	BeforeAgentStartCustomEvent,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeAgentStartUserEvent,
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
@@ -90,6 +93,7 @@ export type {
 	EntryRenderOptions,
 	ExecOptions,
 	ExecResult,
+	ExecuteToolOptions,
 	Extension,
 	ExtensionActions,
 	ExtensionAPI,
@@ -104,8 +108,10 @@ export type {
 	ExtensionHandler,
 	ExtensionRuntime,
 	ExtensionShortcut,
+	ExtensionToolContext,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
+	ExtensionVirtualModel,
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	GrepToolCallEvent,
@@ -113,11 +119,16 @@ export type {
 	InputEvent,
 	InputEventResult,
 	InputSource,
+	KeybindingHints,
 	KeybindingsManager,
 	LoadExtensionsResult,
 	LsToolCallEvent,
+	MarkdownMessageType,
 	MarkdownTransformContext,
 	MarkdownTransformer,
+	MarkdownTransformerOptions,
+	MarkdownTransformerRegistration,
+	McpServersChangeEvent,
 	MessageEndEvent,
 	MessageEndEventResult,
 	MessageRenderer,
@@ -135,6 +146,7 @@ export type {
 	ProjectTrustHandler,
 	ProviderConfig,
 	ProviderModelConfig,
+	ProviderStreamEvent,
 	ReadToolCallEvent,
 	RegisteredCommand,
 	RegisteredTool,
@@ -161,6 +173,7 @@ export type {
 	SourceInfo,
 	TerminalInputHandler,
 	ThinkingLevelSelectEvent,
+	ToolAnnotations,
 	ToolCallEvent,
 	ToolCallEventResult,
 	ToolDefinition,
@@ -168,7 +181,13 @@ export type {
 	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
+	ToolExposure,
 	ToolInfo,
+	ToolLoadout,
+	ToolLoadoutChanges,
+	ToolNamespace,
+	ToolRendererResolver,
+	ToolRenderers,
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	ToolResultEventResult,
@@ -203,6 +222,7 @@ export {
 } from "./core/extensions/index.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
+export type { RegisteredMcpServer } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
@@ -221,6 +241,7 @@ export {
 	type ModelRuntimeAuthOverrides,
 } from "./core/model-runtime.ts";
 export type {
+	PackageInstallFailure,
 	PackageManager,
 	PathMetadata,
 	ProgressCallback,
@@ -342,11 +363,19 @@ export {
 	type FullscreenExitOutput,
 	type ImageSettings,
 	type PackageSource,
+	type QuietStartup,
 	type RetrySettings,
 	SettingsManager,
 	type SettingsManagerCreateOptions,
+	type ShellRunnerMountSettings,
+	type ShellRunnerSettings,
 	type TuiMode,
 } from "./core/settings-manager.ts";
+export {
+	resolveShellRunner,
+	type ShellRunnerSelection,
+	type ShellRunnerSettingsInput,
+} from "./core/shell-runner.ts";
 // Skills
 export {
 	formatSkillsForPrompt,
@@ -361,6 +390,7 @@ export { createSyntheticSourceInfo } from "./core/source-info.ts";
 export { type EditDiffResult, generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.ts";
 // Tools
 export {
+	type BashExecOptions,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -417,6 +447,7 @@ export {
 	type WriteToolOptions,
 	withFileMutationQueue,
 } from "./core/tools/index.ts";
+export { formatReadLineRange } from "./core/tools/render-utils.ts";
 export {
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,
@@ -424,6 +455,29 @@ export {
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
 } from "./core/trust-manager.ts";
+export {
+	type ModelRoute,
+	type ModelRouteReason,
+	type ModelRouteRequest,
+	VIRTUAL_MODEL_STATE_ENTRY,
+	type VirtualModelDefinition,
+	type VirtualModelStateData,
+} from "./core/virtual-models.ts";
+// Built-in extensions. The CLI loads them; SDK sessions add them to their extension factories.
+export { type CodemodeExtensionOptions, createCodemodeExtension } from "./extensions/codemode/index.ts";
+export type { CodemodeStoreEntryData, CodemodeToolDetails } from "./extensions/codemode/tool.ts";
+export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "./extensions/mcp/config.ts";
+export { createMcpExtension, type McpExtensionOptions, type McpTransportFactory } from "./extensions/mcp/index.ts";
+export type {
+	OctoberPermissionExplanation,
+	OctoberPermissionMode,
+	OctoberPermissionModeSource,
+	OctoberPermissionPolicy,
+	OctoberTemporaryPermissionCeiling,
+	OctoberToolDecision,
+	ToolPermissionClass,
+} from "./extensions/october/permissions.ts";
+export { createToolSearchExtension } from "./extensions/tool-search/index.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage
@@ -493,7 +547,11 @@ export {
 	highlightCode,
 	initTheme,
 	Theme,
+	type ThemeAppearance,
+	type ThemeBg,
 	type ThemeColor,
+	type ThemeStyle,
+	type ThemeToken,
 } from "./modes/interactive/theme/theme.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";

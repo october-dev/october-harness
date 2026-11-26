@@ -71,6 +71,10 @@ describe("bug report prompt", () => {
 			const deliverySelector = editorContainer.children[0];
 			if (!(deliverySelector instanceof ExtensionSelectorComponent)) throw new Error("Missing delivery selector");
 			const deliveryLines = deliverySelector.render(120).map(stripTerminalSequences);
+			const deliveryText = deliveryLines.join("\n");
+			expect(deliveryText).toContain("October diagnostic report");
+			expect(deliveryText).toContain("Earendil");
+			expect(deliveryText.indexOf("Export as Zip")).toBeLessThan(deliveryText.indexOf("Upload to Radius"));
 			expect(deliveryLines.some((line) => line.includes("Description: Request failed"))).toBe(true);
 			expect(deliveryLines.some((line) => line.includes("↳ pi exiting..."))).toBe(true);
 			expect(deliveryLines.some((line) => line.includes("stack trace"))).toBe(true);

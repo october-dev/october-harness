@@ -1,6 +1,6 @@
 # Choose a Model
 
-For a built-in provider, start with `/login`, then choose a model with `/model`. Use custom model configuration only when Pi does not already include the provider or endpoint you need.
+For a built-in provider, start with `/login`, then choose a model with `/model`. Use custom model configuration only when October does not already include the provider or endpoint you need.
 
 ## Choose a connection
 
@@ -8,27 +8,27 @@ For a built-in provider, start with `/login`, then choose a model with `/model`.
 |---|---|
 | A supported subscription | Sign in through `/login` |
 | A provider API key | Store it through `/login` or set its environment variable |
-| A local GGUF model | Connect Pi to the llama.cpp router |
+| A local GGUF model | Connect October to the llama.cpp router |
 | An OpenAI-, Anthropic-, or Google-compatible endpoint | Add it to `models.json` |
 | A provider with a custom protocol or authentication flow | Build or install a provider extension |
 
-Browse the [model catalog](https://pi.dev/models) for current providers, model IDs, capabilities, context limits, and pricing. Pi starts with its bundled catalog and can overlay newer catalog data from pi.dev. Cached catalog data remains available offline; run `pi update --models` to force a refresh.
+Browse the [upstream model catalog](https://pi.dev/models) for current providers, model IDs, capabilities, context limits, and pricing. October starts with its bundled catalog. Remote catalog fetching is off by default; set `OCTOBER_CATALOG_BASE_URL` to a catalog server, such as `https://pi.dev`, to opt in, then run `october update --models` to refresh it. Cached catalog data remains available offline.
 
 ## Authenticate
 
-Run `/login` and select a provider. Pi stores credentials in [`auth.json`](configuration.md#agent-directory). Run `/logout` to remove stored credentials for a provider.
+Run `/login` and select a provider. October stores credentials in [`auth.json`](configuration.md#agent-directory). Run `/logout` to remove stored credentials for a provider.
 
-You can instead provide an API key through the provider's environment variable. This is useful in CI and other environments where Pi should not write credentials. [Provider Authentication](providers.md) lists the variables and cloud-provider setup.
+You can instead provide an API key through the provider's environment variable. This is useful in CI and other environments where October should not write credentials. [Providers](providers.md) lists the variables and provider-specific setup.
 
-When several credential sources are configured, Pi uses a runtime `--api-key` first, then a stored `auth.json` credential, an `apiKey` from `models.json`, and finally the provider's environment variables or ambient cloud credentials. Provider extensions can define their own authentication behavior.
+When several credential sources are configured, October uses a runtime `--api-key` first, then a stored `auth.json` credential, an `apiKey` from `models.json`, and finally the provider's environment variables or ambient cloud credentials. Provider extensions can define their own authentication behavior.
 
-Keep `auth.json` and any credential commands private. Project settings and extensions can execute inside the Pi process after you trust a project. Review [Security](security.md) before loading configuration from an untrusted directory.
+Keep `auth.json` and any credential commands private. Project settings and extensions can execute inside the October process after you trust a project. Review [Security](security.md) before loading configuration from an untrusted directory.
 
 ## Select a model
 
 Run `/model` to search available models. The picker shows models whose providers have usable authentication. Press `Ctrl+S` on a model to save it as the default for new sessions.
 
-Run `/thinking` to select the thinking level for the current model. Press `Ctrl+S` there to save the startup level. Pi limits the choices to levels supported by the selected model.
+Run `/thinking` to select the thinking level for the current model. Press `Ctrl+S` there to save the startup level. October limits the choices to levels supported by the selected model.
 
 `Ctrl+P` cycles through available models. Use `/scoped-models` to control that cycle and save the selection, or configure model patterns through [Settings](settings.md#model-cycling).
 
@@ -36,18 +36,38 @@ A session records model and thinking-level changes. Resuming the session restore
 
 ## Connect local models
 
-Pi integrates directly with the llama.cpp router. The router discovers GGUF files and loads models on demand. Pi's `/llama` command manages the router, while `/model` selects one of its loaded models.
+October integrates directly with the llama.cpp router. The router discovers GGUF files and loads models on demand. October's `/llama` command manages the router, while `/model` selects one of its loaded models.
 
 Follow [Local Models with llama.cpp](llama-cpp.md) for server startup, model layout, downloads, and connection troubleshooting.
 
-For Ollama, LM Studio, vLLM, SGLang, and other compatible servers, [configure a compatible endpoint](#configure-a-compatible-endpoint) in `models.json`.
+For Ollama, LM Studio, vLLM, SGLang, and other compatible servers, [configure a compatible endpoint](#configure-a-compatible-endpoint) in `models.json`, or let `october local-models` write the entries for you.
+
+### Find local models automatically
+
+`october local-models` asks the servers on this machine which models they serve and offers to add them to `models.json`:
+
+```bash
+october local-models                                    # Ollama :11434, LM Studio :1234, vLLM :8000
+october local-models --url http://localhost:8080/v1 --provider sglang
+```
+
+- It runs only when you start it. October never scans for servers at startup.
+- `--provider` names the provider for `--url`. Names of providers October already ships, such as `openai`, `anthropic`, `october`, or `llama.cpp`, are refused, because reusing one would redirect or replace that provider.
+- It contacts only loopback addresses (`localhost`, `127.0.0.0/8`, `[::1]`), bypasses any configured HTTP proxy, and does not follow redirects. LAN and remote URLs are refused.
+- It prints every endpoint it checked and the exact entries it would add, then asks before writing. Pass `--yes` to skip the question, for example in scripts.
+- New providers get a placeholder `apiKey` equal to the provider ID, which local servers ignore. It does not ask for or store a secret, and it never changes `auth.json`.
+- Existing providers keep their settings. Only models missing from a provider with the same `baseUrl` are added; a same-named provider that points elsewhere is left unchanged.
+- A `models.json` with comments or trailing commas is not rewritten, because rewriting would drop them. The command prints the entries to add by hand instead.
+
+When a server reports a model's context length, as vLLM does with `max_model_len`, the entry gets that `contextWindow` and a `maxTokens` no larger than it. The command reads no context limit from Ollama or LM Studio (Ollama's listed model maximum is not the context it actually serves), so their models use the default limits; edit those entries to match the model, as described below. Models Ollama reports without the `completion` capability, such as the embedding model `nomic-embed-text`, are skipped because Ollama's chat endpoint rejects them. Servers that require an API key still need the manual setup.
 
 ## Configure a compatible endpoint
 
-Use [`models.json`](configuration.md#agent-directory) when an endpoint speaks an API Pi already supports. This includes most Ollama, LM Studio, vLLM, SGLang, and proxy deployments.
+Use [`models.json`](configuration.md#agent-directory) when an endpoint speaks an API October already supports. This includes most Ollama, LM Studio, vLLM, SGLang, and proxy deployments.
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/october-dev/october-harness/main/packages/coding-agent/schemas/models.schema.json",
   "providers": {
     "ollama": {
       "baseUrl": "http://localhost:11434/v1",
@@ -61,13 +81,25 @@ Use [`models.json`](configuration.md#agent-directory) when an endpoint speaks an
 }
 ```
 
-The dummy key makes the model available to Pi; Ollama ignores it. For an authenticated endpoint, `apiKey` and header values can use `$NAME` or `${NAME}` environment interpolation, a literal value, or a leading `!command`. Commands in `models.json` run at request time and are not cached by Pi.
+The dummy key makes the model available to October; Ollama ignores it. For an authenticated endpoint, `apiKey` and header values can use `$NAME` or `${NAME}` environment interpolation, a literal value, or a leading `!command`. `$$` and `$!` produce a literal `$` and `!`. Commands in `models.json` run at request time and are not cached by October.
 
 Opening `/model` reloads the file. A `models` entry adds or replaces a model with the same ID on that provider. Use `modelOverrides` to change metadata for an existing built-in or extension-provided model without replacing the provider's model list. Unknown override IDs are ignored.
 
+To route a built-in provider through a proxy, set only its `baseUrl`. Its models and authentication stay unchanged:
+
+```json
+{
+  "providers": {
+    "anthropic": { "baseUrl": "https://proxy.example.com/v1" }
+  }
+}
+```
+
+[Models Configuration](models-configuration.md) lists every field.
+
 ### Describe model input and caching
 
-Use `inputLimits.images.resize` to control how Pi encodes new image attachments, `read` results, and tool-result images before storing them in conversation history:
+Use `inputLimits.images.resize` to control how October encodes new image attachments, `read` results, and tool-result images before storing them in conversation history:
 
 ```json
 {
@@ -86,7 +118,7 @@ Use `inputLimits.images.resize` to control how Pi encodes new image attachments,
 }
 ```
 
-`maxBytes` limits the base64-encoded payload. Omitted resize fields use conservative defaults of 2000 by 2000 pixels, 4.5 MiB encoded, and JPEG quality 80. Images are encoded once; changing models does not rewrite historical images. The catalog can also describe hard request limits with `inputLimits.maxRequestBytes`, `images.maxPerMessage`, and `images.maxPerRequest`, but Pi does not yet rewrite or reject history based on them.
+`maxBytes` limits the base64-encoded payload. Omitted resize fields use conservative defaults of 2000 by 2000 pixels, 4.5 MiB encoded, and JPEG quality 80. Images are encoded once; changing models does not rewrite historical images. The catalog can also describe hard request limits with `inputLimits.maxRequestBytes`, `images.maxPerMessage`, and `images.maxPerRequest`, but October does not yet rewrite or reject history based on them.
 
 <a id="prompt-cache-lifetimes"></a>
 
@@ -98,7 +130,97 @@ Use `promptCache` to declare the provider's best-effort cache lifetime in second
 
 Choose the conservative end of any published range. A model without a lifetime for the active tier is not eligible for cache warming. A `modelOverrides` entry can set `inputLimits` or `promptCache` for a built-in or extension model, including a model accessed through a validated proxy. See [`cacheWarming`](settings.md#model-and-thinking).
 
+### Configure sampling by thinking level
+
+OpenAI-compatible APIs support free-form `samplingParams` model defaults and `samplingParamsByThinkingLevel` overrides. The latter uses October thinking-level keys (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`), not provider values from `thinkingLevelMap`:
+
+```json
+{
+  "id": "qwen-thinking-model",
+  "reasoning": true,
+  "samplingParams": {
+    "temperature": 1.0,
+    "top_p": 0.95
+  },
+  "samplingParamsByThinkingLevel": {
+    "off": {
+      "temperature": 0.7,
+      "top_p": 0.8
+    },
+    "high": {
+      "top_k": 20
+    }
+  }
+}
+```
+
+October first clamps unsupported thinking levels, then merges model `samplingParams`, the effective level's override, and request-level `samplingParams` in that order. Later values win per key. Missing levels inherit the model defaults. `modelOverrides` merges per-level entries per key with the base model. These fields apply only to `openai-completions`, `openai-responses`, and `azure-openai-responses`; other APIs ignore them.
+
 Compatibility settings should describe verified differences in the endpoint's request or response behavior. Do not enable them based only on an endpoint advertising OpenAI or Anthropic compatibility.
+
+## Use classifier models
+
+Classifier models do not chat. They answer typed questions about JSON state: pick one of several choices, answer yes or no, or give a score, each with probabilities. October includes TypeSafe's Jev model from these providers, Cloudflare's Clef, Clef Flash, and Clef Omni models from Workers AI and OpenRouter, OpenAI's GPT-6 Luna through the [Decisions API](https://developers.openai.com/api/docs/guides/decisions), and Microsoft-Decision-1 through GitHub Copilot:
+
+| Provider | Model IDs | Authentication |
+|---|---|---|
+| `typesafe` | `jev-latest` | `TYPESAFE_API_KEY` |
+| `openrouter` | `typesafe/jev-1.13`, `typesafe/jev-1.14`, `~typesafe/jev-latest`, `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `OPENROUTER_API_KEY` or `/login` |
+| `cloudflare-workers-ai` | `typesafe/jev`, `typesafe/jev-1.14.0`, `@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `@cf/cloudflare/clef-omni` | `CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID` |
+| `vercel-ai-gateway` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` |
+| `opencode` | `jev-1.13`, `jev-1.13-free` | `OPENCODE_API_KEY` |
+| `openai` | `gpt-6-luna` | `OPENAI_API_KEY` |
+| `github-copilot` | `microsoft-decision-1` | `COPILOT_GITHUB_TOKEN` or `/login` |
+
+Chat models on a [llama.cpp router](llama-cpp.md#classification) are also listed as classifier models.
+
+OpenAI's Decisions API needs an API key. Sign in with ChatGPT credentials do not work with it, so `gpt-6-luna` is not listed as available while `openai` is logged in through `/login`, even when `OPENAI_API_KEY` is set; log out of `openai` to use the key. The API rejects inputs above 922K tokens, but requests that run longer than about five seconds, currently above roughly 600K input tokens, fail with a gateway timeout.
+
+Classifier models do not appear in `/model`. The model reaches them through the [`codemode`](cli.md#enable-codemode) tool, which is off unless an MCP server turned it on. Enable it with `"defaultTools": ["+codemode"]` in [settings](settings.md#tools). Scripts then list classifier models with `models.getAvailableOfType("classifier")` and call `models.classify(model, { state, questions })`:
+
+```js
+const jev = await models.getModelOfType("classifier", "typesafe", "jev-latest");
+const result = await models.classify(jev, {
+  state: { message: "The change works, thanks." },
+  questions: {
+    approved: {
+      type: "bool",
+      instructions: "Does the user approve of the result?",
+      criteria: { true: "Approval", false: "No approval" },
+    },
+  },
+});
+return result.answers;
+```
+
+[Codemode](codemode.md#classify) describes the question and answer types.
+
+Classifier models whose `input` includes `"image"` also judge images passed in `images`; other classifier models return an error for them. Image input works with GPT-6 Luna, with Jev from `typesafe` and `cloudflare-workers-ai`, with Clef from `cloudflare-workers-ai`, and with the OpenRouter models whose catalog lists image input. Jev takes PNG and JPEG images, and image input is experimental on TypeSafe's own API. Clef takes PNG, JPEG, and WebP images, at most four per request. Jev from `vercel-ai-gateway` and `opencode` takes text only.
+
+Each System One service takes images in its own request format, set by the model's `compat.imageInput`. Built-in models set it, so overriding a provider's `baseUrl` keeps it. A custom provider that proxies another service's classifiers sets it in its provider-level `compat` in `models.json` (see [System One compatibility](models-configuration.md#typesafe-system-one)). OpenRouter in particular answers requests in TypeSafe's format without an error but drops the images.
+
+When the service reports token counts, as all System One services do, `result.usage` carries them with their cost. October adds the usage of a script's classifier calls to the `codemode` tool result, so it counts toward the session cost in the footer and `/session`. The cost uses the model's catalog price; models without one, such as TypeSafe's direct `jev-latest`, report tokens at no cost.
+
+Extensions call classifiers through `ctx.modelRegistry.classify()`, without codemode. [Virtual models](virtual-models.md#route-requests) can use them to route requests; see the `jev-router.ts` example.
+
+## Use image models
+
+Image models generate images from a prompt and optional input images. October lists OpenRouter's image models, such as `google/gemini-2.5-flash-image` and `black-forest-labs/flux.2-pro`, under the `openrouter` provider; they use the same `OPENROUTER_API_KEY` or `/login` credential as its chat models.
+
+Like classifier models, image models do not appear in `/model`; the model reaches them through the [`codemode`](cli.md#enable-codemode) tool. Scripts list them with `models.getAvailableOfType("image")` and call `models.generateImages(model, { input })`. The result's `output` holds base64 image blocks, which `image()` attaches to the `codemode` result so the model sees them:
+
+```js
+const painter = await models.getModelOfType("image", "openrouter", "google/gemini-2.5-flash-image");
+const result = await models.generateImages(painter, {
+  input: [{ type: "text", text: "A red fox in the snow, watercolor" }],
+});
+if (result.stopReason !== "stop") return result.errorMessage;
+for (const block of result.output) if (block.type === "image") image(block);
+```
+
+`input` can also contain `{ type: "image", data, mimeType }` blocks to edit or use as references. October adds the usage of a script's image calls to the `codemode` tool result, like classifier calls. Generated images are not saved to disk. [Codemode](codemode.md#generate-images) describes the full API.
+
+Extensions generate images through `ctx.modelRegistry.generateImages()`, without codemode.
 
 ## Add a custom provider
 
@@ -106,17 +228,19 @@ Use an extension when the provider needs custom streaming, model discovery, or a
 
 ## Troubleshooting
 
+Run `october doctor` first. It reports whether the default model exists, whether its provider has credentials, and which `enabledModels` patterns match nothing. See [Setup diagnostics](cli.md#setup-diagnostics).
+
 ### A model does not appear
 
-Confirm that its provider has usable authentication. Custom models can load from `models.json` but remain unavailable in `/model` until Pi can resolve credentials. For llama.cpp, only models currently loaded by the router appear.
+Confirm that its provider has usable authentication. Custom models can load from `models.json` but remain unavailable in `/model` until October can resolve credentials. For llama.cpp, only models currently loaded by the router appear.
 
 ### Authentication works in one shell only
 
-Check whether the key came from an environment variable rather than `auth.json`. Environment variables must be present in the process that starts Pi.
+Check whether the key came from an environment variable rather than `auth.json`. Environment variables must be present in the process that starts October.
 
 ### Sign-in opens a browser on a remote machine
 
-Complete the provider's headless authentication flow when available. Some providers let you paste the final redirect URL or authorization code back into Pi. See [Authenticate interactively](providers.md#authenticate-interactively).
+Complete the provider's headless authentication flow when available. Some providers let you paste the final redirect URL or authorization code back into October. See [Authenticate interactively](providers.md#authenticate-interactively).
 
 ### A compatible endpoint rejects requests
 

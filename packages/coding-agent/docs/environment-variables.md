@@ -4,24 +4,25 @@ October retains Pi's process markers and `PI_*` session variables. October-speci
 
 The inherited runtime uses environment variables in three ways:
 
-- Variables such as `PI_OFFLINE` configure the Pi process.
-- Pi sets process markers so child processes can identify Pi as the launching agent.
+- Variables such as `PI_OFFLINE` configure the October process.
+- October sets process markers so child processes can identify October as the launching agent.
 - Commands run by the LLM-callable shell tools receive `PI_*` variables describing the current session.
 
-Provider API-key variables are documented separately in [Provider Authentication](providers.md#use-an-api-key-from-the-environment).
+Provider API-key variables are documented separately in [Providers](providers.md#use-an-api-key-from-the-environment).
 
 ## Process Marker
 
-The CLI and RPC entry points set two process markers:
+The CLI and RPC entry points set three process markers:
 
-- `AI_AGENT=pi` is a generic marker that lets tooling identify Pi as the agent that launched the process.
-- `PI_CODING_AGENT=true` is Pi-specific and lets child processes detect that they run inside Pi.
+- `AI_AGENT=october` is a generic marker that lets tooling identify October as the agent that launched the process.
+- `OCTOBER_CODING_AGENT=true` identifies an October process.
+- `PI_CODING_AGENT=true` remains available for tools that recognize the inherited marker.
 
-Child processes inherit both markers. They are not session-specific and are not set automatically when Pi is embedded through the SDK.
+Child processes inherit these markers. They are not session-specific and are not set automatically when October is embedded through the SDK.
 
 ## Shell Tool Session Environment
 
-Commands run by the `bash` and `powershell` tools receive the current Pi session state:
+Commands run by the `bash` and `powershell` tools receive the current October session state:
 
 | Variable | Description |
 |----------|-------------|
@@ -31,7 +32,7 @@ Commands run by the `bash` and `powershell` tools receive the current Pi session
 | `PI_MODEL` | Currently selected model ID |
 | `PI_REASONING_LEVEL` | Current effective reasoning level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` |
 
-The values are resolved when each command starts. Switching models or changing the reasoning level therefore affects the next shell command without restarting Pi. `PI_PROVIDER` and `PI_MODEL` identify the selected Pi model, not a different upstream model that a router may choose internally.
+The values are resolved when each command starts. Switching models or changing the reasoning level therefore affects the next shell command without restarting October. `PI_PROVIDER` and `PI_MODEL` identify the selected October model, not a different upstream model that a router may choose internally.
 
 When asked which model or provider is running, inspect these variables instead of inferring the answer from the system prompt:
 
@@ -52,7 +53,7 @@ These variables are injected into the LLM-callable `bash` and `powershell` tools
 
 ### Custom Shell Tools
 
-Tools created with `createBashTool()` or `createPowerShellTool()` expose the session environment by default when registered with Pi. Injection happens before `spawnHook`, so a hook receives the variables in `ctx.env`:
+Tools created with `createBashTool()` or `createPowerShellTool()` expose the session environment by default when registered with October. Injection happens before `spawnHook`, so a hook receives the variables in `ctx.env`:
 
 ```typescript
 const bashTool = createBashTool(cwd, {
@@ -72,25 +73,31 @@ const powershellTool = createPowerShellTool(cwd, {
 });
 ```
 
-When disabled, Pi removes inherited values for these variables so nested Pi processes do not expose stale parent-session metadata.
+When disabled, October removes inherited values for these variables so nested October processes do not expose stale parent-session metadata.
 
-## Pi Process Configuration
+## October Process Configuration
 
-These variables are read by Pi itself:
+These variables are read by October itself:
 
 | Variable | Description |
 |----------|-------------|
 | `OCTOBER_CODING_AGENT_DIR` | Override the config directory; default is `~/.october/agent` |
 | `OCTOBER_CODING_AGENT_SESSION_DIR` | Override session storage; overridden by `--session-dir` |
+| `OCTOBER_CATALOG_BASE_URL` | Opt in to a remote model catalog, for example `https://pi.dev`; unset by default. `PI_CATALOG_BASE_URL` is also accepted |
 | `PI_PACKAGE_DIR` | Override the package directory, useful for Nix/Guix store paths |
 | `PI_OFFLINE` | Disable automatic network activity, including model catalog refreshes, update checks, package updates, and install/update telemetry |
 | `PI_SKIP_VERSION_CHECK` | Disable October's background latest-version check against the npm registry |
+| `PI_SELF_UPDATE_COMMAND` | Command `october update` runs to update October itself, split on whitespace, with `{packageName}`, `{version}`, and `{installSpec}` placeholders. Takes precedence over the `selfUpdateCommand` setting. See [Custom update command](cli.md#custom-update-command) |
 | `PI_TELEMETRY` | Override install/update telemetry and provider attribution headers: `1`/`true`/`yes` or `0`/`false`/`no` |
+| `PI_CODEMODE_MAX_WORKERS` | Maximum codemode workers alive at once across all sessions in the process; default `2`. Each worker's script may use up to 256 MB. Raise it when one process runs several sessions, such as in-process subagents. Further scripts wait for a free worker. See [Codemode](codemode.md) |
 | `PI_CACHE_RETENTION` | Set to `long` for extended provider prompt caching where supported |
 | `PI_SHARE_VIEWER_URL` | Override the base URL used by `/share` |
-| `PI_RADIUS_GATEWAY` | Override the Radius gateway origin used by `/bug` uploads and Radius relay connections |
+| `PI_RADIUS_GATEWAY` | Override the Radius gateway origin used by `/bug` uploads |
+| `PI_CLEAR_ON_SHRINK` | Set to `1` to clear empty rows when rendered content shrinks; the `terminal.clearOnShrink` setting takes precedence. See [Settings](settings.md) |
 | `PI_HARDWARE_CURSOR` | Set to `1` to show the hardware cursor; see [Terminal setup](terminal-setup.md) |
+| `PI_CLIPBOARD_OSC52` | Set to `1` to also send copied text to the terminal with OSC 52 after the local clipboard write, as October does over SSH. Use it when a remote client reaches October without SSH variables, such as a multiplexer attached from another machine or a remote IDE daemon |
 | `PI_HYPERLINKS` | Override OSC 8 hyperlink detection with `1`, `0`, or `auto` |
+| `PI_PROGRAM_STATUS` | Override OSC 7501 program status detection: `1` always reports, `0` never reports; otherwise October reports only after the terminal confirms support. See [Terminal setup](terminal-setup.md#program-status) |
 | `PI_IMAGE_PROTOCOL` | Override inline image detection with `kitty`, `iterm2`, `none`, or `auto` |
 | `PI_TRUE_COLOR` | Override truecolor detection with `1`, `0`, or `auto` |
 | `PI_TUI_ESC_TIMEOUT` | How long to wait after a lone ESC before treating it as Escape, in milliseconds; defaults to `100` over SSH and `10` otherwise. Increase if Alt-key input is misread as Escape |
@@ -98,3 +105,29 @@ These variables are read by Pi itself:
 | `HTTP_PROXY`, `HTTPS_PROXY` | Proxy outbound HTTP requests |
 
 Provider credentials such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and cloud-provider configuration are listed in [Provider Authentication](providers.md#use-an-api-key-from-the-environment).
+
+## October Session From a Launching App
+
+An app that is already signed in to October (October Desktop, October Lantern) can start October signed in by passing the user's session in the environment. No `/login` is needed.
+
+| Variable | Description |
+|----------|-------------|
+| `OCTOBER_SUPABASE_URL` | Supabase project URL. Required |
+| `OCTOBER_SUPABASE_ANON_KEY` | Supabase anon (public) key. Required |
+| `OCTOBER_SUPABASE_ACCESS_TOKEN` | The signed-in user's access token (JWT). Sent as the bearer for the model catalog, inference, and plan checks. Required |
+| `OCTOBER_SUPABASE_EXPIRES_AT` | Access token expiry in unix seconds. Optional; the JWT `exp` claim is used when absent |
+| `OCTOBER_TOKEN_COMMAND` | Optional shell command that prints a fresh token (see below) |
+
+Without `OCTOBER_SUPABASE_REFRESH_TOKEN`, the launching app owns the session. October keeps it in memory only: it is never written to `~/.october/agent/` and never logged. A stored `/login` account is not used while the session is valid.
+
+`OCTOBER_TOKEN_COMMAND` is run through the shell with the process environment. It must exit with code 0 and print one JSON object on stdout:
+
+```json
+{"accessToken": "<jwt>", "expiresAt": 1791234567}
+```
+
+`expiresAt` is unix seconds; when absent, the JWT `exp` claim is used. October runs the command within 5 minutes of expiry (and every 30 seconds after a failed attempt while the old token is still valid), and after the October gateway answers HTTP 401. After a 401 with a new token, the failed turn is retried. A run is limited to 15 seconds and 64 KB of output. Its output is never logged.
+
+If the token has expired and there is no command, or the command fails once the token can no longer be used, October drops the session and falls back to the normal sign-in: a stored `/login` account is used if present, otherwise October asks the user to run `/login`.
+
+October Desktop (`OCTOBER_BUS_PORT` set) refreshes over its Bus instead and ignores `OCTOBER_TOKEN_COMMAND`. A session that includes `OCTOBER_SUPABASE_REFRESH_TOKEN` is imported into the credential store and refreshed against Supabase, as before.

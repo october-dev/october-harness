@@ -1,8 +1,8 @@
 # Slash commands
 
-Type `/` in Pi's terminal editor to search the commands available in the current session. This page lists the built-in commands in the current Pi release.
+Type `/` in October's terminal editor to search the commands available in the current session. This page lists the built-in commands in the current October release.
 
-Extensions, prompt templates, and skills can add commands. The command menu in Pi is therefore the exact reference for the resources loaded in your session.
+Extensions, prompt templates, and skills can add commands. The command menu in October is therefore the exact reference for the resources loaded in your session.
 
 ## Models and settings
 
@@ -21,9 +21,10 @@ Extensions, prompt templates, and skills can add commands. The command menu in P
 | Command | Description |
 |---|---|
 | `/new` | Start a new session |
-| `/resume` | Switch to another saved session |
+| `/resume` | Resume another session |
 | `/name [name]` | Set the session display name, or show the current name when omitted |
 | `/session` | Show current session information and statistics |
+| `/permissions` | Explain this session's tool permission policy: the selected mode and its source, any trusted project restriction, the delegation ceiling (`inherit` adds no restriction), and whether read, edit and command tools are allowed, ask, or are blocked |
 | `/tree` | Navigate the session tree |
 | `/fork` | Create a new session from an earlier user message |
 | `/clone` | Duplicate the current session at its current position |
@@ -37,7 +38,7 @@ Extensions, prompt templates, and skills can add commands. The command menu in P
 | `/copy` | Copy the last assistant message |
 | `/export [path]` | Export the session as HTML, or as a [portable session](session-format.md#portable-sessions) when the path ends in `.jsonl` |
 | `/share` | Upload the session and return a viewer link |
-| `/bug [description]` | Prepare a private bug report for the Pi developers |
+| `/bug [description]` | Prepare a diagnostic report to export and attach to an October issue |
 
 Review a session before exporting or sharing it. Sessions can contain prompts, tool arguments, command output, file contents, and credentials exposed during the conversation.
 
@@ -45,11 +46,16 @@ Review a session before exporting or sharing it. Sessions can contain prompts, t
 
 | Command | Description |
 |---|---|
-| `/trust` | Save a project trust decision for future Pi processes |
+| `/verify run <command>` | Run a command through the session shell and record its observed result, timing, and git identity |
+| `/verify status` | Show the latest verification record and whether the tree still matches |
+| `/verify share` | Arm the latest record for attachment to later Bus task results |
+| `/verify unshare` | Stop attaching verification evidence to task results |
+| `/trust` | Save a project trust decision for future October processes |
+| `/mcp` | Manage MCP servers: sign in, reconnect, enable or disable, and change exposure |
 | `/reload` | Reload keybindings, extensions, skills, templates, themes, and context files |
 | `/hotkeys` | Show active keyboard shortcuts |
 | `/changelog` | Show changelog entries |
-| `/quit` | Quit Pi |
+| `/quit` | Quit October |
 
 ## Commands added by resources
 

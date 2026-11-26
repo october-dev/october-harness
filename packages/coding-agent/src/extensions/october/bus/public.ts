@@ -7,9 +7,12 @@ import type { OctoberPublicBusEnv } from "./env.ts";
 import { logOctoberDebug } from "./log.ts";
 import { MCP_TOOL_PREFIX, type McpToolCallResult, OctoberMcpClient } from "./mcp-client.ts";
 
-const DELIVERY_ENTRY = "october-bus-delivery";
+export const DELIVERY_ENTRY = "october-bus-delivery";
+export const REQUEST_ENTRY = "october-bus-request";
+/** Session record of the user's pause choice for automatic public Bus inbox dispatch. */
+export const INBOX_PAUSE_ENTRY = "october-bus-inbox-pause";
 const DELIVERY_MESSAGE = "october-bus-inbox";
-const POLICY_CONTEXT_TITLE = "October delegation policy";
+export const POLICY_CONTEXT_TITLE = "October delegation policy";
 const INBOX_WAIT_MS = 25_000;
 const HEARTBEAT_MS = 10_000;
 const RETRY_MS = 2_000;
@@ -26,7 +29,7 @@ interface BusContextItem {
 	mediaType?: string;
 }
 
-interface BusMessage {
+export interface BusMessage {
 	id: string;
 	from: string;
 	to: string;
@@ -70,17 +73,67 @@ interface DeliveryBatch {
 	permissionCeiling: OctoberTemporaryPermissionCeiling;
 }
 
+/** The user's pause choice. The latest valid record in the session wins, whichever branch it was written on. */
+export interface InboxPauseRecord {
+	version: 1;
+	paused: boolean;
+}
+
+/** Live automatic-delivery state for the terminal, SDK, and RPC. */
+export interface TeamInboxDispatchStatus {
+	available: true;
+	paused: boolean;
+	/** Recorded deliveries that are not acknowledged yet. */
+	pending: number;
+	/** A peer batch whose turn is still in flight. */
+	active: boolean;
+}
+
+/** Pause choice and pending deliveries restored from a session branch. */
+export interface InboxDispatchSnapshot {
+	paused: boolean;
+	pending: number;
+}
+
+/** Session record of a successful `/delegate` or `/handoff` send. Never enters model context. */
+export interface DelegationRequestRecord {
+	version: 1;
+	messageId: string;
+	taskId: string;
+	from: string;
+	to: string;
+	mode: "request";
+	body: string;
+	receipt: Record<string, unknown>;
+}
+
 interface DelegationPolicy {
 	version: 1;
 	permissionCeiling: OctoberTemporaryPermissionCeiling;
 	taskId: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function errorMessage(error: unknown): string {
+export function parseInboxPauseRecord(value: unknown): InboxPauseRecord | undefined {
+	if (!isRecord(value) || value.version !== 1 || typeof value.paused !== "boolean") return undefined;
+	return { version: 1, paused: value.paused };
+}
+
+/** Latest valid pause choice among the given entries; defaults to automatic when none is valid. */
+export function readInboxPause(entries: readonly { type: string; customType?: string; data?: unknown }[]): boolean {
+	let paused = false;
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== INBOX_PAUSE_ENTRY) continue;
+		const record = parseInboxPauseRecord(entry.data);
+		if (record) paused = record.paused;
+	}
+	return paused;
+}
+
+export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
@@ -101,8 +154,8 @@ function resultObject(result: McpToolCallResult): Record<string, unknown> {
 	return parsed;
 }
 
-async function callObject(
-	client: OctoberMcpClient,
+export async function callObject(
+	client: Pick<OctoberMcpClient, "callTool">,
 	name: string,
 	args: Record<string, unknown>,
 	signal?: AbortSignal,
@@ -128,7 +181,7 @@ function parseContext(value: unknown): BusContextItem[] {
 	return context;
 }
 
-function parseMessages(value: unknown): BusMessage[] {
+export function parseMessages(value: unknown): BusMessage[] {
 	if (!Array.isArray(value)) return [];
 	const messages: BusMessage[] = [];
 	for (const item of value) {
@@ -215,7 +268,7 @@ function parsePermissionCeiling(messages: BusMessage[]): OctoberTemporaryPermiss
 	return ceiling;
 }
 
-function parseDeliveryRecord(value: unknown): DeliveryRecord | undefined {
+export function parseDeliveryRecord(value: unknown): DeliveryRecord | undefined {
 	if (!isRecord(value) || value.version !== 1) return undefined;
 	if (
 		typeof value.batchId !== "string" ||
@@ -238,6 +291,44 @@ function parseDeliveryRecord(value: unknown): DeliveryRecord | undefined {
 		permissionCeiling: value.permissionCeiling,
 		error: typeof value.error === "string" ? value.error : undefined,
 	};
+}
+
+/** Pause choice plus deliveries still waiting on this branch. Acks of older states do not count. */
+export function readInboxDispatchSnapshot(
+	entries: readonly { type: string; customType?: string; data?: unknown }[],
+): InboxDispatchSnapshot {
+	const latest = new Map<string, DeliveryState>();
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== DELIVERY_ENTRY) continue;
+		const record = parseDeliveryRecord(entry.data);
+		if (!record) continue;
+		latest.set(record.batchId, record.state);
+	}
+	let pending = 0;
+	for (const state of latest.values()) {
+		if (state !== "acknowledged") pending++;
+	}
+	return { paused: readInboxPause(entries), pending };
+}
+
+interface InboxDispatchController {
+	status: () => TeamInboxDispatchStatus;
+	setPaused: (paused: boolean) => TeamInboxDispatchStatus;
+}
+
+const inboxControllers = new WeakMap<object, InboxDispatchController>();
+
+/** Live status after the public Bus extension has started, otherwise undefined. */
+export function getTeamInboxDispatch(sessionManager: object): TeamInboxDispatchStatus | undefined {
+	return inboxControllers.get(sessionManager)?.status();
+}
+
+/**
+ * Pause or resume automatic inbox dispatch. Returns undefined when this session has no public Bus
+ * delivery loop. Does not call the model. Peer messages cannot change the pause choice.
+ */
+export function setTeamInboxDispatch(sessionManager: object, paused: boolean): TeamInboxDispatchStatus | undefined {
+	return inboxControllers.get(sessionManager)?.setPaused(paused);
 }
 
 function batchId(messages: BusMessage[]): string {
@@ -296,13 +387,6 @@ function deliveryPrompt(batch: DeliveryBatch): string {
 	].join("\n");
 }
 
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		const timer = setTimeout(resolve, ms);
-		timer.unref();
-	});
-}
-
 /** Public Bus integration: active delivery, lifecycle evidence, commands, and bounded delegation. */
 export function registerOctoberPublicBus(
 	pi: ExtensionAPI,
@@ -318,14 +402,46 @@ export function registerOctoberPublicBus(
 	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 	let active: DeliveryBatch | undefined;
 	let activeSucceeded: boolean | undefined;
+	let paused = false;
+	let dispatchEnabled = false;
+	let controllerKey: object | undefined;
+	let controller: InboxDispatchController | undefined;
+	let wakePollWait: (() => void) | undefined;
 	const pending = new Map<string, DeliveryBatch>();
 	const acknowledging = new Set<string>();
 	const acknowledgementAttempts = new Map<string, number>();
 	let peers: BusPeer[] = [];
 	let tasks: BusTask[] = [];
 	let discovery = "connecting";
+	const wakePoll = (): void => {
+		wakePollWait?.();
+	};
+	const interruptibleDelay = (ms: number): Promise<void> =>
+		new Promise((resolve) => {
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const finish = (): void => {
+				if (settled) return;
+				settled = true;
+				if (timer) clearTimeout(timer);
+				if (wakePollWait === finish) wakePollWait = undefined;
+				resolve();
+			};
+			timer = setTimeout(finish, ms);
+			timer.unref();
+			wakePollWait = finish;
+		});
+	const forgetController = (): void => {
+		if (!controllerKey) return;
+		// A newer instance may own this session manager's controller.
+		if (inboxControllers.get(controllerKey) === controller) inboxControllers.delete(controllerKey);
+		controllerKey = undefined;
+		controller = undefined;
+	};
 	const deactivateStaleContext = (): void => {
 		closed = true;
+		wakePoll();
+		forgetController();
 		pollAbort?.abort();
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		permissions.setTemporaryCeiling(undefined);
@@ -357,17 +473,18 @@ export function registerOctoberPublicBus(
 		if (!context) return;
 		const readyTasks = tasks.filter((task) => task.ready).length;
 		const waiting = [...pending.values()].filter((batch) => batch.state !== "acknowledged").length;
+		const pauseLabel = paused ? " paused" : "";
 		try {
 			context.ui.setStatus(
 				"october-team",
-				`team:${peers.length} tasks:${readyTasks}/${tasks.length} inbox:${waiting} ${lifecycle}`,
+				`team:${peers.length} tasks:${readyTasks}/${tasks.length} inbox:${waiting}${pauseLabel} ${lifecycle}`,
 			);
 			if (context.mode === "tui") {
 				context.ui.setWidget(
 					"october-team",
 					[
-						`Team ${env.agentId} | ${peers.length} peers | ${readyTasks} ready tasks | ${waiting} inbox | ${discovery}`,
-						"/team  /tasks  /inbox  /delegate  /handoff",
+						`Team ${env.agentId} | ${peers.length} peers | ${readyTasks} ready tasks | ${waiting} inbox${pauseLabel} | ${discovery}`,
+						"/team  /tasks  /inbox  /delegate  /handoff  /cockpit",
 					],
 					{ placement: "belowEditor" },
 				);
@@ -424,7 +541,8 @@ export function registerOctoberPublicBus(
 	};
 
 	const dispatch = (batch: DeliveryBatch): void => {
-		if (closed || active || batch.state === "handled" || batch.state === "acknowledged") return;
+		// A paused session keeps the batch pending. An in-flight turn is left to settle on its own.
+		if (closed || paused || active || batch.state === "handled" || batch.state === "acknowledged") return;
 		if (!contextIsIdle()) return;
 		active = batch;
 		activeSucceeded = undefined;
@@ -446,7 +564,7 @@ export function registerOctoberPublicBus(
 	};
 
 	const dispatchNext = (): void => {
-		if (closed || active || !contextIsIdle()) return;
+		if (closed || paused || active || !contextIsIdle()) return;
 		const next = [...pending.values()].find((batch) => batch.state === "received");
 		if (next) dispatch(next);
 	};
@@ -462,13 +580,38 @@ export function registerOctoberPublicBus(
 		timer.unref();
 	};
 
+	const currentStatus = (): TeamInboxDispatchStatus => ({
+		available: true,
+		paused,
+		pending: [...pending.values()].filter((batch) => batch.state !== "acknowledged").length,
+		active: active !== undefined,
+	});
+
+	const applyPause = (next: boolean): TeamInboxDispatchStatus => {
+		if (paused !== next) {
+			// Only this control and /inbox write the choice. Incoming peer messages never do.
+			pi.appendEntry<InboxPauseRecord>(INBOX_PAUSE_ENTRY, { version: 1, paused: next });
+			paused = next;
+		}
+		updateUi();
+		if (!paused && dispatchEnabled) scheduleDispatch();
+		wakePoll();
+		return currentStatus();
+	};
+
 	const poll = async (): Promise<void> => {
 		if (polling || closed) return;
 		polling = true;
 		try {
 			while (!closed) {
-				if (!contextIsIdle() || active || [...pending.values()].some((batch) => batch.state !== "acknowledged")) {
-					await delay(RETRY_MS);
+				if (
+					paused ||
+					!dispatchEnabled ||
+					!contextIsIdle() ||
+					active ||
+					[...pending.values()].some((batch) => batch.state !== "acknowledged")
+				) {
+					await interruptibleDelay(RETRY_MS);
 					continue;
 				}
 				pollAbort = new AbortController();
@@ -488,16 +631,17 @@ export function registerOctoberPublicBus(
 						messages,
 						permissionCeiling: parsePermissionCeiling(messages),
 					};
+					// Keep a batch that arrives as pause flips. Do not acknowledge or start it.
 					pending.set(batch.batchId, batch);
 					appendDelivery(batch, "received");
 					updateUi();
-					dispatchNext();
+					if (!paused) dispatchNext();
 				} catch (error) {
-					if (pollAbort.signal.aborted) continue;
+					if (pollAbort.signal.aborted || closed) continue;
 					discovery = "reconnecting";
 					updateUi();
 					logOctoberDebug(`october-bus inbox wait failed: ${errorMessage(error)}`);
-					await delay(RETRY_MS);
+					await interruptibleDelay(RETRY_MS);
 				} finally {
 					pollAbort = undefined;
 				}
@@ -620,13 +764,35 @@ export function registerOctoberPublicBus(
 				const excerpt = boundedHandoffContext(ctx);
 				if (excerpt) messageContext.push({ kind: "text", title: "Bounded session handoff", text: excerpt });
 			}
-			await callObject(client, "message_peer", {
+			const body = `Delegated task ${created.id}: ${title}\n\n${description}`;
+			const receipt = await callObject(client, "message_peer", {
 				peer: peer.id,
 				mode: "request",
-				message: `Delegated task ${created.id}: ${title}\n\n${description}`,
+				message: body,
 				context: messageContext,
 				idempotencyKey: randomUUID(),
 			});
+			// The send succeeded. Record it for /cockpit correlation; a recording failure must never resend.
+			try {
+				if (typeof receipt.messageId !== "string" || !receipt.messageId)
+					throw new Error("October Bus did not return a message ID");
+				pi.appendEntry<DelegationRequestRecord>(REQUEST_ENTRY, {
+					version: 1,
+					messageId: receipt.messageId,
+					taskId: created.id,
+					from: env.agentId,
+					to: peer.id,
+					mode: "request",
+					body,
+					receipt,
+				});
+			} catch (error) {
+				ctx.ui.notify(
+					`Delegated ${created.id} to ${peer.id}, but recording the request in this session failed: ${errorMessage(error)}`,
+					"warning",
+				);
+				return;
+			}
 			await refresh();
 			ctx.ui.notify(`Delegated ${created.id} to ${peer.id} with ${permissionCeiling} authority.`, "info");
 		} catch (error) {
@@ -664,14 +830,39 @@ export function registerOctoberPublicBus(
 		},
 	});
 
+	const inboxStatusText = (): string => {
+		const state = currentStatus();
+		const headline = state.paused
+			? "Inbox dispatch is paused. Peer batches will not start until /inbox resume."
+			: "Inbox dispatch is automatic.";
+		const rows = [...pending.values()].map(
+			(batch) =>
+				`${batch.state}: ${batch.messages.map((message) => `${message.id} from ${message.from}`).join(", ")}`,
+		);
+		const empty = state.paused
+			? "No pending deliveries. New peer messages stay queued until /inbox resume."
+			: "Inbox is clear; active delivery is waiting for new messages.";
+		const activity = state.active ? "A peer turn is still in flight and may settle normally." : undefined;
+		return [headline, activity, ...(rows.length ? rows : [empty])]
+			.filter((line): line is string => !!line)
+			.join("\n");
+	};
+
 	pi.registerCommand("inbox", {
-		description: "Show or retry durable October Bus inbox deliveries",
+		description: "Show, pause, resume, or retry durable October Bus inbox deliveries",
 		getArgumentCompletions: (prefix) =>
-			["retry"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+			["status", "pause", "resume", "retry"]
+				.filter((value) => value.startsWith(prefix))
+				.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
 			const command = args.trim();
-			if (command && command !== "retry") {
-				ctx.ui.notify("Usage: /inbox [retry]", "warning");
+			if (command && !["status", "pause", "resume", "retry"].includes(command)) {
+				ctx.ui.notify("Usage: /inbox [status|pause|resume|retry]", "warning");
+				return;
+			}
+			if (command === "pause" || command === "resume") {
+				applyPause(command === "pause");
+				ctx.ui.notify(inboxStatusText(), "info");
 				return;
 			}
 			if (command === "retry") {
@@ -683,17 +874,18 @@ export function registerOctoberPublicBus(
 					return;
 				}
 				appendDelivery(retry, "received");
+				if (paused) {
+					updateUi();
+					ctx.ui.notify(
+						"Queued the failed delivery. Inbox dispatch is paused; run /inbox resume to start it.",
+						"info",
+					);
+					return;
+				}
 				dispatchNext();
 				return;
 			}
-			const rows = [...pending.values()].map(
-				(batch) =>
-					`${batch.state}: ${batch.messages.map((message) => `${message.id} from ${message.from}`).join(", ")}`,
-			);
-			ctx.ui.notify(
-				rows.length ? rows.join("\n") : "Inbox is clear; active delivery is waiting for new messages.",
-				"info",
-			);
+			ctx.ui.notify(inboxStatusText(), "info");
 		},
 	});
 
@@ -736,6 +928,9 @@ export function registerOctoberPublicBus(
 
 	pi.on("session_start", (_event, ctx) => {
 		context = ctx;
+		controllerKey = ctx.sessionManager;
+		dispatchEnabled = ctx.mode === "tui" || ctx.mode === "rpc";
+		paused = readInboxPause(ctx.sessionManager.getEntries());
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== DELIVERY_ENTRY) continue;
 			const record = parseDeliveryRecord(entry.data);
@@ -751,6 +946,9 @@ export function registerOctoberPublicBus(
 				permissionCeiling: record.permissionCeiling,
 			});
 		}
+		controller = { status: () => currentStatus(), setPaused: (next) => applyPause(next) };
+		inboxControllers.set(controllerKey, controller);
+		// Acknowledgement of work that already settled continues while paused. Unread batches do not start.
 		for (const batch of pending.values()) {
 			if (batch.state === "handled") void acknowledge(batch);
 		}
@@ -762,7 +960,8 @@ export function registerOctoberPublicBus(
 			logOctoberDebug(`october-bus initial team refresh failed: ${errorMessage(error)}`);
 			updateUi();
 		});
-		if (ctx.mode === "tui" || ctx.mode === "rpc") {
+		updateUi();
+		if (dispatchEnabled) {
 			void poll();
 			scheduleDispatch();
 		}
@@ -805,9 +1004,11 @@ export function registerOctoberPublicBus(
 
 	pi.on("session_shutdown", () => {
 		closed = true;
+		wakePoll();
 		pollAbort?.abort();
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		permissions.setTemporaryCeiling(undefined);
+		forgetController();
 		context?.ui.setStatus("october-team", undefined);
 		context?.ui.setWidget("october-team", undefined);
 		context = undefined;

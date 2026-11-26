@@ -21,8 +21,8 @@ import lockfile from "proper-lockfile";
 import { getAgentDir, getBinDir, isBunBinary } from "./config.ts";
 import { spawnProcess, spawnProcessSync, waitForChildProcess } from "./utils/child-process.ts";
 
-const BUS_RELEASE = "v0.1.0-rc.4";
-const BUS_PROTOCOL = "0.1";
+export const BUS_RELEASE = "v0.1.0-rc.4";
+export const BUS_PROTOCOL = "0.1";
 const MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
 const START_TIMEOUT_MS = 8_000;
 
@@ -291,8 +291,7 @@ function scopeStorePath(): string {
 	return join(getAgentDir(), "team-scopes.json");
 }
 
-function readScopeStore(): TeamScopeStore {
-	const path = scopeStorePath();
+export function readScopeStore(path = scopeStorePath()): TeamScopeStore {
 	if (!existsSync(path)) return { version: 1, scopes: {} };
 	const stat = lstatSync(path);
 	if (!stat.isFile() || (process.platform !== "win32" && (stat.mode & 0o077) !== 0)) {

@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { DEFAULT_RADIUS_GATEWAY } from "@earendil-works/pi-ai/providers/radius-config";
 import { type Container, type EditorComponent, hyperlink, type TUI } from "@earendil-works/pi-tui";
 import { getAuthCredential } from "../../cli/auth-command.ts";
-import { getShareViewerUrl } from "../../config.ts";
+import { APP_TITLE, getShareViewerUrl } from "../../config.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
 import { exportSessionToJsonl } from "../../core/session-export.ts";
 import { BorderedLoader } from "./components/bordered-loader.ts";
@@ -66,7 +66,14 @@ export async function shareSession(context: SessionShareContext): Promise<void> 
 			context.showError(`Failed to export session: ${error instanceof Error ? error.message : "Unknown error"}`);
 			return;
 		}
-		if (await tryShareViaRadius(jsonlFile, context)) return;
+		const destination = context.session.settingsManager.getSessionShareDestination();
+		if (destination !== "gist") {
+			if (await tryShareViaRadius(jsonlFile, context)) return;
+			if (destination === "radius") {
+				context.showError("Radius authentication is not configured. Run '/login radius' first.");
+				return;
+			}
+		}
 
 		try {
 			const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8" });
@@ -118,7 +125,7 @@ async function tryShareViaRadius(tmpFile: string, context: SessionShareContext):
 		const body = fs.readFileSync(tmpFile);
 		const url = new URL("/v1/artifacts", DEFAULT_RADIUS_GATEWAY);
 		url.searchParams.set("visibility", "organization");
-		url.searchParams.set("title", "Pi session");
+		url.searchParams.set("title", `${APP_TITLE} session`);
 		const response = await fetch(url, {
 			method: "POST",
 			headers: {

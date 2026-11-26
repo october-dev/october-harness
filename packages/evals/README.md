@@ -7,7 +7,7 @@ Behavioral evals for Pi's coding agent, built with `vitest-evals`.
 Eval definitions are flat under `evals/`:
 
 - `*.docs.eval.ts` is a documentation-lift eval. `eval:docs` runs each case in isolated `without_docs` and `with_docs` containers and reports lift.
-- Other `*.eval.ts` files are host evals. `eval:host` runs them with Vitest on this machine. They are ordinary vitest-evals suites, not paired comparisons.
+- Other `*.eval.ts` files are host evals. `eval:host` runs the smoke suite; `eval:audit` runs the documentation audit. They are ordinary vitest-evals suites, not paired comparisons.
 
 Runner code lives in `src/`:
 
@@ -16,30 +16,130 @@ Runner code lives in `src/`:
 - `plan.ts` expands cases into `(case, variant, repetition)` tasks
 - `report.ts` reads Vitest JSON, pairs arms, and computes lift
 - `harness.ts` is the vitest-evals adapter
+- `scenario.ts`, `scenario-runner.ts`, `scenario-checks.ts`, `scenario-report.ts`, and `scenario-cli.ts` run deterministic scenarios, and `scenario-compare.ts` compares a run with a baseline (see [Scenario evals](#scenario-evals))
 
-Eval suites and their fixtures live under `evals/`. Image build files live in `docker/`.
+Eval suites and their fixtures live under `evals/`. Deterministic scenarios live under `scenarios/`. Image build files live in `docker/`.
+
+## Scenario evals
+
+Scenario evals check harness behavior without credentials or network. Each run replays a scripted faux model against a copy of a fixture workspace, then scores the end state. The runner imports built packages, so build once after `npm ci`:
+
+```bash
+npm run build
+npm run eval:scenarios -w packages/evals
+```
+
+The command prints a Markdown summary and writes `scenarios.json` and `summary.md` under `.eval/`. It exits nonzero if any scenario fails, and a scenario that cannot load or run is reported as a failure instead of stopping the others.
+
+During a run, tools see only a minimal environment (`PATH`, the temporary home, locale and temp directories), so a scenario cannot read provider keys or other host secrets. Scenarios run one at a time because each run changes the process environment. Pass `--scenarios <dir>` (repeatable) to run other packs instead of the bundled one, `--filter <text>` to select by path, and `--out <dir>` to choose the report directory.
+
+### Compare with a baseline
+
+Pass `--baseline <report>` (a report directory or its `scenarios.json`) to compare the new run with an earlier one, for example before and after an upstream merge or a release:
+
+```bash
+npm run eval:scenarios -w packages/evals -- --out .eval/baseline
+# ... change the harness ...
+npm run build # the runner imports the built packages
+npm run eval:scenarios -w packages/evals -- --baseline .eval/baseline --gate
+```
+
+The comparison is printed and written as `comparison.md` and `comparison.json` next to the new report. It lists newly failing checks, new run errors, missing and added scenarios, resolved checks, and the change in turns, tool calls, tokens and cost. A metric that either report lacks, such as the cost of a faux run, stays `n/a` instead of being counted as zero.
+
+Reports are compared only when they ran the same scenarios the same way: the same mode and model, and, for every scenario in both, the same definition, checks and workspace fixture (and the same `faux` script for faux runs). Each report records these as SHA-256 fingerprints, plus the October and evals versions, which may differ. A report from an older runner, a report missing or mangling a field the comparison reads, or any changed scenario makes the comparison incompatible: it lists the reasons and reports no regression or improvement. A baseline file that is missing or not valid JSON also exits 2.
+
+A scenario that fails to load is recorded under its directory path rather than its id, so it usually shows as its old id `missing` (a regression) plus the path `added`. A scenario that loads but cannot run keeps its id and fingerprint and is reported as `regressed` with the new error.
+
+Exit status with `--baseline`:
+
+| Status | Meaning |
+| --- | --- |
+| 2 | The reports cannot be compared. |
+| 1 | With `--gate`: a regression, meaning a newly failing check, a new run error, a scenario that passed and now fails, or a missing scenario. Without `--gate`: a scenario failed, as without a baseline. |
+| 0 | No regression (with `--gate`), or every scenario passed. |
+
+With `--gate`, a scenario that already failed in the baseline does not fail the gate. Run time is recorded but never gated, and nothing gates on turns, tokens or cost, because they vary between machines and real-model runs.
+
+### Run against a real model
+
+The same scenarios run against any configured model. The `faux` script is ignored, the checks are unchanged, and cost is reported when the model is priced:
+
+```bash
+npm run eval:scenarios -w packages/evals -- --provider anthropic --model claude-sonnet-5
+```
+
+**A real-model run executes the commands the model chooses, on this machine.** The workspace is a temporary copy and provider keys are hidden from tools, but `bash` and other tools still run on the host with your user's permissions. Run real-model evals only with models and scenario packs you trust, or inside a container.
+
+Credentials come from the host's stored login or environment, as for other evals, and are resolved before the run starts. Add `--record <dir>` to save each run's assistant messages as a new scenario pack with the same prompt, fixture and checks. Compaction summaries are recorded in place, so a run that compacts still replays in order. A compaction that makes two summary requests (a split turn with earlier history) is recorded as one step and will not replay exactly. The recorded pack then replays with no credentials:
+
+```bash
+npm run eval:scenarios -w packages/evals -- --provider anthropic --model claude-sonnet-5 --record recorded/
+npm run eval:scenarios -w packages/evals -- --scenarios recorded/
+```
+
+### Scenario packs
+
+A pack is any directory tree of scenarios. Extensions and providers can keep a pack next to their code, for example `my-extension/scenarios/`, and run it with `--scenarios my-extension/scenarios`. Use a pack-specific prefix in scenario ids (`my-extension/...`) so reports from several packs don't collide.
+
+A scenario is a directory with `scenario.json` and an optional `workspace/` fixture:
+
+```json
+{
+	"formatVersion": 1,
+	"id": "core/command-failure-recovery",
+	"prompt": "Build the project so dist/out.txt exists.",
+	"tools": ["bash"],
+	"faux": [
+		{ "toolCall": { "name": "bash", "args": { "command": "node scripts/missing-build.js" } } },
+		{ "toolCall": { "name": "bash", "args": { "command": "node scripts/build.js" } } },
+		{ "text": "Built dist/out.txt after retrying." }
+	],
+	"expect": [
+		{ "file": "dist/out.txt", "contains": "ok" },
+		{ "toolCalls": { "name": "bash", "min": 2, "errors": 1 } }
+	]
+}
+```
+
+- `faux` is the scripted model: each step is one model response, either `text`, a `toolCall`, or `toolCalls` with optional `text`. A compaction summary is a model request too, so it takes the next step. A run that stops before using every step is reported as an error.
+- `expect` lists the checks. `file` checks `exists`, `contains`, `notContains`, or a `matches` regex; `command` runs in the final workspace and checks `exitCode` and `outputContains`; `toolCalls` checks counts and errors, optionally for one tool; `finalText` checks the last assistant text; `maxTurns` bounds the turns; `compactions` bounds completed compactions (a failed or aborted one always fails the check); `busCall` requires a call to a fake Bus tool whose listed `arguments` match, optionally an exact `count`. Each check takes an optional `weight` (default 1).
+
+Optional fields set up the run:
+
+| Field | Effect |
+| --- | --- |
+| `model` | `contextWindow` and `maxTokens` for the faux model, to create context pressure. Ignored for a real model. |
+| `compaction` | Enables threshold compaction with `reserveTokens` and `keepRecentTokens`. Compaction is off otherwise. |
+| `permissionMode` | Loads the October permission gate in `ask`, `accept-edits`, or `bypass`. A headless run blocks whatever the mode would prompt for, as a tool error. |
+| `bus` | Serves `tools` from an in-process fake October Bus through the real Bus tools, as `mcp__october-bus__<name>`. Each tool returns its `result` text; every call is recorded for `busCall` checks. |
+
+The bundled `core/` pack covers editing, command-failure recovery, context pressure, permission denial, and Bus response correlation.
+- The score is the weighted share of passing checks. A scenario passes when every check passes and the run had no errors.
+- Faux usage is estimated, so cost is reported as `n/a`.
+
+Unknown fields are rejected, so a typo fails loading instead of silently skipping a check.
 
 ## Run evals
 
-Host evals (smoke, documentation audit) and documentation-lift evals need `PI_PROVIDER` and `PI_MODEL`.
+The host smoke eval, on-demand documentation audit, and documentation-lift evals need `PI_PROVIDER` and `PI_MODEL`.
 
 ```bash
 PI_PROVIDER=openai-codex PI_MODEL=gpt-5.6-sol npm run eval -w packages/evals
 ```
 
-That runs host evals, then the documentation comparison. Extra CLI flags after `--` go to `eval:docs` only.
+That runs the host smoke eval, then the documentation comparison. The documentation audit remains explicit because it scans every documentation page. Extra CLI flags after `--` go to `eval:docs` only.
 
-Host only:
+Host smoke only:
 
 ```bash
 PI_PROVIDER=openai-codex PI_MODEL=gpt-5.6-sol npm run eval:host -w packages/evals
 ```
 
-One host suite:
+Documentation audit:
 
 ```bash
 PI_PROVIDER=openai-codex PI_MODEL=gpt-5.6-sol \
-  npm run eval:host -w packages/evals -- evals/documentation-audit.eval.ts
+  npm run eval:audit -w packages/evals
 ```
 
 ## Run documentation comparisons

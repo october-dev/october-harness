@@ -171,4 +171,50 @@ describe("runPrintMode", () => {
 		expect(errorSpy).not.toHaveBeenCalled();
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
 	});
+
+	// #10799
+	it("warns on stderr and returns non-zero when the response was truncated", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ stopReason: "length" }));
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+		});
+
+		expect(exitCode).toBe(1);
+		expect(errorSpy).toHaveBeenCalled();
+	});
+
+	// A signal during the final disposal used to hit no handler and kill pi mid-dispose.
+	it("waits for the final disposal when SIGTERM arrives during it, and exits on a repeated SIGTERM", async () => {
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		let finishDispose = () => {};
+		runtimeHost.dispose.mockImplementation(
+			() =>
+				new Promise<void>((resolve) => {
+					finishDispose = resolve;
+				}),
+		);
+		const listenersBefore = process.listenerCount("SIGTERM");
+
+		const run = runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "Say done",
+		});
+		await vi.waitFor(() => expect(runtimeHost.dispose).toHaveBeenCalledTimes(1));
+		expect(process.listenerCount("SIGTERM")).toBe(listenersBefore + 1);
+
+		process.emit("SIGTERM");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(exitSpy).not.toHaveBeenCalled();
+		expect(runtimeHost.dispose).toHaveBeenCalledTimes(1);
+
+		process.emit("SIGTERM");
+		expect(exitSpy).toHaveBeenCalledWith(143);
+
+		finishDispose();
+		await run;
+		expect(process.listenerCount("SIGTERM")).toBe(listenersBefore);
+	});
 });

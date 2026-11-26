@@ -8,6 +8,7 @@ export interface PiManifest {
 	themes?: string[];
 	/** Raw `pi.capabilities` value, validated by the extension loader (see extensions/capabilities.ts). */
 	capabilities?: unknown;
+	changelogPath?: string;
 }
 
 const RESOURCE_FIELDS = ["extensions", "skills", "prompts", "themes"] as const;
@@ -41,6 +42,12 @@ export function readPiManifest(packageJsonPath: string): PiManifest | null {
 		if (pkg.pi.capabilities !== undefined) {
 			manifest.capabilities = pkg.pi.capabilities;
 		}
+
+		const changelogPath = pkg.pi.changelogPath;
+		if (typeof changelogPath === "string") {
+			manifest.changelogPath = changelogPath;
+		}
+
 		return manifest;
 	} catch {
 		return null;

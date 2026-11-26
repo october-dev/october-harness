@@ -110,21 +110,20 @@ afterEach(async () => {
 });
 
 describe("october auth session gate", () => {
-	it("is unavailable unless every Supabase variable is present", () => {
+	it("is unavailable unless the URL, anon key, and access token are present", () => {
 		clearSupabaseEnv();
 		expect(octoberSessionAvailable()).toBe(false);
 		process.env.OCTOBER_SUPABASE_URL = "https://project.supabase.co";
 		process.env.OCTOBER_SUPABASE_ANON_KEY = "anon-key";
-		process.env.OCTOBER_SUPABASE_ACCESS_TOKEN = "access-1";
 		expect(octoberSessionAvailable()).toBe(false);
-		process.env.OCTOBER_SUPABASE_REFRESH_TOKEN = "refresh-1";
+		process.env.OCTOBER_SUPABASE_ACCESS_TOKEN = "access-1";
 		expect(octoberSessionAvailable()).toBe(true);
 	});
 
-	it("accepts a Desktop session without a refresh token because the Bus owns refresh", () => {
+	it("accepts a session without a refresh token because the launching app owns refresh", () => {
 		setSupabaseEnv();
 		delete process.env.OCTOBER_SUPABASE_REFRESH_TOKEN;
-		expect(octoberSessionAvailable()).toBe(false);
+		expect(octoberSessionAvailable()).toBe(true);
 		process.env.OCTOBER_BUS_PORT = "9";
 		expect(octoberSessionAvailable()).toBe(true);
 	});

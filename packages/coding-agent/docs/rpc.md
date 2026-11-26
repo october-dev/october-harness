@@ -1,8 +1,8 @@
 # RPC Mode
 
-RPC mode runs Pi as a long-lived subprocess controlled through JSON records on stdin and stdout. Use it for language-independent integrations, process isolation, IDEs, and custom user interfaces.
+RPC mode runs October as a long-lived subprocess controlled through JSON records on stdin and stdout. Use it for language-independent integrations, process isolation, IDEs, and custom user interfaces.
 
-For an in-process Node.js or Bun integration, prefer the [SDK](sdk.md). For a subprocess-based TypeScript integration, prefer the exported `RpcClient`, which starts Pi, correlates responses, exposes typed command methods, and delivers events to listeners.
+For an in-process Node.js or Bun integration, prefer the [SDK](sdk.md). For a subprocess-based TypeScript integration, prefer the exported `RpcClient`, which starts October, correlates responses, exposes typed command methods, and delivers events to listeners.
 
 | Interface | Process boundary | Control model | Best fit |
 |---|---|---|---|
@@ -12,10 +12,10 @@ For an in-process Node.js or Bun integration, prefer the [SDK](sdk.md). For a su
 ## Start RPC mode
 
 ```bash
-pi --mode rpc --no-session
+october --mode rpc --no-session
 ```
 
-Normal CLI options still select the working folder, model, tools, resources, and session behavior. Common choices include `--provider`, `--model`, `--name`, `--no-session`, and `--session-dir`. See [Command Line](cli.md) for the complete, version-specific interface; `pi --help` is authoritative for the installed version.
+Normal CLI options still select the working folder, model, tools, resources, and session behavior. Common choices include `--provider`, `--model`, `--name`, `--no-session`, and `--session-dir`. See [Command Line](cli.md) for the complete, version-specific interface; `october --help` is authoritative for the installed version.
 
 RPC mode rejects `@file` prompt arguments. Send prompts through the [`prompt`](rpc-commands.md#prompt) command instead.
 
@@ -25,10 +25,10 @@ The protocol has four record families:
 
 | Direction | Record | Purpose |
 |---|---|---|
-| stdin | Command | Ask Pi to prompt, inspect state, change configuration, or manage the session |
+| stdin | Command | Ask October to prompt, inspect state, change configuration, or manage the session |
 | stdout | `response` | Report whether one command succeeded and return any command data |
 | stdout | Session event | Stream run, message, tool, queue, compaction, and retry activity |
-| Both | Extension UI record | Forward supported extension interactions between Pi and the client |
+| Both | Extension UI record | Forward supported extension interactions between October and the client |
 
 See [RPC Commands](rpc-commands.md), [JSON Event Stream](json.md), and [RPC Extension UI](rpc-extension-ui.md) for the canonical record definitions.
 
@@ -53,7 +53,7 @@ RPC uses strict JSONL framing. Write one complete JSON object per record and ter
 
 Do not use a generic line reader that treats Unicode line or paragraph separators as record boundaries. In particular, Node.js `readline` also splits on `U+2028` and `U+2029`, which are valid inside JSON strings.
 
-Read stdout continuously. Pi honors stdout backpressure, but a client that stops reading can stall the process. Honor stdin backpressure when writing commands. Stdout is reserved for protocol records; diagnostics and application logging go to stderr.
+Read stdout continuously. October honors stdout backpressure, but a client that stops reading can stall the process. Honor stdin backpressure when writing commands. Stdout is reserved for protocol records; diagnostics and application logging go to stderr.
 
 ## Run lifecycle
 
@@ -61,10 +61,12 @@ A successful `prompt` response means the prompt was accepted, queued, or handled
 
 ```json
 {"id":"req-2","type":"prompt","message":"Review this repository"}
-{"id":"req-2","type":"response","command":"prompt","success":true}
+{"id":"req-2","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}
 ```
 
-Continue consuming [events](json.md) after that response. `agent_end` marks the end of one low-level agent run, but retries, overflow recovery, compaction, steering, or follow-up work can still follow. Wait for `agent_settled` when the client needs to know Pi will not continue automatically.
+`data.disposition` reports what happened to the prompt. If it is `"handled"`, no run started for this prompt, so don't wait for `agent_settled`. See [RPC Commands](rpc-commands.md#prompt) for all values.
+
+Continue consuming [events](json.md) after that response. `agent_end` marks the end of one low-level agent run, but retries, overflow recovery, compaction, steering, or follow-up work can still follow. Wait for `agent_settled` when the client needs to know October will not continue automatically.
 
 Subscribe before sending a prompt to avoid missing a fast completion. `RpcClient.promptAndWait()` does this internally. If using separate `RpcClient` calls, install the event listener before `prompt()` and call `waitForIdle()` only while a run is active.
 
@@ -88,9 +90,11 @@ Clients must also handle child-process startup failures, unexpected exits, stder
 
 ## Shutdown
 
-Close the child's stdin to request an orderly shutdown. Pi disposes the active runtime before exiting. Clients should still handle process signals and unexpected exits.
+Close the child's stdin to request an orderly shutdown. October disposes the active runtime and waits for pending work to finish before exiting, so give it time to exit before killing it. Clients should still handle process signals and unexpected exits.
 
-An extension can also request shutdown through its extension context. Pi completes shutdown after the current command or after the active run emits `agent_settled`.
+SIGINT, SIGTERM, and SIGHUP also start an orderly shutdown. Once a shutdown has started, from either stdin EOF or a signal, a stdin EOF or a single signal does not interrupt it; a second signal exits at once. Closing stdin and sending SIGTERM together is safe.
+
+An extension can also request shutdown with `ctx.shutdown()`. If the session is idle and no command is being handled, October shuts down right away. Otherwise it shuts down once the current command finishes (for `prompt`, once the prompt settles) or the active run emits `agent_settled`. (A request made while an extension-started compaction is running waits for the next command or run to finish.)
 
 ## Minimal client
 
@@ -101,7 +105,7 @@ import json
 import subprocess
 
 process = subprocess.Popen(
-    ["pi", "--mode", "rpc", "--no-session"],
+    ["october", "--mode", "rpc", "--no-session"],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
 )
@@ -127,7 +131,7 @@ process.stdin.close()
 process.wait()
 ```
 
-For maintained TypeScript clients, use the checked [RPC client example](../examples/rpc-client.ts). It requires a built Pi CLI because the repository example points to `dist/cli.js`.
+For maintained TypeScript clients, use the checked [RPC client example](../examples/rpc-client.ts). It requires a built October CLI because the repository example points to `dist/cli.js`.
 
 ## Reference
 
@@ -136,8 +140,8 @@ For maintained TypeScript clients, use the checked [RPC client example](../examp
 - [RPC Extension UI](rpc-extension-ui.md): dialogs, notifications, responses, and limitations
 - [Message Types](message-types.md): messages and content blocks used by responses and events
 - [Session File Format](session-format.md): entries returned by session commands
-- [`rpc-types.ts`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts): exported TypeScript protocol definitions
-- [`RpcClient`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts): subprocess client implementation
+- [`rpc-types.ts`](https://github.com/october-dev/october-harness/blob/main/packages/coding-agent/src/modes/rpc/rpc-types.ts): exported TypeScript protocol definitions
+- [`RpcClient`](https://github.com/october-dev/october-harness/blob/main/packages/coding-agent/src/modes/rpc/rpc-client.ts): subprocess client implementation
 
 ## Moved reference anchors
 

@@ -27,7 +27,7 @@ const paths = tsconfig.compilerOptions?.paths;
 if (!paths) throw new Error(`Source runtime requires compilerOptions.paths in ${tsconfigPath}`);
 
 const aliases: SourceAlias[] = Object.entries(paths)
-	.filter(([pattern]) => pattern.startsWith("@earendil-works/"))
+	.filter(([pattern]) => pattern.startsWith("@earendil-works/") || pattern.startsWith("@october-dev/"))
 	.map(([pattern, replacements]) => {
 		const wildcard = pattern.indexOf("*");
 		if (wildcard !== -1 && pattern.indexOf("*", wildcard + 1) !== -1) {

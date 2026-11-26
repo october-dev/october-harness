@@ -1,22 +1,23 @@
 import { Container, getKeybindings, Spacer, Text } from "@earendil-works/pi-tui";
-import { APP_NAME } from "../../../config.ts";
-import { type TerminalTheme, theme } from "../theme/theme.ts";
+import { APP_TITLE } from "../../../config.ts";
+import { SYSTEM_THEME_NAME } from "../theme/system-theme.ts";
+import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
 export interface FirstTimeSetupResult {
-	theme: TerminalTheme;
+	theme: string;
 	shareAnalytics: boolean;
 }
 
 export interface FirstTimeSetupOptions {
-	detectedTheme: TerminalTheme;
-	onThemePreview: (themeName: TerminalTheme) => void;
+	onThemePreview: (themeName: string) => void;
 	onSubmit: (result: FirstTimeSetupResult) => void;
 	onCancel: () => void;
 }
 
-const THEME_OPTIONS: Array<{ value: TerminalTheme; label: string }> = [
+const THEME_OPTIONS: Array<{ value: string; label: string }> = [
+	{ value: SYSTEM_THEME_NAME, label: "System (matches your terminal colors)" },
 	{ value: "dark", label: "Dark" },
 	{ value: "light", label: "Light" },
 ];
@@ -26,7 +27,7 @@ const ANALYTICS_OPTIONS: Array<{ value: boolean; label: string }> = [
 	{ value: false, label: "Don't share" },
 ];
 
-const SETUP_LOGO_LINES = ["██████", "██  ██", "████  ██", "██    ██"];
+const SETUP_LOGO_LINES = [" ████ ", "██  ██", "██  ██", " ████ "];
 
 /** First-time setup dialog: theme choice and analytics opt-in. */
 export class FirstTimeSetupComponent extends Container {
@@ -38,11 +39,14 @@ export class FirstTimeSetupComponent extends Container {
 	constructor(options: FirstTimeSetupOptions) {
 		super();
 		this.options = options;
-		this.themeIndex = Math.max(
-			0,
-			THEME_OPTIONS.findIndex((option) => option.value === options.detectedTheme),
-		);
+		this.themeIndex = 0;
 		this.update();
+	}
+
+	/** Rebuild on theme changes, e.g. when the system theme receives the terminal's colors. */
+	override invalidate(): void {
+		this.update();
+		super.invalidate();
 	}
 
 	// Rebuild the whole dialog on every change so theme previews recolor all text.
@@ -53,13 +57,12 @@ export class FirstTimeSetupComponent extends Container {
 		this.addChild(new Text(theme.fg("accent", SETUP_LOGO_LINES.join("\n")), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(
-			new Text(theme.fg("accent", theme.bold(`Welcome to ${APP_NAME}, the minimal coding agent.`)), 1, 0),
+			new Text(theme.fg("accent", theme.bold(`Welcome to ${APP_TITLE}, the minimal coding agent.`)), 1, 0),
 		);
 		this.addChild(new Spacer(1));
 
 		if (this.step === "theme") {
 			this.addChild(new Text(theme.fg("text", "Pick a theme."), 1, 0));
-			this.addChild(new Text(theme.fg("muted", `Detected system appearance: ${this.options.detectedTheme}`), 1, 0));
 			this.addChild(new Spacer(1));
 			this.addOptionList(
 				THEME_OPTIONS.map((option) => option.label),
@@ -71,7 +74,7 @@ export class FirstTimeSetupComponent extends Container {
 				new Text(
 					theme.fg(
 						"muted",
-						"Opting in stores a tracking identifier in settings.json and enables anonymous\nusage analytics. This helps us to better debug, reproduce, and resolve issues\nand bugs within Pi. You can observe what is shared using /privacy and make\nchanges anytime in settings.json.",
+						`Opting in stores a tracking identifier in settings.json and enables anonymous\nusage analytics. This helps us to better debug, reproduce, and resolve issues\nand bugs within ${APP_TITLE}. You can observe what is shared using /privacy and make\nchanges anytime in settings.json.`,
 					),
 					1,
 					0,

@@ -1,85 +1,54 @@
-/**
- * Chord is a standalone application-composition runtime for agentic applications.
- */
+// Chord (`@earendil-works/chord`, v2, experimental): every layer's API for apps, and the store's surface for adapters
+// (Durable's `StoreStorage`), marked internal. The Node components and the client surfaces are subpaths (`/http`,
+// `/workers`, `/plugins`, `/app`, `/surfaces`, `/web`, `/react`, `/tui`).
+
+export * from "./contracts/index.ts";
+export * from "./data/index.ts";
+export * from "./documents/index.ts";
+export * from "./host/index.ts";
+export * from "./jobs/index.ts";
+export * from "./link/index.ts";
+export * from "./registries/index.ts";
+export * from "./state/index.ts";
+/** @internal The store's surface for adapters (slice 6b §2.1). */
+export { type DecodedRow, OwnerTable, StoreOwnerTables } from "./store/adapter.ts";
+/** @internal The sync layer's batch apply (slice 6b §1.6). */
+export { applyBatch } from "./store/apply-batch.ts";
+/** @internal */
+export type { Claimant } from "./store/claims.ts";
+/** @internal */
 export {
-	combineFacetLoaders,
-	createFacetHost,
-	createRemoteServiceBinding,
-	createStaticFacetLoader,
-	defineFacet,
-	defineService,
-	replicatedState,
-} from "./api.ts";
-export type { Draft } from "./delta/index.ts";
-export { isJsonValue } from "./json.ts";
-export {
-	isRemoteServiceErrorCode,
-	REMOTE_SERVICE_ERROR_CODES,
-	RemoteServiceError,
-	type RemoteServiceErrorCode,
-} from "./services/errors.ts";
-export {
-	createRemoteServiceEndpoint,
-	type RemoteServiceEndpoint,
-	RemoteServiceProvider,
-	type ServiceUpdatePublisher,
-} from "./services/provider.ts";
-export {
-	createServiceStateDecoder,
-	createServiceStateEncoder,
-	type ServiceStateDecoder,
-	type ServiceStateEncoder,
-} from "./services/state-codec.ts";
-export {
-	createServiceCatalogueCall,
-	createServiceSubscribeCall,
-	createServiceUnsubscribeCall,
-	decodeServiceControlCall,
-	parseServiceCall,
-	parseServiceCatalogue,
-	parseServiceProviderUpdate,
-	parseServiceSubscriptionSnapshot,
-	parseWireServiceProviderUpdate,
-	parseWireServiceSubscriptionSnapshot,
-	type ServiceControlCall,
-	type WireServiceInstanceSnapshot,
-	type WireServiceMemberSnapshot,
-	type WireServiceProviderUpdate,
-	type WireServiceSubscriptionSnapshot,
-} from "./services/wire.ts";
-export type {
-	AttachedReplicatedState,
-	Context,
-	ContextKey,
-	Facet,
-	FacetEnvironment,
-	FacetHost,
-	FacetLoader,
-	FacetOptions,
-	JsonRepresentation,
-	JsonValue,
-	LoadedFacets,
-	MutableReplicatedState,
-	RemoteServiceBinding,
-	RemoteServiceBindingOptions,
-	RemoteServiceSource,
-	RemoteServices,
-	RemoteServiceTransport,
-	ReplicatedState,
-	ReplicatedStateDelivery,
-	ReplicatedStateSource,
-	ReplicatedStateSourceAttachment,
-	ReplicatedStateSourceFrame,
-	ReplicatedStateSourceOptions,
-	Service,
-	ServiceCall,
-	ServiceCatalogueEntry,
-	ServiceInstanceAddress,
-	ServiceInstanceSnapshot,
-	ServiceMemberSnapshot,
-	ServiceMode,
-	ServiceProviderUpdate,
-	ServiceSpawner,
-	ServiceSubscription,
-	ServiceSubscriptionSnapshot,
-} from "./types.ts";
+	type DocumentAddress,
+	type DocumentContent,
+	type DocumentEntry,
+	type DocumentHistory,
+	type DocumentPoint,
+	type DocumentRecord,
+	type DocumentScope,
+	findDocument,
+	findDocumentEntry,
+	insertDocument,
+	listDocumentEntries,
+	listDocuments,
+	loadContent,
+	loadDocument,
+	type OwnedDocumentEntry,
+	readDocument,
+	readDocumentEntry,
+	retireRecord,
+	type StoredDocument,
+	writeContent,
+} from "./store/engine.ts";
+/** @internal */
+export type { WhereNode } from "./store/expression.ts";
+export * from "./store/index.ts";
+/** @internal */
+export type { EncodedRow } from "./store/rows.ts";
+/** @internal */
+export type { Order } from "./store/sql.ts";
+/** @internal */
+export type { StagedWrite, Step } from "./store/step.ts";
+/** @internal */
+export type { ChordStore, SeriesCommit, SeriesResult } from "./store/store.ts";
+export * from "./surfaces/index.ts";
+export { CHORD_TELEMETRY_SCHEMA, type ChordSpanName } from "./telemetry.ts";

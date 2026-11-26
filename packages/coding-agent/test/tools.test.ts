@@ -1,10 +1,10 @@
 import { applyPatch } from "diff";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.ts";
-import type { ExtensionContext } from "../src/core/extensions/types.ts";
+import type { ExtensionToolContext } from "../src/core/extensions/types.ts";
 import {
 	type BashOperations,
 	createBashTool,
@@ -12,11 +12,17 @@ import {
 	createLocalBashOperations,
 } from "../src/core/tools/bash.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
-import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
-import { createFindToolDefinition } from "../src/core/tools/find.ts";
+import {
+	applyEditsToNormalizedContent,
+	applyReplacementsToOriginal,
+	computeEditsDiff,
+	normalizeToLF,
+} from "../src/core/tools/edit-diff.ts";
+import { createFindToolDefinition, type FindOperations } from "../src/core/tools/find.ts";
 import { createGrepToolDefinition } from "../src/core/tools/grep.ts";
 import { createLsToolDefinition } from "../src/core/tools/ls.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { truncateHead } from "../src/core/tools/truncate.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 import {
 	createEditTool,
@@ -89,6 +95,7 @@ describe("Coding Agent Tools", () => {
 			// No truncation message since file fits within limits
 			expect(getTextOutput(result)).not.toContain("Use offset=");
 			expect(result.details).toBeUndefined();
+			expect(result.structuredContent).toBe(content);
 		});
 
 		it("should handle non-existent files", async () => {
@@ -217,6 +224,13 @@ describe("Coding Agent Tools", () => {
 			expect(imageBlock?.mimeType).toBe("image/png");
 			expect(typeof imageBlock?.data).toBe("string");
 			expect((imageBlock?.data ?? "").length).toBeGreaterThan(0);
+			// Programmatic callers get the same image as a block. https://github.com/earendil-works/pi/issues/10251
+			expect(result.structuredContent).toEqual({
+				type: "image",
+				data: imageBlock?.data,
+				mimeType: "image/png",
+				note: getTextOutput(result),
+			});
 		});
 
 		it("should read BMP files from disk as PNG image attachments", async () => {
@@ -490,10 +504,49 @@ describe("Coding Agent Tools", () => {
 			expect(result.details).toBeUndefined();
 		});
 
-		it("should handle command errors", async () => {
-			await expect(bashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
-				/(Command failed|code 1)/,
-			);
+		it("should report non-zero exit codes as error results with structured content", async () => {
+			const result = await bashTool.execute("test-call-9", { command: "echo out; exit 3" });
+			expect(result.isError).toBe(true);
+			expect(getTextOutput(result)).toBe("out\n\n\nCommand exited with code 3");
+			expect(result.structuredContent).toEqual({
+				output: "out\n",
+				truncated: false,
+				exit_code: 3,
+				wall_time_seconds: expect.any(Number),
+			});
+
+			const ok = await bashTool.execute("test-call-9b", { command: "echo fine" });
+			expect(ok.isError).toBeUndefined();
+			expect(ok.structuredContent).toMatchObject({ output: "fine\n", exit_code: 0 });
+
+			const empty = await bashTool.execute("test-call-9c", { command: "true" });
+			expect(getTextOutput(empty)).toBe("(no output)");
+			expect(empty.structuredContent).toMatchObject({ output: "", truncated: false });
+		});
+
+		it("should return up to 1 MiB of output in structured content", async () => {
+			// 3000 lines exceed the model-facing 2000 line limit but not 1 MiB.
+			const medium = await bashTool.execute("test-call-9d", { command: "seq 1 3000" });
+			expect(getTextOutput(medium)).not.toContain("\n1\n2\n");
+			expect(medium.details?.truncation?.truncated).toBe(true);
+			const mediumOutput = medium.structuredContent as { output: string; truncated: boolean };
+			expect(mediumOutput.truncated).toBe(false);
+			expect(mediumOutput.output).toBe(`${Array.from({ length: 3000 }, (_, i) => i + 1).join("\n")}\n`);
+
+			// About 2 MB: keeps the first and last 512 KiB around an omission marker.
+			const large = await bashTool.execute("test-call-9e", { command: "seq 1 300000" });
+			const largeOutput = large.structuredContent as {
+				output: string;
+				truncated: boolean;
+				full_output_path?: string;
+			};
+			expect(largeOutput.truncated).toBe(true);
+			expect(largeOutput.output.startsWith("1\n2\n3\n")).toBe(true);
+			expect(largeOutput.output.endsWith("299999\n300000\n")).toBe(true);
+			expect(largeOutput.output).toMatch(/\n\n\[\.\.\. \d+ bytes omitted \.\.\.\]\n\n/);
+			expect(Buffer.byteLength(largeOutput.output)).toBeLessThan(1024 * 1024 + 100);
+			expect(largeOutput.full_output_path).toBe(large.details?.fullOutputPath);
+			expect(readFileSync(largeOutput.full_output_path!, "utf-8").endsWith("300000\n")).toBe(true);
 		});
 
 		// Regression tests for https://github.com/earendil-works/pi/issues/9577
@@ -512,16 +565,17 @@ describe("Coding Agent Tools", () => {
 		);
 
 		it.skipIf(process.platform === "win32")(
-			"should reject signal-killed commands while preserving partial output",
+			"should report signal-killed commands as errors while preserving partial output",
 			async () => {
 				for (const { signal, exitCode } of [
 					{ signal: "KILL", exitCode: 137 },
 					{ signal: "TERM", exitCode: 143 },
 				]) {
-					const execution = bashTool.execute(`test-call-signal-${signal}`, {
+					const result = await bashTool.execute(`test-call-signal-${signal}`, {
 						command: `printf 'before-kill\\n'; kill -${signal} $$`,
 					});
-					await expect(execution).rejects.toThrow(
+					expect(result.isError).toBe(true);
+					expect(getTextOutput(result)).toMatch(
 						new RegExp(`before-kill\\s+Command exited with code ${exitCode}$`),
 					);
 				}
@@ -868,6 +922,237 @@ describe("Coding Agent Tools", () => {
 			expect(output).not.toContain("match two");
 		});
 
+		// https://github.com/earendil-works/pi/issues/11398
+		it("should keep context line numbers aligned with ripgrep when a file contains a lone CR", async () => {
+			const testFile = join(testDir, "lone-cr.txt");
+			writeFileSync(testFile, "before\rprogress\nneedle\nafter");
+
+			const result = await grepTool.execute("test-call-lone-cr", {
+				pattern: "needle",
+				path: testFile,
+				context: 1,
+			});
+
+			const output = getTextOutput(result);
+			// A lone CR inside a line is kept, as the read tool shows it, so the text can be copied into edit.
+			expect(output).toContain("lone-cr.txt-1- before\rprogress");
+			expect(output).toContain("lone-cr.txt:2: needle");
+			expect(output).toContain("lone-cr.txt-3- after");
+		});
+
+		// https://github.com/earendil-works/pi/issues/9276
+		it("should print overlapping context once and keep the last match's trailing context", async () => {
+			const testFile = join(testDir, "rg-context.txt");
+			writeFileSync(testFile, ["a", "match one", "b", "match two", "match three", "c", "match four"].join("\n"));
+
+			const result = await grepTool.execute("test-call-rg-context", {
+				pattern: "match",
+				path: testFile,
+				context: 1,
+				limit: 2,
+			});
+			expect(getTextOutput(result).split("\n\n")[0]).toBe(
+				[
+					"rg-context.txt-1- a",
+					"rg-context.txt:2: match one",
+					"rg-context.txt-3- b",
+					"rg-context.txt:4: match two",
+					// A match inside the last allowed match's trailing context is shown as context.
+					"rg-context.txt-5- match three",
+				].join("\n"),
+			);
+		});
+
+		// https://github.com/earendil-works/pi/issues/9276
+		it("should keep counting matches past the byte cap", async () => {
+			const testFile = join(testDir, "byte-cap.txt");
+			const line = `match ${"x".repeat(400)}`;
+			writeFileSync(testFile, Array.from({ length: 200 }, () => line).join("\n"));
+
+			const result = await grepTool.execute("test-call-byte-cap", {
+				pattern: "match",
+				path: testFile,
+				limit: 150,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("150 matches limit reached");
+			expect(output).toContain("50.0KB limit reached");
+			expect(result.details?.matchLimitReached).toBe(150);
+			expect(result.details?.truncation?.totalLines).toBe(150);
+		});
+
+		// https://github.com/earendil-works/pi/issues/9276
+		it("should report truncation when stored output ends exactly at the byte cap", async () => {
+			const testFile = join(testDir, "x");
+			// 103 rows of 500 bytes plus one of 12 bytes, with newlines, join to exactly 50KB; one more match follows.
+			writeFileSync(testFile, [...Array(103).fill("x".repeat(490)), "x".repeat(7), "extra x"].join("\n"));
+
+			const result = await grepTool.execute("test-call-byte-cap-boundary", {
+				pattern: "x",
+				path: testFile,
+				limit: 1000,
+			});
+
+			expect(getTextOutput(result)).toContain("[50.0KB limit reached]");
+			expect(result.details?.truncation?.totalLines).toBe(105);
+		});
+
+		// https://github.com/earendil-works/pi/issues/9276
+		it("should accept a huge context value", async () => {
+			const testFile = join(testDir, "huge-context.txt");
+			writeFileSync(testFile, "before\nneedle\nafter");
+
+			const result = await grepTool.execute("test-call-huge-context", {
+				pattern: "needle",
+				path: testFile,
+				context: 1e30,
+			});
+
+			expect(getTextOutput(result)).toBe(
+				["huge-context.txt-1- before", "huge-context.txt:2: needle", "huge-context.txt-3- after"].join("\n"),
+			);
+		});
+
+		// Context lines come from ripgrep, which decodes UTF-16; rereading the file as UTF-8 corrupted them (#11423).
+		it("should decode UTF-16 files with context", async () => {
+			const testFile = join(testDir, "utf16.txt");
+			writeFileSync(testFile, Buffer.from("\uFEFFbefore\nneedle 中文\nafter\n", "utf16le"));
+
+			const result = await grepTool.execute("test-call-utf16-context", {
+				pattern: "needle",
+				path: testFile,
+				context: 1,
+			});
+
+			expect(getTextOutput(result)).toBe(
+				["utf16.txt-1- before", "utf16.txt:2: needle 中文", "utf16.txt-3- after"].join("\n"),
+			);
+		});
+
+		it("should keep a lone CR inside a line and strip CRLF terminators", async () => {
+			const testFile = join(testDir, "mixed-cr.txt");
+			writeFileSync(testFile, "one\rtwo needle\r\nnext\r\n");
+
+			const plain = await grepTool.execute("test-call-cr-plain", { pattern: "needle", path: testFile });
+			expect(getTextOutput(plain)).toBe("mixed-cr.txt:1: one\rtwo needle");
+
+			const withContext = await grepTool.execute("test-call-cr-context", {
+				pattern: "needle",
+				path: testFile,
+				context: 1,
+			});
+			expect(getTextOutput(withContext)).toBe(
+				["mixed-cr.txt:1: one\rtwo needle", "mixed-cr.txt-2- next"].join("\n"),
+			);
+		});
+
+		it("should not report the match limit when exactly limit matches exist", async () => {
+			const testFile = join(testDir, "exact-limit.txt");
+			writeFileSync(testFile, ["match one", "x", "match two", "y"].join("\n"));
+
+			for (const context of [0, 1]) {
+				const exact = await grepTool.execute("test-call-exact-limit", {
+					pattern: "match",
+					path: testFile,
+					limit: 2,
+					context,
+				});
+				expect(getTextOutput(exact)).not.toContain("limit reached");
+				expect(exact.details?.matchLimitReached).toBeUndefined();
+
+				const over = await grepTool.execute("test-call-over-limit", {
+					pattern: "match",
+					path: testFile,
+					limit: 1,
+					context,
+				});
+				expect(getTextOutput(over)).toContain("[1 matches limit reached. Use limit=2 for more, or refine pattern]");
+				expect(over.details?.matchLimitReached).toBe(1);
+			}
+
+			const fractional = await grepTool.execute("test-call-fractional-limit", {
+				pattern: "match",
+				path: testFile,
+				limit: 1.5,
+			});
+			expect(getTextOutput(fractional)).toContain(
+				"[1 matches limit reached. Use limit=2 for more, or refine pattern]",
+			);
+		});
+
+		// https://github.com/earendil-works/pi/issues/11203
+		it("should ignore RIPGREP_CONFIG_PATH", async () => {
+			const configFile = join(testDir, "rg-config");
+			const testFile = join(testDir, "fixture.txt");
+			writeFileSync(configFile, "--fixed-strings\n");
+			writeFileSync(testFile, "aXb\na.b\n");
+
+			const previous = process.env.RIPGREP_CONFIG_PATH;
+			process.env.RIPGREP_CONFIG_PATH = configFile;
+			try {
+				const result = await grepTool.execute("test-call-rg-config", {
+					pattern: "a.b",
+					path: testFile,
+					literal: false,
+				});
+
+				const output = getTextOutput(result);
+				expect(output).toContain("fixture.txt:1: aXb");
+				expect(output).toContain("fixture.txt:2: a.b");
+			} finally {
+				if (previous === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+				else process.env.RIPGREP_CONFIG_PATH = previous;
+			}
+		});
+
+		// https://github.com/earendil-works/pi/issues/11807
+		it("should resolve folder globs relative to path", async () => {
+			const repo = join(testDir, "repo");
+			mkdirSync(join(repo, "migrations", "main"), { recursive: true });
+			mkdirSync(join(repo, "nested", "migrations", "main"), { recursive: true });
+			writeFileSync(join(repo, "migrations", "main", "a.js"), "hello\n");
+			writeFileSync(join(repo, "nested", "migrations", "main", "b.js"), "hello\n");
+			// rg canonicalizes its cwd, so a symlinked path must still anchor the glob.
+			const link = join(testDir, "repo-link");
+			symlinkSync(repo, link);
+
+			for (const searchPath of [repo, link]) {
+				const anchored = await grepTool.execute("test-call-glob-anchored", {
+					pattern: "hello",
+					path: searchPath,
+					glob: "migrations/main/*.js",
+				});
+				// The decoy under nested/ stays out: the glob is anchored at path.
+				expect(getTextOutput(anchored)).toBe("migrations/main/a.js:1: hello");
+
+				const anyDepth = await grepTool.execute("test-call-glob-any-depth", {
+					pattern: "hello",
+					path: searchPath,
+					glob: "**/migrations/main/*.js",
+				});
+				expect(getTextOutput(anyDepth).split("\n").sort()).toEqual([
+					"migrations/main/a.js:1: hello",
+					"nested/migrations/main/b.js:1: hello",
+				]);
+
+				// rg matches nothing for a leading "./", so the tool drops it.
+				const dotSlash = await grepTool.execute("test-call-glob-dot-slash", {
+					pattern: "hello",
+					path: searchPath,
+					glob: "./migrations/main/*.js",
+				});
+				expect(getTextOutput(dotSlash)).toBe("migrations/main/a.js:1: hello");
+
+				const negated = await grepTool.execute("test-call-glob-negated-dot-slash", {
+					pattern: "hello",
+					path: searchPath,
+					glob: "!./migrations/**",
+				});
+				expect(getTextOutput(negated)).toBe("nested/migrations/main/b.js:1: hello");
+			}
+		});
+
 		it("should treat flag-like patterns as search text", async () => {
 			const marker = join(testDir, "grep-injection-marker");
 			const payload = join(testDir, "payload.sh");
@@ -939,6 +1224,93 @@ describe("Coding Agent Tools", () => {
 
 			expect(getTextOutput(result)).toContain("No files found matching pattern");
 		});
+
+		// #7121: exactly `limit` matches must not report that the limit was reached.
+		it("should report the result limit only when more results exist", async () => {
+			for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(join(testDir, name), name);
+
+			const exact = await findTool.execute("test-call-find-exact-limit", {
+				pattern: "*.txt",
+				path: testDir,
+				limit: 3,
+			});
+			expect(getTextOutput(exact).split("\n").sort()).toEqual(["a.txt", "b.txt", "c.txt"]);
+			expect(exact.details).toBeUndefined();
+
+			const over = await findTool.execute("test-call-find-over-limit", {
+				pattern: "*.txt",
+				path: testDir,
+				limit: 2,
+			});
+			const [listing, notice] = getTextOutput(over).split("\n\n");
+			expect(listing.split("\n")).toHaveLength(2);
+			expect(notice).toBe("[2 results limit reached. Use limit=4 for more, or refine pattern]");
+			expect(over.details).toEqual({ resultLimitReached: 2 });
+		});
+
+		it("should treat limits below 1 as 1 and floor fractional limits", async () => {
+			for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(join(testDir, name), name);
+
+			for (const limit of [0, -5, 0.5, 1.9]) {
+				const result = await findTool.execute("test-call-find-small-limit", {
+					pattern: "*.txt",
+					path: testDir,
+					limit,
+				});
+				const [listing, notice] = getTextOutput(result).split("\n\n");
+				expect(listing.split("\n")).toHaveLength(1);
+				expect(notice).toBe("[1 results limit reached. Use limit=2 for more, or refine pattern]");
+				expect(result.details).toEqual({ resultLimitReached: 1 });
+			}
+		});
+
+		it("should report full output totals past the byte cap", async () => {
+			// 300 names of 200 bytes join to about 60KB; equal lengths make the kept prefix independent of fd's order.
+			const names = Array.from({ length: 300 }, (_, i) => `${String(i).padStart(3, "0")}${"x".repeat(193)}.txt`);
+			for (const name of names) writeFileSync(join(testDir, name), "");
+
+			const result = await findTool.execute("test-call-find-byte-cap", { pattern: "*.txt", path: testDir });
+			const expected = truncateHead(names.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
+			expect(result.details?.truncation).toEqual({ ...expected, content: result.details?.truncation?.content });
+			expect(result.details?.truncation?.content.split("\n")).toHaveLength(expected.outputLines);
+			expect(result.details?.resultLimitReached).toBeUndefined();
+			expect(getTextOutput(result)).toMatch(/\n\n\[50\.0KB limit reached\]$/);
+		});
+
+		it("should ask custom glob operations for one result past the limit", async () => {
+			const requestedLimits: number[] = [];
+			const createTool = (results: string[]) => {
+				const operations: FindOperations = {
+					exists: () => true,
+					glob: (_pattern, _cwd, options) => {
+						requestedLimits.push(options.limit);
+						return results.slice(0, options.limit);
+					},
+				};
+				return createFindToolDefinition(testDir, { operations });
+			};
+
+			const exact = await createTool(["a.txt", "b.txt"]).execute(
+				"test-call-find-custom-exact",
+				{ pattern: "*.txt", limit: 2 },
+				undefined,
+				undefined,
+				fakeCtx(testDir),
+			);
+			expect(getTextOutput(exact)).toBe("a.txt\nb.txt");
+			expect(exact.details).toBeUndefined();
+
+			const over = await createTool(["a.txt", "b.txt", "c.txt"]).execute(
+				"test-call-find-custom-over",
+				{ pattern: "*.txt", limit: 0 },
+				undefined,
+				undefined,
+				fakeCtx(testDir),
+			);
+			expect(getTextOutput(over)).toBe("a.txt\n\n[1 results limit reached]");
+			expect(over.details).toEqual({ resultLimitReached: 1 });
+			expect(requestedLimits).toEqual([3, 2]);
+		});
 	});
 
 	describe("ls tool", () => {
@@ -952,11 +1324,29 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain(".hidden-file");
 			expect(output).toContain(".hidden-dir/");
 		});
+
+		it("should treat limits below 1 as 1 and floor fractional limits", async () => {
+			for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(join(testDir, name), name);
+
+			for (const limit of [0, -5, 0.5, 1.9]) {
+				const result = await lsTool.execute("test-call-ls-small-limit", { path: testDir, limit });
+				expect(getTextOutput(result)).toBe("a.txt\n\n[1 entries limit reached. Use limit=2 for more]");
+				expect(result.details).toEqual({ entryLimitReached: 1 });
+			}
+		});
+
+		it("should report the entry limit only when more entries exist", async () => {
+			for (const name of ["a.txt", "b.txt", "c.txt"]) writeFileSync(join(testDir, name), name);
+
+			const result = await lsTool.execute("test-call-ls-exact-limit", { path: testDir, limit: 3 });
+			expect(getTextOutput(result)).toBe("a.txt\nb.txt\nc.txt");
+			expect(result.details).toBeUndefined();
+		});
 	});
 });
 
-function fakeCtx(cwd: string): ExtensionContext {
-	return { cwd } as ExtensionContext;
+function fakeCtx(cwd: string): ExtensionToolContext {
+	return { cwd } as ExtensionToolContext;
 }
 
 describe("tool cwd resolution", () => {
@@ -1383,5 +1773,142 @@ describe("edit tool CRLF handling", () => {
 
 		const content = readFileSync(testFile, "utf-8");
 		expect(content).toBe("\uFEFFfirst\r\nSECOND\r\nthird\r\nFOURTH\r\n");
+	});
+
+	it("should write CRLF for inserted lines in CRLF files", async () => {
+		const testFile = join(testDir, "crlf-bytes.txt");
+		writeFileSync(testFile, "first\r\nsecond\r\nthird");
+
+		await editTool.execute("test-crlf-bytes", {
+			path: testFile,
+			edits: [{ oldText: "second\nthird", newText: "2a\r\n2b\nthird!" }],
+		});
+
+		expect(readFileSync(testFile).equals(Buffer.from("first\r\n2a\r\n2b\r\nthird!"))).toBe(true);
+	});
+
+	it("should write LF for inserted lines in LF files", async () => {
+		const testFile = join(testDir, "lf-bytes.txt");
+		writeFileSync(testFile, "first\nsecond\nthird");
+
+		await editTool.execute("test-lf-bytes", {
+			path: testFile,
+			edits: [{ oldText: "second\nthird", newText: "2a\r\n2b\nthird!" }],
+		});
+
+		expect(readFileSync(testFile).equals(Buffer.from("first\n2a\n2b\nthird!"))).toBe(true);
+	});
+
+	// #8544
+	it("should keep CRLF lines when the first line ends with LF", async () => {
+		const testFile = join(testDir, "mixed-lf-first.txt");
+		writeFileSync(testFile, "a\nb\r\nX = 1\r\n");
+
+		await editTool.execute("test-mixed-lf-first", {
+			path: testFile,
+			edits: [{ oldText: "X = 1", newText: "X = 2" }],
+		});
+
+		expect(readFileSync(testFile).equals(Buffer.from("a\nb\r\nX = 2\r\n"))).toBe(true);
+	});
+
+	// #8544
+	it("should keep LF lines when the first line ends with CRLF", async () => {
+		const testFile = join(testDir, "mixed-crlf-first.txt");
+		writeFileSync(testFile, "a\r\nb\nc");
+
+		await editTool.execute("test-mixed-crlf-first", { path: testFile, edits: [{ oldText: "c", newText: "C" }] });
+
+		expect(readFileSync(testFile).equals(Buffer.from("a\r\nb\nC"))).toBe(true);
+	});
+
+	// #8544
+	it("should keep a lone CR in an untouched line", async () => {
+		const testFile = join(testDir, "lone-cr.txt");
+		writeFileSync(testFile, "a\rb\nX = 1\n");
+
+		await editTool.execute("test-lone-cr", { path: testFile, edits: [{ oldText: "X = 1", newText: "X = 2" }] });
+
+		expect(readFileSync(testFile).equals(Buffer.from("a\rb\nX = 2\n"))).toBe(true);
+	});
+
+	// #8544
+	it("should give inserted lines the line ending of the line they replace in multi-edit mode", async () => {
+		const testFile = join(testDir, "mixed-multi.txt");
+		writeFileSync(testFile, "lf1\nlf2\ncr1\r\ncr2\r\n");
+
+		await editTool.execute("test-mixed-multi", {
+			path: testFile,
+			edits: [
+				{ oldText: "lf1\n", newText: "A\nB\n" },
+				{ oldText: "cr1\n", newText: "C\nD\n" },
+			],
+		});
+
+		expect(readFileSync(testFile).equals(Buffer.from("A\nB\nlf2\nC\r\nD\r\ncr2\r\n"))).toBe(true);
+	});
+
+	// #8544
+	it("should keep untouched line endings when fuzzy matching widens the edit to whole lines", async () => {
+		const testFile = join(testDir, "mixed-fuzzy.txt");
+		writeFileSync(testFile, "a\r\nfoo   \r\nb\n");
+
+		await editTool.execute("test-mixed-fuzzy", { path: testFile, edits: [{ oldText: "foo\n", newText: "FOO\n" }] });
+
+		expect(readFileSync(testFile).equals(Buffer.from("a\r\nFOO\r\nb\n"))).toBe(true);
+	});
+
+	// A kept CR and an LF meeting at a splice seam must not merge into one CRLF line break.
+	it("should not merge a kept lone CR with a line feed after it", async () => {
+		const cases = [
+			// Inserted text starting with LF after a kept lone CR.
+			{ edit: { oldText: "b", newText: "\nB" }, written: "a\r\n\nB\nc", diffed: "a\n\nB\nc" },
+			// Deleted text between a kept lone CR and a kept LF.
+			{ edit: { oldText: "b", newText: "" }, written: "a\r\n\nc", diffed: "a\n\nc" },
+		];
+		for (const [index, { edit, written, diffed }] of cases.entries()) {
+			const testFile = join(testDir, `cr-seam-${index}.txt`);
+			writeFileSync(testFile, "a\rb\nc");
+
+			const result = await editTool.execute("test-cr-seam", { path: testFile, edits: [edit] });
+
+			expect(readFileSync(testFile).equals(Buffer.from(written))).toBe(true);
+			expect(applyPatch("a\nb\nc", result.details?.patch ?? "")).toBe(diffed);
+		}
+	});
+
+	it("should not merge an inserted CR line ending with a kept line feed after it", () => {
+		// Only files without LF give inserted text CR line endings, so check the seam directly.
+		const written = applyReplacementsToOriginal("a\rb\nc", [{ matchIndex: 2, matchLength: 1, newText: "\r" }]);
+
+		expect(normalizeToLF(written)).toBe("a\n\n\nc");
+	});
+
+	it("should write content that normalizes to the diffed content for random mixed line endings", () => {
+		let seed = 1;
+		const random = (n: number): number => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			// The high bits: the low bits of this generator repeat with a short period.
+			return Math.floor((seed / 0x80000000) * n);
+		};
+		const endings = ["\n", "\r\n", "\r", ""];
+		for (let run = 0; run < 3000; run++) {
+			let original = "";
+			for (let line = random(12) + 1; line > 0; line--) {
+				original += `w${random(100)}${random(5) === 0 ? "  " : ""}${endings[random(4)]}`;
+			}
+			const normalized = normalizeToLF(original);
+			const start = random(normalized.length);
+			const oldText = normalized.slice(start, start + 1 + random(12));
+			const newText = ["", "\n", "X\n", "\nY", "\r", "Z"][random(6)];
+			let applied: ReturnType<typeof applyEditsToNormalizedContent>;
+			try {
+				applied = applyEditsToNormalizedContent(normalized, [{ oldText, newText }], "f.txt");
+			} catch {
+				continue; // duplicate, not found or no change
+			}
+
+			expect(normalizeToLF(applyReplacementsToOriginal(original, applied.replacements))).toBe(applied.newContent);
+		}
 	});
 });

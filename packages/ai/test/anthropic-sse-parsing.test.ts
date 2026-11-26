@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { transformMessages } from "../src/api/transform-messages.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
-import type { Model, ToolCall } from "../src/types.ts";
+import type { Api, Model, ToolCall } from "../src/types.ts";
 
 function createSseResponse(events: Array<{ event: string; data: string }>): Response {
 	const body = events.map(({ event, data }) => `event: ${event}\ndata: ${data}\n`).join("\n");
@@ -110,6 +110,71 @@ function createResponseModelSseResponse(model: string, contentBlock: ResponseCon
 }
 
 describe("Anthropic raw SSE parsing", () => {
+	it("forwards parsed provider stream events in order", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const providerEvents: unknown[] = [];
+		const eventModels: Model<Api>[] = [];
+		const result = await streamAnthropic(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
+			{
+				client: createFakeAnthropicClient(createSseResponse(minimalAnthropicEvents)),
+				onProviderStreamEvent: async (event, eventModel) => {
+					await Promise.resolve();
+					providerEvents.push(event);
+					eventModels.push(eventModel);
+				},
+			},
+		).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(providerEvents.map((event) => (event as { type: string }).type)).toEqual([
+			"message_start",
+			"content_block_start",
+			"content_block_delta",
+			"content_block_stop",
+			"message_delta",
+			"message_stop",
+		]);
+		expect(eventModels).toEqual([model, model, model, model, model, model]);
+	});
+
+	// Regression test for #9980.
+	it("uses the total reported by OpenRouter's Anthropic Messages endpoint", async () => {
+		const events = minimalAnthropicEvents.map((event) => ({ ...event }));
+		const delta = JSON.parse(events[4].data) as {
+			usage: Record<string, unknown>;
+		};
+		// These fields were captured from a production OpenRouter stream even though its
+		// MessagesDeltaEvent OpenAPI schema and the Anthropic SDK omit them.
+		delta.usage = {
+			...delta.usage,
+			cost: 0.004,
+			is_byok: false,
+			cost_details: { upstream_inference_cost: 0.003 },
+		};
+		events[4].data = JSON.stringify(delta);
+
+		const model = {
+			...getModel("openrouter", "anthropic/claude-haiku-4.5"),
+			provider: "openrouter-work",
+		};
+		const result = await streamAnthropic(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
+			{ client: createFakeAnthropicClient(createSseResponse(events)) },
+		).result();
+
+		expect(result.usage.cost.total).toBe(0.004);
+		expect(result.usage.cost.totalFromProvider).toBe(true);
+		expect(
+			result.usage.cost.input +
+				result.usage.cost.output +
+				result.usage.cost.cacheRead +
+				result.usage.cost.cacheWrite,
+		).not.toBe(result.usage.cost.total);
+	});
+
 	it("keeps signed thinking replayable when a proxy relabels the model", async () => {
 		// Regression test for earendil-works/pi#9188.
 		const model = getModel("anthropic", "claude-opus-5");

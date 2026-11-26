@@ -1,8 +1,8 @@
 # Custom Providers
 
-A provider extension connects Pi to a model service that needs custom authentication, model discovery, request handling, or streaming. If the service already speaks a supported API, configure it in `models.json` instead.
+A provider extension connects October to a model service that needs custom authentication, model discovery, request handling, or streaming. If the service already speaks a supported API, configure it in `models.json` instead.
 
-Provider extensions run inside Pi and can inspect credentials, prompts, tool definitions, model responses, and usage. Treat them as trusted code and avoid logging secrets or provider payloads.
+Provider extensions run inside October and can inspect credentials, prompts, tool definitions, model responses, and usage. Treat them as trusted code and avoid logging secrets or provider payloads.
 
 ## Choose the smallest integration
 
@@ -18,16 +18,106 @@ A provider extension is an [extension](extensions.md), so it follows the same lo
 
 ## Register a provider
 
-Call `pi.registerProvider()` from the extension factory. Pi waits for asynchronous factories before startup continues, so providers registered there are available to startup model selection and `pi --list-models`.
+Call `pi.registerProvider()` from the extension factory. October waits for asynchronous factories before startup continues, so providers registered there are available to startup model selection and `october --list-models`.
 
 There are two registration forms:
 
 - Register a complete `Provider` from `@earendil-works/pi-ai` for native authentication, filtering, discovery, refresh, and streaming behavior.
 - Register a provider name with `ProviderConfig` for the legacy configuration form used by existing extensions.
 
-Prefer a complete provider for new integrations that own more than static endpoint and model metadata. Pi composes `models.json` overrides above a registered native provider.
+Prefer a complete provider for new integrations that own more than static endpoint and model metadata. October composes `models.json` overrides above a registered native provider.
 
-Registering only `baseUrl` or `headers` for an existing provider preserves its built-in models. Supplying `models` in the legacy form replaces the models supplied by that registration.
+Registering only `baseUrl` or `headers` for an existing provider preserves its built-in models. Supplying `models` in the legacy form replaces that provider's models across chat, image, and classifier operations. An omitted `type` means `"chat"`; image and classifier models require explicit discriminants and implementations keyed by their `api` values through the `images` and `classifiers` fields.
+
+### Redirect an existing provider
+
+Register only the fields that should change. This keeps the provider's built-in catalog, authentication, API implementation, and compatibility settings:
+
+```typescript
+import type { ExtensionAPI } from "@october-dev/october";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerProvider("anthropic", {
+    baseUrl: "https://gateway.example.com/anthropic",
+    headers: {
+      "X-Gateway-Key": "$GATEWAY_API_KEY",
+    },
+  });
+}
+```
+
+Use this form for a proxy or gateway that preserves the upstream protocol. Do not copy the built-in model list into the extension because doing so turns a small endpoint override into a catalog replacement that can drift.
+
+### Register a compatible endpoint
+
+When a service implements a supported protocol but has its own model catalog, register the endpoint and only the models the service actually exposes:
+
+```typescript
+import type { ExtensionAPI } from "@october-dev/october";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerProvider("acme", {
+    name: "Acme AI",
+    baseUrl: "https://api.acme.example/v1",
+    apiKey: "$ACME_API_KEY",
+    api: "openai-completions",
+    models: [
+      {
+        type: "chat",
+        id: "acme-chat",
+        name: "Acme Chat",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128000,
+        maxTokens: 8192,
+      },
+    ],
+  });
+}
+```
+
+Prefer `models.json` for this case when no executable extension behavior is needed. Use an extension when registration depends on runtime discovery, custom authentication, or code shared with other extension features.
+
+### Register mixed-operation models
+
+A mixed-operation provider can register non-chat models and their implementations together:
+
+```typescript
+pi.registerProvider("media-tools", {
+  apiKey: "$MEDIA_TOOLS_API_KEY",
+  models: [
+    {
+      type: "image",
+      id: "image-v1",
+      name: "Image V1",
+      api: "media-images",
+      baseUrl: "https://media.example.com/v1",
+      input: ["text"],
+      output: ["image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    },
+    {
+      type: "classifier",
+      id: "classifier-v1",
+      name: "Classifier V1",
+      api: "media-classifier",
+      baseUrl: "https://media.example.com/v1",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 64000,
+    },
+  ],
+  images: {
+    "media-images": { generateImages: async (model, context, options) => result },
+  },
+  classifiers: {
+    "media-classifier": { classify: async (model, context, options) => result },
+  },
+});
+```
+
+Model-level `baseUrl` values take precedence over the provider endpoint. If no `models` list is supplied, built-in models of every operation remain registered. Equal model IDs in different operations remain distinct, including their model-specific headers.
 
 Calls made after initial extension loading take effect immediately. Use `pi.unregisterProvider()` to remove the dynamic provider and restore built-in behavior that it replaced.
 
@@ -44,17 +134,19 @@ Static providers can resolve an API key from a literal, environment interpolatio
 
 Use native provider authentication when the integration needs stored credentials, custom resolution, provider-scoped environment, or multiple login methods.
 
-An OAuth provider supplies a display name, login flow, token refresh, and access-token resolution. After registration it appears in `/login`, and Pi stores returned credentials in `~/.pi/agent/auth.json`.
+An OAuth provider supplies a display name, login flow, token refresh, and access-token resolution. After registration it appears in `/login`, and October stores returned credentials in `~/.october/agent/auth.json`.
 
 OAuth callbacks are UI-neutral. They can open an authorization URL, show a device code, report progress, request input, or ask the user to choose a login method. Honor cancellation and the supplied abort signal during network requests.
+
+Press Enter (`tui.select.confirm`) to open the device-login URL and copy the code, or log in manually. Providers can disable either action with `openBrowserOnConfirm: false` or `copyCodeOnConfirm: false` in `onDeviceCode` or native `AuthEvent` notifications.
 
 Never write access tokens, refresh tokens, authorization headers, or complete provider responses to ordinary logs.
 
 ## Supply and refresh models
 
-Every model needs an ID, display name, input capabilities, context window, output limit, reasoning support, and cost metadata. Choose the API implementation at the provider level unless one model requires an override.
+Every model needs an ID, display name, input capabilities, and cost metadata. Chat and classifier models also need a context window; chat models need an output limit and reasoning support; image models declare their output modalities. Choose the API implementation at the provider level unless one model requires an override.
 
-Set `promptCache.short` or `promptCache.long` to the provider's best-effort cache lifetime in seconds when Pi should keep an idle prompt cache warm. Leave them unset to disable cache warming for that retention tier.
+Set `promptCache.short` or `promptCache.long` to the provider's best-effort cache lifetime in seconds when October should keep an idle prompt cache warm. Leave them unset to disable cache warming for that retention tier.
 
 Compatibility flags describe verified differences in an otherwise supported API. Do not enable them based only on an endpoint claiming compatibility.
 
@@ -65,23 +157,23 @@ Use `refreshModels` when the available catalog comes from a live service. Pass `
 The two registration forms have different refresh contracts:
 
 - A complete `Provider` returns nothing. It calls `context.publish({ update })` to install provider-owned model state, after which its synchronous `getModels()` exposes the latest list.
-- Legacy `ProviderConfig.refreshModels` returns model definitions. Pi replaces that registration’s live models with the returned list and applies any requested persistence.
+- Legacy `ProviderConfig.refreshModels` returns mixed-operation model definitions. October replaces that registration’s live models with the returned list and applies any requested persistence.
 
 Publish persisted catalog data only when it should survive across runs. A live service such as llama.cpp can update its in-memory list without persisting it; a remote catalog can retain a snapshot for offline startup.
 
 ## Reuse a supported streaming API
 
-Use one of Pi AI’s API implementations whenever the provider protocol matches it.
+Use one of pi-ai’s API implementations whenever the provider protocol matches it.
 
 Supported implementations cover Anthropic Messages, OpenAI Chat Completions and Responses, Google Generative AI and Vertex, Azure OpenAI Responses, Mistral Conversations, and Bedrock Converse.
 
 The provider can still customize authentication, base URLs, headers, model filtering, and discovery while delegating request conversion and streaming to an existing API implementation.
 
-This is safer than copying a stream implementation because it preserves Pi’s message conversion, tool handling, usage accounting, cancellation, and compatibility behavior.
+This is safer than copying a stream implementation because it preserves October’s message conversion, tool handling, usage accounting, cancellation, and compatibility behavior.
 
 ## Implement custom streaming
 
-Implement `streamSimple` only when no existing API implementation can represent the service. Study the implementations under [`packages/ai/src/api`](https://github.com/earendil-works/pi/tree/main/packages/ai/src/api) first.
+Implement `streamSimple` only when no existing API implementation can represent the service. Study the implementations under [`packages/ai/src/api`](https://github.com/october-dev/october-harness/tree/main/packages/ai/src/api) first.
 
 The stream receives a normalized `TranscriptContext`. System prompts and tool declarations live in transcript system messages, so read them with `getCurrentSystemPrompt(context.messages)` and `getCurrentTools(context.messages)` rather than expecting `context.systemPrompt` or `context.tools`. A model that supports mid-conversation system messages can receive them in place; otherwise call `collapseSystemMessages(context)` to fold later system messages into the leading one.
 
@@ -102,17 +194,18 @@ The stream must also honor request instrumentation supplied through `SimpleStrea
 
 - Call `options.onPayload` before sending the provider request and use any replacement payload it returns.
 - Call `options.onResponse` after receiving the response but before consuming its body.
+- Await `options.onProviderStreamEvent?.(providerEvent, model)` for each parsed provider event before normalizing it.
 - Pass through the abort signal and provider-scoped environment.
 
-These hooks power extension request inspection and response-header events. Omitting them makes the provider behave differently from Pi’s built-in providers.
+These hooks power extension request inspection, response-header events, and provider-stream observation. Omitting them makes the provider behave differently from October’s built-in providers.
 
 ## Report failures and usage
 
 Set a concrete terminal stop reason. Error and aborted messages need an `errorMessage`; successful messages need accurate input, output, cache, total-token, and cost values.
 
-Pi can compact and retry after recognized context-overflow errors. If the service uses an unknown message, normalize only that provider’s overflow response to `context_length_exceeded` in a guarded `message_end` handler.
+October can compact and retry after recognized context-overflow errors. If the service uses an unknown message, normalize only that provider’s overflow response to `context_length_exceeded` in a guarded `message_end` handler.
 
-Do not rewrite rate limits or transient provider failures as context overflow. Those failures use Pi’s normal retry behavior instead.
+Do not rewrite rate limits or transient provider failures as context overflow. Those failures use October’s normal retry behavior instead.
 
 ## Test the integration
 
@@ -129,6 +222,6 @@ Test at least:
 - cross-provider session handoff
 - authentication refresh and cancellation
 
-The provider tests under [`packages/ai/test`](https://github.com/earendil-works/pi/tree/main/packages/ai/test) define the behavior expected from built-in providers. Adapt the relevant suites rather than relying only on manual prompts.
+The provider tests under [`packages/ai/test`](https://github.com/october-dev/october-harness/tree/main/packages/ai/test) define the behavior expected from built-in providers. Adapt the relevant suites rather than relying only on manual prompts.
 
-Run the extension directly while developing, then move it to a discovered extension location or distribute it through a [Pi package](packages.md). Use `/reload` after changing a discovered provider extension in an active session.
+Run the extension directly while developing, then move it to a discovered extension location or distribute it through a [October package](packages.md). Use `/reload` after changing a discovered provider extension in an active session.

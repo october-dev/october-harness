@@ -1,6 +1,7 @@
 import {
 	type Component,
 	Container,
+	CURSOR_MARKER,
 	type Focusable,
 	getKeybindings,
 	Input,
@@ -13,6 +14,8 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import type { SessionTreeNode } from "../../../core/session-manager.ts";
+import { formatReadLineRange } from "../../../core/tools/render-utils.ts";
+import { shortenHomePath } from "../../../utils/paths.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { formatKeyText, keyHint } from "./keybinding-hints.ts";
@@ -944,24 +947,12 @@ class TreeList implements Component {
 	}
 
 	private formatToolCall(name: string, args: Record<string, unknown>): string {
-		const shortenPath = (p: string): string => {
-			const home = process.env.HOME || process.env.USERPROFILE || "";
-			if (home && p.startsWith(home)) return `~${p.slice(home.length)}`;
-			return p;
-		};
+		const shortenPath = (p: string): string => shortenHomePath(p, process.env.HOME || process.env.USERPROFILE || "");
 
 		switch (name) {
 			case "read": {
 				const path = shortenPath(String(args.path || args.file_path || ""));
-				const offset = args.offset as number | undefined;
-				const limit = args.limit as number | undefined;
-				let display = path;
-				if (offset !== undefined || limit !== undefined) {
-					const start = offset ?? 1;
-					const end = limit !== undefined ? start + limit - 1 : "";
-					display += `:${start}${end ? `-${end}` : ""}`;
-				}
-				return `[read: ${display}]`;
+				return `[read: ${path}${formatReadLineRange(args.offset, args.limit)}]`;
 			}
 			case "write": {
 				const path = shortenPath(String(args.path || args.file_path || ""));
@@ -1162,7 +1153,8 @@ class TreeList implements Component {
 }
 
 /** Component that displays the current search query */
-class SearchLine implements Component {
+class SearchLine implements Component, Focusable {
+	focused = false;
 	private treeList: TreeList;
 
 	constructor(treeList: TreeList) {
@@ -1172,11 +1164,16 @@ class SearchLine implements Component {
 	invalidate(): void {}
 
 	render(width: number): string[] {
+		if (width <= 0) return [""];
+
 		const query = this.treeList.getSearchQuery();
-		if (query) {
-			return [truncateToWidth(`  ${theme.fg("muted", "Type to search:")} ${theme.fg("accent", query)}`, width)];
-		}
-		return [truncateToWidth(`  ${theme.fg("muted", "Type to search:")}`, width)];
+		const line = query
+			? `  ${theme.fg("muted", "Type to search:")} ${theme.fg("accent", query)}`
+			: `  ${theme.fg("muted", "Type to search:")} `;
+		if (!this.focused) return [truncateToWidth(line, width)];
+
+		const content = truncateToWidth(line, Math.max(0, width - 1));
+		return [`${content}${CURSOR_MARKER}\x1b[7m \x1b[27m`];
 	}
 
 	handleInput(_keyData: string): void {}
@@ -1335,20 +1332,21 @@ class LabelInput implements Component, Focusable {
  */
 export class TreeSelectorComponent extends Container implements Focusable {
 	private treeList: TreeList;
+	private searchLine: SearchLine;
 	private labelInput: LabelInput | null = null;
 	private labelInputContainer: Container;
 	private treeContainer: Container;
 	private onLabelChangeCallback?: (entryId: string, label: string | undefined) => void;
 	public onCopy?: (text: string | undefined) => void;
 
-	// Focusable implementation - propagate to labelInput when active for IME cursor positioning
+	// Focusable implementation - propagate to the active input for IME cursor positioning
 	private _focused = false;
 	get focused(): boolean {
 		return this._focused;
 	}
 	set focused(value: boolean) {
 		this._focused = value;
-		// Propagate to labelInput when it's active
+		this.searchLine.focused = value && this.labelInput === null;
 		if (this.labelInput) {
 			this.labelInput.focused = value;
 		}
@@ -1374,6 +1372,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.treeList.onCancel = onCancel;
 		this.treeList.onCopy = (text) => this.onCopy?.(text);
 		this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);
+		this.searchLine = new SearchLine(this.treeList);
 
 		this.treeContainer = new Container();
 		this.treeContainer.addChild(this.treeList);
@@ -1384,7 +1383,7 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 		this.addChild(new Text(theme.bold("  Session Tree"), 1, 0));
 		this.addChild(new TreeHelp());
-		this.addChild(new SearchLine(this.treeList));
+		this.addChild(this.searchLine);
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(this.treeContainer);
@@ -1406,8 +1405,8 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		};
 		this.labelInput.onCancel = () => this.hideLabelInput();
 
-		// Propagate current focused state to the new labelInput
-		this.labelInput.focused = this._focused;
+		// Propagate current focused state
+		this.focused = this._focused;
 
 		this.treeContainer.clear();
 		this.labelInputContainer.clear();
@@ -1416,9 +1415,14 @@ export class TreeSelectorComponent extends Container implements Focusable {
 
 	private hideLabelInput(): void {
 		this.labelInput = null;
+		this.focused = this._focused;
 		this.labelInputContainer.clear();
 		this.treeContainer.clear();
 		this.treeContainer.addChild(this.treeList);
+	}
+
+	get capturesViewportInput(): boolean {
+		return this.labelInput === null;
 	}
 
 	handleInput(keyData: string): void {
