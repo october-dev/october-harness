@@ -42,6 +42,7 @@ function createInitContext(
 		settingsManager: { getQuietStartup: () => true, getFullscreenScrollbar: () => "auto" },
 		ui: {
 			start: vi.fn(),
+			setSuspendSignalHandler: vi.fn(),
 			setFocus: vi.fn(),
 			requestRender: vi.fn(),
 			invalidate: vi.fn(),

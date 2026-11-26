@@ -258,7 +258,8 @@ describe("portable session codec", () => {
 		const bashText = (entries: SessionEntry[]) =>
 			JSON.stringify(convertToLlm(buildSessionContext(entries, ids.bashExecution).messages).at(-1));
 		expect(bashText(sm.getEntries())).toContain(`[Output truncated. Full output: ${fixture.fullOutputPath}]`);
-		expect(bashText(imported.getEntries())).not.toContain("Output truncated");
+		expect(bashText(imported.getEntries())).toContain("[Output truncated]");
+		expect(bashText(imported.getEntries())).not.toContain(fixture.fullOutputPath);
 		expect(bashText(imported.getEntries())).toContain("line 1\\nline 2");
 
 		// Context after the retain-none compaction: its summary, then the entries after it.

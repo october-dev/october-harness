@@ -96,7 +96,7 @@ describe("models.json error", () => {
 		expect(countOccurrences(stderr, "providers.local.models.0.contextWindow")).toBe(1);
 	}, 60_000);
 
-	it("is written to stderr once in JSON mode", async () => {
+	it("emits one structured warning in JSON mode", async () => {
 		const { stdout, stderr } = await runWithInvalidModelsJson([
 			"--mode",
 			"json",
@@ -105,8 +105,17 @@ describe("models.json error", () => {
 			"hi",
 		]);
 
-		expect(countOccurrences(stderr, "Warning: models.json error:")).toBe(1);
-		expect(stdout).not.toContain("models.json error");
+		const warnings = stdout
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((event) => event.type === "diagnostic" && event.message.startsWith("models.json error:"));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toMatchObject({
+			level: "warning",
+			message: expect.stringContaining("providers.local.models.0.contextWindow"),
+		});
+		expect(stderr).not.toContain("models.json error");
 	}, 60_000);
 
 	it("is written to stderr once in RPC mode", async () => {

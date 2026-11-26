@@ -25,7 +25,7 @@ describe("execCommand", () => {
 	// #44: a signalled Git probe must not become a successful empty result.
 	it.skipIf(process.platform === "win32")("does not report signal termination as success", async () => {
 		const result = await execCommand(process.execPath, ["-e", 'process.kill(process.pid, "SIGKILL")'], process.cwd());
-		expect(result).toMatchObject({ code: 1, killed: false, truncated: false });
+		expect(result).toMatchObject({ code: 137, killed: false, truncated: false });
 	});
 
 	// Regression tests for https://github.com/earendil-works/pi/issues/11360

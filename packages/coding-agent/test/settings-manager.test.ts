@@ -207,7 +207,10 @@ describe("SettingsManager", () => {
 
 		it("writes only the toggled notice to global settings", async () => {
 			const settingsPath = join(agentDir, "settings.json");
-			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ notices: { cacheMisses: false } }));
+			writeFileSync(
+				join(projectDir, CONFIG_DIR_NAME, "settings.json"),
+				JSON.stringify({ notices: { cacheMisses: false } }),
+			);
 
 			const manager = SettingsManager.create(projectDir, agentDir);
 			manager.setNotice("cacheWarming", false);
