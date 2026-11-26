@@ -180,6 +180,75 @@ async function runHandoff(harness: Harness): Promise<void> {
 }
 
 describe("/handoff over the October Bus (#43)", () => {
+	it("distinguishes permission blocks, aborted commands, timeouts and successful output mentioning an exit code", async () => {
+		const bus = fakeBus();
+		const sender = await senderWithHistory(bus, { acceptance: "Report.", notices: [], reviewEdit: (text) => text });
+		for (const [id, status, isError] of [
+			["blocked", "blocked by the read-only ceiling", true],
+			["aborted", "Command aborted", true],
+			["timeout", "Command timed out after 1 seconds", true],
+			["success", "Command exited with code 99", false],
+		] as const) {
+			sender.sessionManager.appendMessage(
+				fauxAssistantMessage(fauxToolCall("bash", { command: `npm run check ${id}` }, { id }), {
+					stopReason: "toolUse",
+				}),
+			);
+			sender.sessionManager.appendMessage({
+				role: "toolResult",
+				toolCallId: id,
+				toolName: "bash",
+				isError,
+				content: [{ type: "text", text: status }],
+				timestamp: Date.now(),
+			});
+		}
+		await runHandoff(sender);
+		const items = bus.sent()[0]?.args.context as SentMessage["context"];
+		const parsed = parseHandoffSummary(
+			items.find((item) => item.title === HANDOFF_SUMMARY_CONTEXT_TITLE)?.text ?? "",
+		);
+		if (!parsed.ok) throw new Error(parsed.error);
+		expect(parsed.summary.checks.slice(-4).map((item) => [item.status, item.exitCode])).toEqual([
+			["blocked", undefined],
+			["interrupted", undefined],
+			["interrupted", undefined],
+			["passed", undefined],
+		]);
+	});
+	it("describes the active branch before and after navigating through a branch summary", async () => {
+		const bus = fakeBus();
+		const drafts: HandoffSummary[] = [];
+		const sender = await senderWithHistory(bus, {
+			acceptance: "Report back.",
+			notices: [],
+			reviewEdit: (text) => {
+				const parsed = parseHandoffSummary(text);
+				if (!parsed.ok) throw new Error(parsed.error);
+				drafts.push(parsed.summary);
+				return undefined;
+			},
+		});
+		const first = sender.sessionManager.getBranch()[0]!;
+		sender.sessionManager.appendCompaction("Current summary", first.id, 1000);
+		await runHandoff(sender);
+		sender.sessionManager.branchWithSummary(first.id, "A previous branch used a local cache.");
+		await runHandoff(sender);
+		expect(drafts.map((draft) => draft.historyComplete)).toEqual([true, false]);
+		expect(drafts[1]?.decisions.some((item) => item.text === "A previous branch used a local cache.")).toBe(true);
+		expect(bus.sent()).toHaveLength(0);
+	});
+
+	it("sends nothing from an SDK session without a review interface", async () => {
+		const bus = fakeBus();
+		const sender = await createHarness({
+			extensionFactories: [(pi) => registerOctoberPublicBus(pi, envFor("sender"), bus.client("sender"))],
+		});
+		harnesses.push(sender);
+		await sender.session.bindExtensions({ mode: "print" });
+		await runHandoff(sender);
+		expect(bus.calls.some((call) => call.name === "add_task" || call.name === "message_peer")).toBe(false);
+	});
 	it("sends a reviewed summary with observed facts, authored decisions, and the sender's policy", async () => {
 		const bus = fakeBus();
 		const state: FakeUi = { notices: [], reviewEdit: (prefill) => prefill, acceptance: "Report back with evidence." };

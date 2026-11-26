@@ -20,6 +20,26 @@ function build(history: HandoffHistoryRecord[], limit?: number): HandoffSummary 
 }
 
 describe("buildHandoffSummary (#43)", () => {
+	it("keeps ordinary decisions and check outcomes alongside repeated edits", () => {
+		const history: HandoffHistoryRecord[] = [
+			{ kind: "user", messageId: "constraint", text: "Keep the existing API." },
+			{ kind: "assistant", messageId: "decision", text: "The local cache uses a separate directory." },
+			{ kind: "toolCall", toolCallId: "check", name: "bash", command: "npm run check" },
+			{ kind: "toolResult", toolCallId: "check", isError: false },
+		];
+		for (let i = 0; i < 100; i++) {
+			history.push(
+				{ kind: "toolCall", toolCallId: String(i), name: "edit", path: "index.ts" },
+				{ kind: "toolResult", toolCallId: String(i), isError: false },
+			);
+		}
+		const result = build(history, 2000);
+		expect(result.changedFiles).toHaveLength(1);
+		expect(result.changedFiles[0]?.ref?.toolCallId).toBe("99");
+		expect(result.constraints.some((item) => item.text === "Keep the existing API.")).toBe(true);
+		expect(result.decisions[0]?.text).toBe("The local cache uses a separate directory.");
+		expect(result.checks[0]?.status).toBe("passed");
+	});
 	it("separates observed facts from agent-authored decisions and keeps source references", () => {
 		const summary = build([
 			{ kind: "user", messageId: "m1", text: "use the existing Bus" },
@@ -107,6 +127,15 @@ describe("buildHandoffSummary (#43)", () => {
 });
 
 describe("parseHandoffSummary (#43)", () => {
+	it("validates unknown fields and the formatted size of a compact submission", () => {
+		const draft = build([]);
+		expect(parseHandoffSummary(JSON.stringify({ ...draft, unreviewed: "stale" })).ok).toBe(false);
+		draft.decisions = Array.from({ length: 300 }, () => ({ text: "ok", source: "authored" }));
+		const compact = JSON.stringify(draft);
+		expect(compact.length).toBeLessThan(HANDOFF_SUMMARY_MAX_CHARS);
+		expect(serializeHandoffSummary(draft).length).toBeGreaterThan(HANDOFF_SUMMARY_MAX_CHARS);
+		expect(parseHandoffSummary(compact).ok).toBe(false);
+	});
 	it("round-trips a serialized summary", () => {
 		const summary = build([{ kind: "assistant", messageId: "m1", text: "Decision: JSON payload" }]);
 		const parsed = parseHandoffSummary(serializeHandoffSummary(summary));
