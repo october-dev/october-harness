@@ -50,6 +50,29 @@ export function normalizeDisplayText(text: string): string {
 	return text.replace(/\r/g, "");
 }
 
+export function cleanToolDisplayText(text: string): string {
+	return sanitizeBinaryOutput(stripAnsi(text)).replace(/\r/g, "");
+}
+
+/** Tool result details come from the extension boundary and may have an arbitrary shape. */
+export function isTruncatedToolResult(details: unknown): boolean {
+	if (!details || typeof details !== "object") return false;
+	if (
+		"truncation" in details &&
+		details.truncation &&
+		typeof details.truncation === "object" &&
+		"truncated" in details.truncation &&
+		details.truncation.truncated === true
+	)
+		return true;
+	return (
+		("linesTruncated" in details && details.linesTruncated === true) ||
+		("matchLimitReached" in details && typeof details.matchLimitReached === "number") ||
+		("resultLimitReached" in details && typeof details.resultLimitReached === "number") ||
+		("entryLimitReached" in details && typeof details.entryLimitReached === "number")
+	);
+}
+
 export function getTextOutput(
 	result: { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> } | undefined,
 	showImages: boolean,
@@ -59,7 +82,7 @@ export function getTextOutput(
 	const textBlocks = result.content.filter((c) => c.type === "text");
 	const imageBlocks = result.content.filter((c) => c.type === "image");
 
-	let output = textBlocks.map((c) => sanitizeBinaryOutput(stripAnsi(c.text || "")).replace(/\r/g, "")).join("\n");
+	let output = textBlocks.map((c) => cleanToolDisplayText(c.text || "")).join("\n");
 
 	const caps = getCapabilities();
 	if (imageBlocks.length > 0 && (!caps.images || !showImages)) {

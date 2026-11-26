@@ -94,6 +94,8 @@ describe("AgentSession virtual models", () => {
 		expect(requests[1].failed?.message.errorMessage).toBe("overloaded_error");
 		expect(requests[2].previous?.model.id).toBe("large");
 		expect(dispatched()).toEqual(["faux/large:high", "faux/large:high"]);
+		// Regression test for #47. Capture the routed model on the actual request.
+		expect(harness.session.getContextSnapshot()?.modelId).toBe("large");
 		expect(harness.session.model).toMatchObject({ provider: "router", id: "auto" });
 		expect(harness.session.thinkingLevel).toBe("high");
 		// Limits come from the physical model that produced the latest response, not the virtual model.

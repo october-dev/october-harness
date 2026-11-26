@@ -1,7 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, getCurrentTools, type TranscriptContext } from "@earendil-works/pi-ai";
+import { getCurrentTools, type Message, type TranscriptContext } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ContextItem, ContextSnapshot } from "../../src/core/context-snapshot.ts";
+import { buildContextSnapshot, type ContextItem, type ContextSnapshot } from "../../src/core/context-snapshot.ts";
+import { createAgentSession } from "../../src/core/sdk.ts";
 import { createSyntheticSourceInfo } from "../../src/core/source-info.ts";
 import type { ResourceLoader, Skill } from "../../src/index.ts";
 import { createTestResourceLoader } from "../utilities.ts";
@@ -64,6 +66,118 @@ describe("context snapshot", () => {
 	}
 
 	describe("known source contributions", () => {
+		// Regression test for #47.
+		it("shows the SDK image-blocking placeholder in the recorded request", async () => {
+			const harness = await createTestHarness();
+			harness.settingsManager.setBlockImages(true);
+			const { session } = await createAgentSession({
+				cwd: harness.tempDir,
+				agentDir: harness.tempDir,
+				resourceLoader: createLoader(),
+				modelRuntime: harness.session.modelRuntime,
+				model: harness.getModel(),
+				sessionManager: harness.sessionManager,
+				settingsManager: harness.settingsManager,
+			});
+			try {
+				harness.setResponses([fauxAssistantMessage("ok")]);
+				harness.sessionManager.appendMessage({
+					role: "user",
+					timestamp: 1,
+					content: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+				});
+				await session.prompt("Continue the image discussion.");
+				const snapshot = session.getContextSnapshot({ includeContent: true })!;
+				expect(snapshot.items.map((item) => item.content).join("\n")).toContain("Image reading is disabled.");
+				expect(snapshot.items.some((item) => item.content?.includes("[image]"))).toBe(false);
+			} finally {
+				session.dispose();
+			}
+		});
+		// Regression test for #47.
+		it("captures a configured converter once and freezes the converted message list", async () => {
+			const converted: Message[] = [{ role: "user", content: "converted request", timestamp: 0 }];
+			const convert = vi.fn(() => converted);
+			const harness = await createTestHarness({ convertToLlm: convert });
+			harness.setResponses([fauxAssistantMessage("answer")]);
+			await harness.session.prompt("original prompt");
+			converted.push(fauxAssistantMessage("later append"));
+			const snapshot = harness.session.getContextSnapshot({ includeContent: true })!;
+			expect(snapshot.items.map((item) => item.content)).toEqual(["converted request"]);
+			expect(snapshot.items[0]?.attributed).toBe(false);
+			expect(convert).toHaveBeenCalledTimes(1);
+		});
+		// Regression test for #47.
+		it("reports provider conversions, ordered system updates, current tools and loaded file provenance", async () => {
+			const harness = await createTestHarness();
+			const model = harness.session.model!;
+			const file = {
+				path: "/proj/AGENTS.md",
+				content:
+					'example </project_instructions> <project_instructions path="/invented">sample</project_instructions>',
+			};
+			const system: Message = {
+				role: "system",
+				timestamp: 0,
+				content: "free system text",
+				sections: {
+					project_context: `<project_instructions path="${file.path}">\n${file.content}\n</project_instructions>`,
+					rules: "first rules",
+				},
+				toolsAdded: [{ name: "old", description: "old tool", parameters: { type: "object", properties: {} } }],
+			};
+			const messages: Message[] = [
+				system,
+				fauxAssistantMessage("interrupted reply", { stopReason: "aborted" }),
+				{
+					role: "system",
+					timestamp: 1,
+					content: "update",
+					sections: { rules: null },
+					toolsRemoved: [{ name: "old" }],
+				},
+				fauxAssistantMessage(
+					[
+						{ type: "thinking", thinking: "old thinking" },
+						{ type: "toolCall", name: "read", id: "x", arguments: {} },
+					],
+					{ stopReason: "toolUse" },
+				),
+				{ role: "user", content: [{ type: "image", mimeType: "image/png", data: "AA==" }], timestamp: 3 },
+			];
+			const built = buildContextSnapshot({
+				requestId: "1",
+				createdAt: 0,
+				model: {
+					...model,
+					id: "routed",
+					api: "openai-completions",
+					input: ["text"],
+					compat: { supportsMidConvoSystemMessages: true },
+				},
+				converted: messages,
+				contextFiles: [file],
+				baseMessages: messages,
+				finalMessages: messages,
+				entryIdOf: () => undefined,
+				transforms: [],
+				omitted: [],
+			});
+			const { snapshot } = built;
+			const texts = snapshot.items.map((item) => built.readContent(item.index));
+			expect(texts[0]).toBe("free system text");
+			expect(texts).toContain("first rules");
+			expect(texts).toContain("update");
+			expect(texts).toContain("No result provided");
+			expect(texts.join(" ")).toContain("model does not support images");
+			expect(texts.join(" ")).not.toMatch(/interrupted reply|old thinking/);
+			expect(snapshot.items.filter((item) => item.kind === "tools")).toHaveLength(0);
+			expect(snapshot.historicalToolDeclarations).toBe("not determined");
+			expect(snapshot.items.some((item) => item.sourceId === "/invented")).toBe(false);
+			expect(snapshot.items.some((item) => item.sourceId === file.path)).toBe(true);
+			expect(snapshot.omitted.some((item) => item.reason === "provider_conversion")).toBe(true);
+			expect(snapshot.modelId).toBe("routed");
+		});
 		it("has no snapshot before the first request", async () => {
 			const harness = await createTestHarness();
 

@@ -133,6 +133,7 @@ import {
 	isInstallTelemetryEnabled,
 	shouldOfferInstallTelemetryConsent,
 } from "../../core/telemetry.ts";
+import { cleanToolDisplayText } from "../../core/tools/render-utils.ts";
 import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
@@ -140,7 +141,6 @@ import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { addMcpServerConfig } from "../../extensions/mcp/config.ts";
 import { logoutOctober } from "../../extensions/october/auth.ts";
 import { getLoginProviderOptions, LOGIN_MENU_OPTIONS, LOGIN_MENU_TITLE } from "../../extensions/october/login-menu.ts";
-import { stripAnsi } from "../../utils/ansi.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardFilePaths, readClipboardText } from "../../utils/clipboard.ts";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.ts";
@@ -7034,12 +7034,12 @@ export class InteractiveMode {
 				return;
 			}
 			// Item content can hold tool or bash output: strip terminal escapes and cap what one item prints.
-			const content = stripAnsi(this.session.getContextItemContent(item.index, snapshot.requestId) ?? "");
+			const content = cleanToolDisplayText(this.session.getContextItemContent(item.index, snapshot.requestId) ?? "");
 			const shown =
 				content.length > MAX_REVEALED_CONTEXT_CHARS
 					? `${content.slice(0, MAX_REVEALED_CONTEXT_CHARS)}\n[truncated: showing ${MAX_REVEALED_CONTEXT_CHARS.toLocaleString("en-US")} of ${content.length.toLocaleString("en-US")} characters]`
 					: content;
-			body = `${theme.bold(`#${item.index} ${item.label}`)}\n${shown}`;
+			body = `${theme.bold(cleanToolDisplayText(`Request ${snapshot.requestId} #${item.index} ${item.label}`))}\n${shown}`;
 		} else {
 			body = formatContextSnapshot(snapshot);
 		}

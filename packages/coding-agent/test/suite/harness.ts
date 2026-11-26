@@ -110,6 +110,7 @@ export function createTestUiContext(overrides: Partial<ExtensionUIContext> = {})
 }
 
 export interface HarnessOptions {
+	convertToLlm?: Agent["convertToLlm"];
 	provider?: string;
 	models?: FauxModelDefinition[];
 	settings?: Partial<Settings>;
@@ -206,7 +207,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 			systemPrompt: "",
 			tools: [],
 		},
-		convertToLlm,
+		convertToLlm: options.convertToLlm ?? convertToLlm,
 		onPayload: async (payload) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {

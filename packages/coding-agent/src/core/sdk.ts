@@ -11,7 +11,7 @@ import { getClientIdentity } from "./client-identity.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { createToolNameMatcher } from "./mcp-servers.ts";
-import { convertToLlm } from "./messages.ts";
+import { convertedMessageSource, convertToLlm, recordConvertedSource } from "./messages.ts";
 import { findInitialModel } from "./model-resolver.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
@@ -329,7 +329,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 										(arr[i - 1] as { type: "text"; text: string }).text === "Image reading is disabled."
 									),
 							);
-						return { ...msg, content: filteredContent };
+						return recordConvertedSource({ ...msg, content: filteredContent }, convertedMessageSource(msg));
 					}
 				}
 			}

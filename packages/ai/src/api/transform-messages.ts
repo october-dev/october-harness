@@ -92,6 +92,7 @@ export function transformMessages<TApi extends Api>(
 	messages: Message[],
 	model: Model<TApi>,
 	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
+	sources?: Map<Message, Message>,
 ): Message[] {
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
@@ -175,6 +176,10 @@ export function transformMessages<TApi extends Api>(
 		}
 		return msg;
 	});
+
+	if (sources) {
+		for (const [index, message] of transformed.entries()) sources.set(message, messages[index]);
+	}
 
 	// Second pass: insert synthetic empty tool results for orphaned tool calls
 	// This preserves thinking signatures and satisfies API requirements

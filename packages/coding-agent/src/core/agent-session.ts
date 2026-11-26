@@ -32,7 +32,13 @@ import {
 	type StreamFn,
 	type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText, getCurrentSystemMessage, getCurrentTools, retryDelayMs } from "@earendil-works/pi-ai";
+import {
+	contentText,
+	getCurrentSystemMessage,
+	getCurrentTools,
+	type Message,
+	retryDelayMs,
+} from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -1970,15 +1976,33 @@ export class AgentSession {
 	 * request already assembled: no source is loaded again and no model is called.
 	 */
 	private _installContextSnapshotCapture(): void {
+		let model = this.agent.state.model;
+		const prepare = this.agent.prepareRequest;
+		this.agent.prepareRequest = async (request, signal) => {
+			const prepared = await prepare?.(request, signal);
+			model = prepared?.model ?? request.model;
+			return prepared ?? undefined;
+		};
+		let base: AgentMessage[] = [];
+		const convert = this.agent.convertToLlm;
+		this.agent.convertToLlm = async (messages) => {
+			const converted = await convert(messages);
+			this._recordContextSnapshot(base, [...messages], [...converted], model);
+			return converted;
+		};
 		const previousTransformContext = this.agent.transformContext;
 		this.agent.transformContext = async (messages, signal) => {
-			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
-			this._recordContextSnapshot(messages, transformed);
-			return transformed;
+			base = [...messages];
+			return previousTransformContext ? previousTransformContext(messages, signal) : messages;
 		};
 	}
 
-	private _recordContextSnapshot(baseMessages: AgentMessage[], finalMessages: AgentMessage[]): void {
+	private _recordContextSnapshot(
+		baseMessages: AgentMessage[],
+		finalMessages: AgentMessage[],
+		converted: Message[],
+		model: AgentState["model"],
+	): void {
 		const projection = this._lastRequestProjection;
 		const entryIds = new Map<AgentMessage, string>();
 		for (const entry of projection?.entries ?? []) {
@@ -1989,7 +2013,9 @@ export class AgentSession {
 			input: {
 				requestId: String(this._contextRequestCount),
 				createdAt: Date.now(),
-				modelId: this.model?.id,
+				model,
+				converted,
+				contextFiles: [...this._baseSystemPromptOptions.contextFiles],
 				baseMessages,
 				entryIdOf: (message) => entryIds.get(message),
 				finalMessages,

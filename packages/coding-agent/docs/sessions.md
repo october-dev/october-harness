@@ -55,7 +55,9 @@ The model receives the active branch, not every branch in the session file. Octo
 
 The footer shows current context usage. When the active context approaches the model's limit, October normally compacts older history automatically. Compaction adds a summary and keeps recent messages. It does not delete the original session entries.
 
-Run `/context` to see what the last model request actually included. It groups the request by source: instructions (system prompt sections and context files), tools, conversation, compaction summaries, and extension or Bus contributions. Each item shows its position in the request and an estimated token count (chars/4, not a provider count). Items whose origin cannot be named are marked `[unattributed]`, and the report lists what was left out and why, such as history replaced by a compaction summary, skills hidden from the model, messages excluded with `!!`, or bash output that was truncated. It reads the context the request already built, so it does not reload files or send another model request, and it is empty until the first request. Content is hidden by default; `/context reveal <index>` prints one item locally.
+Run `/context` to inspect instructions, tools and messages captured for the latest request. The report uses the selected request model, the configured message converter and the shared provider conversion. Later extension payload rewrites and adapter-specific wire formatting are outside this boundary. Sizes are estimates in characters divided by four. Earlier tool declarations are marked undetermined when tools change through the conversation.
+
+Compacted history, excluded shell messages, provider-filtered content and hidden skills appear under omissions. Truncated shell and tool output still appears among the included items, with a truncation marker. Use `/context reveal <index>` to read one item locally.
 
 Run `/compact` to compact manually. You can add instructions when the summary should preserve a particular topic or decision. Configure automatic compaction and retained history through [Settings](settings.md#compaction).
 

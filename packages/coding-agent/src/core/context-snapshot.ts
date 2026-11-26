@@ -7,9 +7,20 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { contentText, getCurrentSystemMessage, getCurrentTools } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	contentText,
+	type Message,
+	type Model,
+	normalizeContext,
+	resolveTranscript,
+	resolveTranscriptTools,
+} from "@earendil-works/pi-ai";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import { estimateTokens } from "./compaction/compaction.ts";
-import { convertToLlm } from "./messages.ts";
+import { convertedMessageSource } from "./messages.ts";
+import { renderProjectInstruction } from "./system-prompt.ts";
+import { cleanToolDisplayText, isTruncatedToolResult } from "./tools/render-utils.ts";
 
 /** How many recent request snapshots a session keeps. */
 export const MAX_CONTEXT_SNAPSHOTS = 5;
@@ -17,9 +28,15 @@ export const MAX_CONTEXT_SNAPSHOTS = 5;
 /** Where a piece of context comes from, in the order the groups are reported. */
 export type ContextSourceKind = "instructions" | "tools" | "compaction" | "extension" | "bus" | "conversation";
 
-export type ContextOmissionReason = "compacted" | "context_edit" | "excluded_from_context" | "skill_hidden_from_model";
+export type ContextOmissionReason =
+	| "compacted"
+	| "context_edit"
+	| "excluded_from_context"
+	| "skill_hidden_from_model"
+	| "provider_conversion"
+	| "conversion_not_determined";
 
-export type ContextTruncationReason = "bash_output_truncated";
+export type ContextTruncationReason = "bash_output_truncated" | "tool_output_truncated";
 
 export interface ContextItem {
 	/** Position in the request, starting at 0. */
@@ -65,6 +82,7 @@ export interface ContextSnapshot {
 	requestId: string;
 	createdAt: number;
 	modelId?: string;
+	historicalToolDeclarations?: "not determined";
 	estimator: "chars/4";
 	totalEstTokens: number;
 	items: ContextItem[];
@@ -130,7 +148,6 @@ const KIND_ORDER: readonly ContextSourceKind[] = [
 
 /** Prompt sections the harness itself writes. Any other section comes from an extension. */
 const BUILTIN_SECTIONS = new Set(["preamble", "tools", "rules", "docs", "addendum", "skills", "cwd"]);
-const PROJECT_INSTRUCTIONS_BLOCK = /<project_instructions path="([^"]*)">[\s\S]*?<\/project_instructions>/g;
 const BUS_CUSTOM_TYPE_PREFIX = "october-bus";
 
 interface Draft {
@@ -147,7 +164,9 @@ interface Draft {
 export interface BuildContextSnapshotInput {
 	requestId: string;
 	createdAt: number;
-	modelId?: string;
+	model: Model<Api>;
+	converted: Message[];
+	contextFiles: Array<{ path: string; content: string }>;
 	/** The messages handed to the extension transforms. */
 	baseMessages: readonly AgentMessage[];
 	/** The session entry a base message was projected from. */
@@ -169,9 +188,7 @@ function estimateText(text: string): number {
 	return Math.ceil(text.length / 4);
 }
 
-function messageText(message: AgentMessage): string {
-	const [sent] = convertToLlm([message]);
-	if (!sent) return "";
+function messageText(sent: Message): string {
 	if (sent.role === "system") return contentText(sent.content);
 	if (sent.role === "assistant") {
 		return sent.content
@@ -188,39 +205,54 @@ function messageText(message: AgentMessage): string {
 	return sent.content.map((block) => (block.type === "text" ? block.text : "[image]")).join("\n");
 }
 
-function projectContextDrafts(text: string): Draft[] {
+function projectContextDrafts(text: string, files: BuildContextSnapshotInput["contextFiles"]): Draft[] {
 	const drafts: Draft[] = [];
-	const wrapper = text.replace(PROJECT_INSTRUCTIONS_BLOCK, "");
-	drafts.push({
-		kind: "instructions",
-		sourceId: "section:project_context",
-		label: "section:project_context",
-		role: "system",
-		attributed: true,
-		estTokens: estimateText(wrapper),
-		read: () => wrapper,
-	});
-	for (const match of text.matchAll(PROJECT_INSTRUCTIONS_BLOCK)) {
-		const [block, path] = match;
+	let offset = 0;
+	const append = (block: string, path?: string) => {
+		if (!block) return;
 		drafts.push({
 			kind: "instructions",
 			sourceId: path,
-			label: path,
+			label: path ?? "section:project_context",
 			role: "system",
-			attributed: true,
+			attributed: path !== undefined,
 			estTokens: estimateText(block),
 			read: () => block,
 		});
+	};
+	for (const { path, block } of files
+		.map((file) => ({ path: file.path, block: renderProjectInstruction(file) }))
+		.sort((a, b) => text.indexOf(a.block) - text.indexOf(b.block) || b.block.length - a.block.length)) {
+		const start = text.indexOf(block, offset);
+		if (start < 0) continue;
+		append(text.slice(offset, start));
+		append(block, path);
+		offset = start + block.length;
 	}
+	append(text.slice(offset));
 	return drafts;
 }
 
-function sectionDrafts(sections: Record<string, string | null>): Draft[] {
+function sectionDrafts(
+	sections: Record<string, string | null>,
+	files: BuildContextSnapshotInput["contextFiles"],
+): Draft[] {
 	const drafts: Draft[] = [];
 	for (const [name, text] of Object.entries(sections)) {
-		if (text === null) continue;
+		if (text === null) {
+			drafts.push({
+				kind: "instructions",
+				sourceId: `section:${name}`,
+				label: `Removed section: ${name}`,
+				role: "system",
+				attributed: false,
+				estTokens: 0,
+				read: () => "",
+			});
+			continue;
+		}
 		if (name === "project_context") {
-			drafts.push(...projectContextDrafts(text));
+			drafts.push(...projectContextDrafts(text, files));
 			continue;
 		}
 		const builtin = BUILTIN_SECTIONS.has(name);
@@ -262,33 +294,16 @@ function groupDrafts(drafts: readonly Draft[]): ContextGroup[] {
  */
 export function buildContextSnapshot(input: BuildContextSnapshotInput): BuiltContextSnapshot {
 	const drafts: Draft[] = [];
-	const head = getCurrentSystemMessage(input.finalMessages);
-
-	if (head?.sections) drafts.push(...sectionDrafts(head.sections));
-	const headText = head ? contentText(head.content) : "";
-	if (headText.length > 0) {
-		drafts.push({
-			kind: "extension",
-			sourceId: "system_prompt_text",
-			label: "system prompt text",
-			role: "system",
-			attributed: false,
-			estTokens: estimateText(headText),
-			read: () => headText,
-		});
-	}
-	for (const tool of getCurrentTools(input.finalMessages)) {
-		const text = JSON.stringify(tool);
-		drafts.push({
-			kind: "tools",
-			sourceId: tool.name,
-			label: tool.name,
-			role: "tool",
-			attributed: true,
-			estTokens: estimateText(text),
-			read: () => text,
-		});
-	}
+	const compat = input.model.compat;
+	const transcript = resolveTranscript(
+		normalizeContext({ messages: input.converted }),
+		compat && "supportsMidConvoSystemMessages" in compat ? compat.supportsMidConvoSystemMessages : false,
+	);
+	const sources = new Map<Message, Message>();
+	const sent = transformMessages(transcript.messages, input.model, undefined, sources);
+	const historicalTools = input.converted.some(
+		(msg, index) => index > 0 && msg.role === "system" && (msg.toolsAdded?.length || msg.toolsRemoved?.length),
+	);
 
 	const baseByFingerprint = new Map<string, AgentMessage[]>();
 	for (const message of input.baseMessages) {
@@ -308,34 +323,83 @@ export function buildContextSnapshot(input: BuildContextSnapshotInput): BuiltCon
 	}
 
 	const excluded: ContextOmission[] = [];
-	for (const message of input.finalMessages) {
-		if (message.role === "system") continue;
-		const fingerprint = fingerprintContextMessage(message);
-		const base = baseByFingerprint.get(fingerprint)?.shift();
-		const extensionPath = addedBy.get(fingerprint)?.shift();
-		const entryId = base ? input.entryIdOf(base) : undefined;
-		if (message.role === "bashExecution" && message.excludeFromContext) {
-			excluded.push({
-				kind: "conversation",
-				reason: "excluded_from_context",
-				...(entryId ? { sourceId: entryId } : {}),
-				estTokens: estimateTokens(message),
-			});
+	const toolDrafts: Draft[] = [];
+	for (const tool of resolveTranscriptTools(input.converted, "none").requestTools) {
+		const text = JSON.stringify(tool);
+		toolDrafts.push({
+			kind: "tools",
+			sourceId: tool.name,
+			label: tool.name,
+			role: "tool",
+			attributed: true,
+			estTokens: estimateText(text),
+			read: () => text,
+		});
+	}
+	const pending = new Set(input.finalMessages);
+	for (const delivered of sent) {
+		if (delivered.role === "system") {
+			const text = contentText(delivered.content);
+			if (text)
+				drafts.push({
+					kind: "extension",
+					sourceId: "system_prompt_text",
+					label: "system prompt text",
+					role: "system",
+					attributed: false,
+					estTokens: estimateText(text),
+					read: () => text,
+				});
+			if (delivered.sections) drafts.push(...sectionDrafts(delivered.sections, input.contextFiles));
 			continue;
 		}
-		const classified = classifyMessage(message);
-		const sourceId = extensionPath !== undefined ? extensionPath : (classified.sourceId ?? entryId);
+		if (toolDrafts.length) drafts.push(...toolDrafts.splice(0));
+		const converted = sources.get(delivered);
+		const original = converted && convertedMessageSource(converted);
+		const message = original && pending.delete(original) ? original : undefined;
+		const fingerprint = message && fingerprintContextMessage(message);
+		const base = fingerprint ? baseByFingerprint.get(fingerprint)?.shift() : undefined;
+		const entryId = base ? input.entryIdOf(base) : undefined;
+		const extensionPath = !entryId && fingerprint ? addedBy.get(fingerprint)?.shift() : undefined;
+		const classified = classifyMessage(message ?? delivered);
+		const sourceId = extensionPath ?? classified.sourceId ?? entryId;
+		const text = messageText(delivered);
+		if (
+			(converted && messageText(converted) !== text) ||
+			((message?.role === "user" || message?.role === "toolResult") && messageText(message) !== text)
+		)
+			excluded.push({ kind: classified.kind, sourceId, reason: "provider_conversion" });
+		const truncated =
+			message?.role === "bashExecution" && message.truncated
+				? "bash_output_truncated"
+				: delivered.role === "toolResult" && isTruncatedToolResult(delivered.details)
+					? "tool_output_truncated"
+					: undefined;
 		drafts.push({
-			kind: extensionPath !== undefined ? "extension" : classified.kind,
-			...(sourceId !== undefined ? { sourceId } : {}),
-			label: message.role === "custom" ? `custom:${message.customType}` : message.role,
-			role: message.role,
+			kind: extensionPath ? "extension" : classified.kind,
+			sourceId,
+			label: message?.role === "custom" ? `custom:${message.customType}` : (message?.role ?? delivered.role),
+			role: message?.role ?? delivered.role,
 			attributed: sourceId !== undefined,
+			estTokens: estimateText(text),
+			...(truncated ? { truncated: { reason: truncated } } : {}),
+			read: () => text,
+		});
+	}
+	drafts.push(...toolDrafts);
+	for (const message of pending) {
+		if (message.role === "system") continue;
+		const reason =
+			message.role === "bashExecution" && message.excludeFromContext
+				? "excluded_from_context"
+				: message.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error")
+					? "provider_conversion"
+					: "conversion_not_determined";
+		excluded.push({
+			kind: classifyMessage(message).kind,
+			reason,
+			sourceId: input.entryIdOf(message),
 			estTokens: estimateTokens(message),
-			...(message.role === "bashExecution" && message.truncated
-				? { truncated: { reason: "bash_output_truncated" as const } }
-				: {}),
-			read: () => messageText(message),
 		});
 	}
 
@@ -344,7 +408,8 @@ export function buildContextSnapshot(input: BuildContextSnapshotInput): BuiltCon
 		snapshot: {
 			requestId: input.requestId,
 			createdAt: input.createdAt,
-			...(input.modelId !== undefined ? { modelId: input.modelId } : {}),
+			modelId: input.model.id,
+			...(historicalTools ? { historicalToolDeclarations: "not determined" as const } : {}),
 			estimator: "chars/4",
 			totalEstTokens: drafts.reduce((sum, draft) => sum + draft.estTokens, 0),
 			items,
@@ -419,5 +484,6 @@ export function formatContextSnapshot(snapshot: ContextSnapshot): string {
 		}
 		lines.push("");
 	}
-	return lines.join("\n").trimEnd();
+	if (snapshot.historicalToolDeclarations) lines.push("Earlier tool declarations: not determined.");
+	return cleanToolDisplayText(lines.join("\n")).trimEnd();
 }

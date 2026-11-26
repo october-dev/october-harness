@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import type { Component } from "@earendil-works/pi-tui";
+import { describe, expect, it, vi } from "vitest";
 import { type ContextSnapshot, formatContextSnapshot } from "../src/core/context-snapshot.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../src/core/slash-commands.ts";
+import { isTruncatedToolResult } from "../src/core/tools/render-utils.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
 function createSnapshot(overrides: Partial<ContextSnapshot> = {}): ContextSnapshot {
 	return {
@@ -114,6 +118,48 @@ describe("formatContextSnapshot", () => {
 });
 
 describe("/context command", () => {
+	// Regression test for #47.
+	it("cleans terminal controls, bounds a reveal and explains invalid selections", () => {
+		initTheme("dark");
+		const snapshot = createSnapshot();
+		snapshot.items[0]!.label = "lab\x1b[2Jel\r\x07";
+		const view: Component[] = [];
+		const ctx = {
+			session: {
+				getContextSnapshot: () => snapshot,
+				getContextItemContent: () => `con\x1b[2Jtent\r\x07\n${"z".repeat(100_000)}SECRET_SUFFIX`,
+			},
+			showStatus: vi.fn(),
+			chatContainer: { addChild: (item: Component) => view.push(item) },
+			ui: { requestRender: () => {} },
+		};
+		const { handleContextCommand } = InteractiveMode.prototype as unknown as {
+			handleContextCommand(this: typeof ctx, text: string): void;
+		};
+		handleContextCommand.call(ctx, "/context reveal bad");
+		expect(ctx.showStatus).toHaveBeenLastCalledWith("Usage: /context [reveal <index>]");
+		handleContextCommand.call(ctx, "/context reveal 999");
+		expect(ctx.showStatus).toHaveBeenLastCalledWith("Request 3 has no context item #999.");
+		handleContextCommand.call(ctx, "/context");
+		expect(view.at(-1)?.render(160).join("\n")).toContain("label");
+		handleContextCommand.call(ctx, "/context reveal 0");
+		const revealed = view.at(-1)!.render(160).join("\n");
+		expect(revealed).toContain("label");
+		expect(revealed).toContain("content");
+		expect(revealed).toContain("100,000");
+		expect(revealed).not.toMatch(/SECRET_SUFFIX|\x1b\[2J|\r|\x07/);
+	});
+
+	it.each([
+		[{ truncation: { truncated: true } }, true],
+		[{ linesTruncated: true }, true],
+		[{ matchLimitReached: 100 }, true],
+		[{ resultLimitReached: 10 }, true],
+		[{ entryLimitReached: 50 }, true],
+		[{ truncation: { truncated: false } }, false],
+	] as const)("reads the tool result limit signal %j", (details, expected) => {
+		expect(isTruncatedToolResult(details)).toBe(expected);
+	});
 	it("is a built-in slash command that mentions reveal", () => {
 		const command = BUILTIN_SLASH_COMMANDS.find((entry) => entry.name === "context");
 

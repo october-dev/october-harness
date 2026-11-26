@@ -21,6 +21,7 @@ Extensions, prompt templates, and skills can add commands. The command menu in O
 | Command | Description |
 |---|---|
 | `/new` | Start a new session |
+| `/context [reveal <index>]` | Inspect the most recent model request or show one numbered item |
 | `/resume` | Resume another session |
 | `/name [name]` | Set the session display name, or show the current name when omitted |
 | `/session` | Show current session information and statistics |
