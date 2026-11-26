@@ -193,6 +193,17 @@ describe("trace capture", () => {
 		expect(result.events.filter((event) => event.type === "model_response")).toHaveLength(1);
 	});
 
+	it("does not record the agent loop's thinking level stamp as a replacement", async () => {
+		const { harness, recorder, path } = await tracedHarness();
+		harness.setResponses([fauxAssistantMessage("original")]);
+		await harness.session.prompt("hi");
+		expect(harness.session.messages.at(-1)).toMatchObject({ thinkingLevel: "off" });
+		const { trace } = readClosed(recorder, path);
+
+		expect(ofType(trace, "message").filter((record) => record.requestId !== undefined)).toEqual([]);
+		await expectReplay(trace, 1);
+	});
+
 	it("snapshots tool results before later in-place mutation", async () => {
 		const { harness, recorder, path } = await tracedHarness({
 			tools: [echoTool()],
@@ -372,7 +383,8 @@ describe("trace capture", () => {
 		expect(ofType(trace, "tool_start").map((record) => record.toolCallId)).toEqual(["call-1", "call-1"]);
 		const requests = ofType(trace, "model_request");
 		expect(requests[0].tools?.map((tool) => [tool.name, tool.executionMode])).toEqual([["step", "sequential"]]);
-		expect(requests[1].tools?.map((tool) => tool.name)).toEqual(["echo", "step"]);
+		// Tools that stay active keep their place ahead of newly activated ones.
+		expect(requests[1].tools?.map((tool) => tool.name)).toEqual(["step", "echo"]);
 		expect(requests[2].tools).toBeUndefined();
 		await expectReplay(trace, 1);
 	});

@@ -152,6 +152,15 @@ function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
 	return typeof (value as PromiseLike<T> | undefined)?.then === "function";
 }
 
+/**
+ * A provider result as extensions can change it. The agent loop stamps the requested thinking
+ * level on every result after its stream ends, and replay does the same, so that is not a change.
+ */
+function providerResultJson(message: AssistantMessage): string {
+	const { thinkingLevel: _thinkingLevel, ...result } = message;
+	return JSON.stringify(result);
+}
+
 interface ForwardedEventStream {
 	stream: AssistantMessageEventStream;
 	succeed(message: AssistantMessage): void;
@@ -704,7 +713,7 @@ export class TraceRecorder {
 				unit,
 			);
 		}
-		this.terminals.set(message, { requestId, json: JSON.stringify(message) });
+		this.terminals.set(message, { requestId, json: providerResultJson(message) });
 		if (request.kind === "session" && this.gate !== undefined && request.seq > this.gate) this.gate = undefined;
 		this.closeUnit(unit);
 	}
@@ -803,7 +812,7 @@ export class TraceRecorder {
 				if (event.message.role === "assistant") {
 					// Extensions may replace the provider result in place; keep both versions.
 					const terminal = this.terminals.get(event.message);
-					if (terminal && JSON.stringify(event.message) === terminal.json) return;
+					if (terminal && providerResultJson(event.message) === terminal.json) return;
 					this.append({
 						type: "message",
 						...context,
