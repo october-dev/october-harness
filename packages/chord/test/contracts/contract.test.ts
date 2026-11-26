@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT, type Context } from "../../src/context/index.ts";
 import { contractData } from "../../src/contracts/contract.ts";
 import {
@@ -256,7 +256,10 @@ describe("granted members of combinations nothing grants any more", () => {
 			Map.prototype.set = set;
 		}
 		expect(entries).toHaveLength(15);
-		await expectCollected(...made, ...entries);
+		await expectCollected(...made);
+		// The version's map holds the entry wrappers until V8 schedules the finalizer for the
+		// collected members. Collection alone does not guarantee that callback has already run.
+		await vi.waitFor(() => expectCollected(...entries), { timeout: 3_000 });
 		const again = grantedMembers(version, new Set(["b", "d"]));
 		expect([[...again.methods.keys()], memberOrder(again).methods]).toEqual([
 			["b", "d"],
