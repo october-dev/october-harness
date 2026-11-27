@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { ModelRuntime } from "../../../core/model-runtime.ts";
 import {
+	isFreeOctoberOpenRouterModel,
 	modelAccountLabel,
 	octoberModelBadge,
 	octoberModelPricingDetail,
@@ -241,7 +242,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private sortModels(models: ModelItem[]): ModelItem[] {
 		const sorted = [...models];
-		// Sort: current model first, default model second, then by provider.
+		// Keep the active and saved defaults in reach, then show free gateway routes.
 		sorted.sort((a, b) => {
 			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
@@ -251,6 +252,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const bIsDefault = this.isDefaultModel(b.model);
 			if (aIsDefault && !bIsDefault) return -1;
 			if (!aIsDefault && bIsDefault) return 1;
+			const freeOrder =
+				Number(isFreeOctoberOpenRouterModel(b.model)) - Number(isFreeOctoberOpenRouterModel(a.model));
+			if (freeOrder !== 0) return freeOrder;
 			return a.provider.localeCompare(b.provider);
 		});
 		return sorted;
@@ -335,7 +339,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isDefault = this.isDefaultModel(item.model);
 			const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
-			const octoberBadge = octoberModelBadge(item.model);
+			const freeOpenRouter = isFreeOctoberOpenRouterModel(item.model);
+			const freeLabel = freeOpenRouter ? theme.fg("success", "[FREE] ") : "";
+			const octoberBadge = freeOpenRouter ? undefined : octoberModelBadge(item.model);
 			const priceBadge = octoberBadge ? theme.fg("muted", ` · ${octoberBadge}`) : "";
 
 			const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
@@ -344,7 +350,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const name = getDistinctModelName({ id: item.id, name: item.model.name });
 			const nameText = name ? theme.fg("muted", ` (${name})`) : "";
 			const providerBadge = theme.fg("muted", `[${modelAccountLabel(item.model) ?? item.provider}]`);
-			const line = `${cursor}${currentMarker}${modelText}${nameText} ${providerBadge}${priceBadge}${defaultBadge}`;
+			const line = `${cursor}${currentMarker}${freeLabel}${modelText}${nameText} ${providerBadge}${priceBadge}${defaultBadge}`;
 
 			this.listContainer.addChild(new Text(line, 0, 0));
 		}

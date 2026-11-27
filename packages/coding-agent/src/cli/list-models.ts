@@ -7,7 +7,7 @@ import { fuzzyFilter } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { getNoModelsGuidance } from "../core/auth-guidance.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
-import { modelAccountLabel } from "../extensions/october/pricing.ts";
+import { isFreeOctoberOpenRouterModel, modelAccountLabel, octoberModelBadge } from "../extensions/october/pricing.ts";
 
 /**
  * Format a number as human-readable (e.g., 200000 -> "200K", 1000000 -> "1M")
@@ -58,8 +58,10 @@ export async function listModels(
 		return;
 	}
 
-	// Sort by provider, then by model id
+	// Group free October OpenRouter routes first, then keep the provider and ID ordering.
 	filteredModels.sort((a, b) => {
+		const freeOrder = Number(isFreeOctoberOpenRouterModel(b)) - Number(isFreeOctoberOpenRouterModel(a));
+		if (freeOrder !== 0) return freeOrder;
 		const providerCmp = a.provider.localeCompare(b.provider);
 		if (providerCmp !== 0) return providerCmp;
 		return a.id.localeCompare(b.id);
@@ -73,9 +75,11 @@ export async function listModels(
 		maxOut: formatTokenCount(m.maxTokens),
 		thinking: m.reasoning ? "yes" : "no",
 		images: m.input.includes("image") ? "yes" : "no",
+		price: isFreeOctoberOpenRouterModel(m) ? "FREE" : octoberModelBadge(m),
 		account: modelAccountLabel(m),
 	}));
 	const showAccount = rows.some((row) => row.account);
+	const showPrice = rows.some((row) => row.price);
 
 	const headers = {
 		provider: "provider",
@@ -84,6 +88,7 @@ export async function listModels(
 		maxOut: "max-out",
 		thinking: "thinking",
 		images: "images",
+		price: "price",
 	};
 
 	const widths = {
@@ -93,6 +98,7 @@ export async function listModels(
 		maxOut: Math.max(headers.maxOut.length, ...rows.map((r) => r.maxOut.length)),
 		thinking: Math.max(headers.thinking.length, ...rows.map((r) => r.thinking.length)),
 		images: Math.max(headers.images.length, ...rows.map((r) => r.images.length)),
+		price: Math.max(headers.price.length, ...rows.map((r) => r.price?.length ?? 0)),
 	};
 
 	// Print header
@@ -103,6 +109,7 @@ export async function listModels(
 		headers.maxOut.padEnd(widths.maxOut),
 		headers.thinking.padEnd(widths.thinking),
 		headers.images.padEnd(widths.images),
+		...(showPrice ? [headers.price.padEnd(widths.price)] : []),
 		...(showAccount ? ["account"] : []),
 	].join("  ");
 	console.log(headerLine);
@@ -116,6 +123,7 @@ export async function listModels(
 			row.maxOut.padEnd(widths.maxOut),
 			row.thinking.padEnd(widths.thinking),
 			row.images.padEnd(widths.images),
+			...(showPrice ? [(row.price ?? "").padEnd(widths.price)] : []),
 			...(row.account ? [row.account] : []),
 		].join("  ");
 		console.log(line);

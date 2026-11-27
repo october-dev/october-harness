@@ -11,7 +11,7 @@ import {
 	Spacer,
 	Text,
 } from "@earendil-works/pi-tui";
-import { modelAccountLabel } from "../../../extensions/october/pricing.ts";
+import { isFreeOctoberOpenRouterModel, modelAccountLabel } from "../../../extensions/october/pricing.ts";
 import { getDistinctModelName, getModelSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
@@ -262,7 +262,10 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 				item.model ? ` [${modelAccountLabel(item.model) ?? item.model.provider}]` : " [unavailable]",
 			);
 			const status = item.model && item.enabled ? theme.fg("accent", "✓ ") : "  ";
-			this.listContainer.addChild(new Text(`${prefix}${status}${modelText}${nameText}${providerBadge}`, 0, 0));
+			const freeLabel = item.model && isFreeOctoberOpenRouterModel(item.model) ? theme.fg("success", "[FREE] ") : "";
+			this.listContainer.addChild(
+				new Text(`${prefix}${status}${freeLabel}${modelText}${nameText}${providerBadge}`, 0, 0),
+			);
 		}
 
 		// Add scroll indicator if needed

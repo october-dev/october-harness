@@ -2,6 +2,7 @@ import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
+import { setOctoberPricing } from "../src/extensions/october/pricing.ts";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
@@ -30,6 +31,7 @@ describe("model selector", () => {
 	});
 
 	afterEach(() => {
+		setOctoberPricing(new Map());
 		harness?.cleanup();
 		harness = undefined;
 	});
@@ -62,6 +64,52 @@ describe("model selector", () => {
 		expect(getModelRow("current-model")).toBe(`  ✓ current-model [${currentModel.provider}]`);
 		expect(getModelRow("browsed-model")).toBe(`→   browsed-model [${currentModel.provider}]`);
 		selector.dispose();
+	});
+
+	it("places verified free OpenRouter routes just below pinned models and labels them before the ID", async () => {
+		harness = await createHarness();
+		const current = harness.getModel()!;
+		const make = (provider: string, id: string) => ({
+			...current,
+			id,
+			name: id,
+			provider,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		});
+		const free = make("october", "openrouter/zzz:free");
+		const paid = make("october", "openrouter/aaa");
+		const direct = make("openrouter", "zzz:free");
+		const saved = make("october", "claude/lite");
+		setOctoberPricing(new Map(), [free.id, saved.id]);
+		vi.spyOn(harness.session.modelRuntime, "getAvailableSnapshot").mockReturnValue([
+			paid,
+			direct,
+			free,
+			saved,
+			current,
+		]);
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			current,
+			harness.session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			undefined,
+			saved,
+		);
+		try {
+			const rows = stripAnsi(selector.render(160).join("\n"))
+				.split("\n")
+				.filter((line) => line.includes(" ["));
+			expect(rows[0]).toContain(current.id);
+			expect(rows[1]).toContain(saved.id);
+			expect(rows[2]).toContain(`[FREE] ${free.id} [October account via OpenRouter]`);
+			expect(rows.filter((row) => row.includes("[FREE]"))).toHaveLength(1);
+		} finally {
+			selector.dispose();
+		}
 	});
 
 	// #5916

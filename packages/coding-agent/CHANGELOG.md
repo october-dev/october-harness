@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `/model` highlights free OpenRouter routes included with an October account immediately below the current and default models. `october --list-models` lists these routes first and shows October pricing.
+
 ### Fixed
 
 - Startup prints the extension list and missing-manifest warning once per review. Each extension still has its own Load or Skip choice.

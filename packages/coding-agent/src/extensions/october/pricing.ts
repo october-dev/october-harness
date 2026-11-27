@@ -98,6 +98,16 @@ function pricingFor(model: PricedModel): OctoberPricing | undefined | null {
 	return freeModelIds.has(model.id) ? undefined : null;
 }
 
+/** Only promote gateway OpenRouter routes confirmed free by the live October catalog. */
+export function isFreeOctoberOpenRouterModel(model: PricedModel): boolean {
+	return (
+		model.provider === OCTOBER_PROVIDER_ID &&
+		model.id.startsWith("openrouter/") &&
+		model.id.endsWith(":free") &&
+		pricingFor(model) === undefined
+	);
+}
+
 /** Compact picker badge for October models: e.g. "$3/$15/M +$0.001/req · Pro/Max", or "free". */
 export function octoberModelBadge(model: PricedModel): string | undefined {
 	if (model.provider !== OCTOBER_PROVIDER_ID) return undefined;
