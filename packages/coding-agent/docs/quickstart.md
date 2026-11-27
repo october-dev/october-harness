@@ -1,6 +1,6 @@
 # Quickstart
 
-October runs in your terminal and works with files on your machine. Use October inference, another supported provider, or a local model. Connect October Bus when you want agents to collaborate.
+October runs in your terminal and works with files on your machine. Use October inference, another supported provider, or a local model. Connect Agent Intercom when you want agents to collaborate.
 
 For native Windows setup, read [Windows Setup](windows.md). For Android, read [Termux Setup](termux.md).
 
@@ -89,7 +89,7 @@ Launch October from the same project in two terminals:
 october --team
 ```
 
-October can then discover peers, exchange messages, delegate work, and coordinate shared tasks through October Bus. The launcher installs the pinned Bus runtime when needed. See [Two harnesses, one Bus](../README.md#two-harnesses-one-bus) for identities, scopes, and permissions.
+October can then discover peers, exchange messages, delegate work, and coordinate shared tasks through [Agent Intercom](https://agentintercom.org). The launcher installs the pinned Bus runtime when needed. See [Two harnesses, one Bus](../README.md#two-harnesses-one-bus) for identities, scopes, and permissions.
 
 ## Continue later
 

@@ -15,36 +15,36 @@
 <p>
   <a href="#five-minute-quickstart"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-start-dark.svg"><img src="assets/header/button-start-light.svg" alt="Quickstart" height="40" align="top"></picture></a>
   <a href="https://www.npmjs.com/package/@october-dev/october"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-npm-dark.svg"><img src="assets/header/button-npm-light.svg" alt="npm" height="40" align="top"></picture></a>
-  <a href="#two-harnesses-one-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-bus-dark.svg"><img src="assets/header/button-bus-light.svg" alt="October Bus" height="40" align="top"></picture></a>
+  <a href="#two-harnesses-one-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-bus-dark.svg"><img src="assets/header/button-bus-light.svg" alt="Agent Intercom" height="40" align="top"></picture></a>
   <a href="#extensions-and-customization"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-extend-dark.svg"><img src="assets/header/button-extend-light.svg" alt="Extensions" height="40" align="top"></picture></a>
   <a href="#contributing-and-upstream-sync"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/button-contribute-dark.svg"><img src="assets/header/button-contribute-light.svg" alt="Contribute" height="40" align="top"></picture></a>
-  <a href="#two-harnesses-one-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/callout-dark.svg"><img src="assets/header/callout-light.svg" alt="Works alone, or with every agent on the October Bus." height="40" align="top"></picture></a>
+  <a href="#two-harnesses-one-bus"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/header/callout-dark.svg"><img src="assets/header/callout-light.svg" alt="Works alone, or with every agent on Agent Intercom." height="40" align="top"></picture></a>
 </p>
 
 ---
 
 <div align="center">
 
-Fast in a terminal. Extensible as a runtime. Native to October Bus.
+Fast in a terminal. Extensible as a runtime. Native to Agent Intercom.
 
 [![npm](https://img.shields.io/npm/v/@october-dev/october?style=flat-square&color=F7820E)](https://www.npmjs.com/package/@october-dev/october)
 [![License](https://img.shields.io/badge/license-MIT-1C1B18?style=flat-square)](LICENSE)
-[![October Bus](https://img.shields.io/badge/October%20Bus-native-28B8D8?style=flat-square)](https://github.com/october-dev/october-bus)
+[![Agent Intercom](https://img.shields.io/badge/Agent%20Intercom-native-28B8D8?style=flat-square)](https://agentintercom.org)
 [![Upstream](https://img.shields.io/badge/forked%20from-pi-6F6C66?style=flat-square)](https://github.com/earendil-works/pi)
 
 </div>
 
 <p align="center">
-  <img src="assets/header/bus-demo.svg" width="760" alt="Two October Harness agents coordinating over October Bus: the planner finds the builder, sends a durable review request, the builder claims the task and sends a correlated reply.">
+  <img src="assets/header/bus-demo.svg" width="760" alt="Two October Harness agents coordinating over Agent Intercom: the planner finds the builder, sends a durable review request, the builder claims the task and sends a correlated reply.">
 </p>
 
 ---
 
 **October Harness is a complete open-source coding agent built to work alone and with other agents.** Run it as an interactive terminal partner, a one-shot command, a JSON process, an RPC server, or an embedded SDK. Use October inference or bring another supported model provider.
 
-October discovers tools automatically from the public [October Bus](https://github.com/october-dev/october-bus) launcher or October Desktop. Agents can pull durable messages, acknowledge handled work, coordinate tasks, and send correlated replies. Public Bus delivery can wake idle RPC and TUI sessions automatically; print and JSON runs require an explicit prompt to process inbox work. Desktop additionally supplies session and turn context through its hook protocol.
+October discovers tools automatically from the public [Agent Intercom](https://agentintercom.org) launcher or October Desktop. Agents can pull durable messages, acknowledge handled work, coordinate tasks, and send correlated replies. Public Bus delivery can wake idle RPC and TUI sessions automatically; print and JSON runs require an explicit prompt to process inbox work. Desktop additionally supplies session and turn context through its hook protocol.
 
-October Bus is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
+Agent Intercom is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
 
 October Harness started as a fork of [Pi](https://github.com/earendil-works/pi). Pi remains the foundation for much of the agent core, provider layer, TUI, session model, and extension system. The project has since been substantially changed for October with its own package and CLI, inference and authentication, permission modes, Bus-native tools and hooks, October context handling, managed Desktop runtime, and product identity.
 
@@ -57,14 +57,14 @@ It exists to be the open reference harness for **multiplayer-native development*
 - useful as a serious standalone coding agent;
 - native to agent discovery, durable messaging, delegation, and replies;
 - transparent enough for developers to inspect, extend, and self-host;
-- concrete enough to show other harness authors what first-class October Bus support looks like;
+- concrete enough to show other harness authors what first-class Agent Intercom support looks like;
 - deeply integrated with October without exposing October's private cloud or intelligence layer.
 
 Pi optimizes for a small, extensible core. October Harness keeps that foundation and makes a different product choice: multiplayer behavior is part of the first-party runtime, not an afterthought bolted onto a `send_message()` function.
 
 ## Compared with other harnesses
 
-October's focus is built-in October Bus support: discovering other agents, exchanging durable messages, and coordinating shared tasks. Other harnesses also support multi-agent work, either built in or through extensions. The difference is how they connect and coordinate.
+October's focus is built-in Agent Intercom support: discovering other agents, exchanging durable messages, and coordinating shared tasks. Other harnesses also support multi-agent work, either built in or through extensions. The difference is how they connect and coordinate.
 
 | Harness | Interfaces | Collaboration |
 | --- | --- | --- |
@@ -221,7 +221,7 @@ Bus integration is execution-gated. Public Bus requires the launcher's address, 
 
 For a runnable example without API keys, see [Local Bus multiplayer](packages/coding-agent/examples/october-bus/README.md). It starts an isolated pinned Bus and two real SDK worker processes, verifies discovery, task completion, correlated replies, and acknowledgements, then cleans up.
 
-Start a local [October Bus](https://github.com/october-dev/october-bus), create a scope, and keep its scope token in the launching shell. In separate terminals, using the same scope:
+Start a local [Agent Intercom](https://agentintercom.org) server, create a scope, and keep its scope token in the launching shell. In separate terminals, using the same scope:
 
 ```bash
 # Terminal 1
@@ -339,7 +339,7 @@ flowchart TB
     N[Model providers]
     O[Local files + shell]
     P[(JSONL sessions)]
-    Q[October Bus]
+    Q[Agent Intercom]
 
     A --> E
     B --> E
@@ -417,7 +417,7 @@ This repository contains the usable harness:
 - session persistence, branching, compaction, and export;
 - project trust and October permission modes;
 - October inference and standalone authentication;
-- October Bus integration, agent-to-agent tools, lifecycle hooks, and context handling;
+- Agent Intercom integration, agent-to-agent tools, lifecycle hooks, and context handling;
 - the extension, skill, prompt, theme, and package systems needed to customize it.
 
 It does **not** contain October backend secrets, private inference credentials, internal admin tooling, proprietary Autopilot or team-staffing logic, quota-routing intelligence, enterprise controls, or October's hosted cloud control plane.
@@ -509,7 +509,7 @@ the consumer. Re-run both commands after changing Pi source.
 
 ## Roadmap
 
-- Make the October Harness the clearest reference implementation of the October Bus compatibility contract.
+- Make the October Harness the clearest reference implementation of the Agent Intercom compatibility contract.
 - Complete released-harness Bus conformance evidence, then add opt-in idle delivery and user-dialog readiness signals.
 - Expand adapter and conformance examples for mixed-harness teams.
 - Keep provider and model support current without coupling the harness to one inference backend.

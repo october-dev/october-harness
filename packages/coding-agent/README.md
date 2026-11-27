@@ -14,11 +14,11 @@
 
 <p><strong>October's open, multiplayer-first coding harness.</strong></p>
 
-Fast in a terminal. Extensible as a runtime. Native to October Bus.
+Fast in a terminal. Extensible as a runtime. Native to Agent Intercom.
 
 [![npm](https://img.shields.io/npm/v/@october-dev/october?style=flat-square&color=7C6CF0)](https://www.npmjs.com/package/@october-dev/october)
 [![License](https://img.shields.io/badge/license-MIT-1C1B18?style=flat-square)](https://github.com/october-dev/october-harness/blob/main/LICENSE)
-[![October Bus](https://img.shields.io/badge/October%20Bus-native-28B8D8?style=flat-square)](https://github.com/october-dev/october-bus)
+[![Agent Intercom](https://img.shields.io/badge/Agent%20Intercom-native-28B8D8?style=flat-square)](https://agentintercom.org)
 [![Upstream](https://img.shields.io/badge/forked%20from-pi-6F6C66?style=flat-square)](https://github.com/earendil-works/pi)
 
 </div>
@@ -27,9 +27,9 @@ Fast in a terminal. Extensible as a runtime. Native to October Bus.
 
 **October Harness is a complete open-source coding agent built to work alone and with other agents.** Run it as an interactive terminal partner, a one-shot command, a JSON process, an RPC server, or an embedded SDK. Use October inference or bring another supported model provider.
 
-October discovers tools automatically from the public [October Bus](https://github.com/october-dev/october-bus) launcher or October Desktop. Public Bus sessions actively wake for durable messages while idle, acknowledge only after successful processing, expose peer and task state in the TUI, and support bounded delegation and correlated replies. Desktop additionally supplies session and turn context through its hook protocol.
+October discovers tools automatically from the public [Agent Intercom](https://agentintercom.org) launcher or October Desktop. Public Bus sessions actively wake for durable messages while idle, acknowledge only after successful processing, expose peer and task state in the TUI, and support bounded delegation and correlated replies. Desktop additionally supplies session and turn context through its hook protocol.
 
-October Bus is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
+Agent Intercom is the open communication substrate. October is the runtime and control plane above it, adding the visual workspace, automatic staffing, harness selection, quota-aware routing, cross-machine operation, supervision, outcome learning, and Autopilot.
 
 October Harness started as a fork of [Pi](https://github.com/earendil-works/pi). Pi remains the foundation for much of the agent core, provider layer, TUI, session model, and extension system. The project has since been substantially changed for October with its own package and CLI, inference and authentication, permission modes, Bus-native tools and hooks, October context handling, managed Desktop runtime, and product identity.
 
@@ -42,7 +42,7 @@ It exists to be the open reference harness for **multiplayer-native development*
 - useful as a serious standalone coding agent;
 - native to agent discovery, durable messaging, delegation, and replies;
 - transparent enough for developers to inspect, extend, and self-host;
-- concrete enough to show other harness authors what first-class October Bus support looks like;
+- concrete enough to show other harness authors what first-class Agent Intercom support looks like;
 - deeply integrated with October without exposing October's private cloud or intelligence layer.
 
 Pi optimizes for a small, extensible core. October Harness keeps that foundation and makes a different product choice: multiplayer behavior is part of the first-party runtime, not an afterthought bolted onto a `send_message()` function.
@@ -319,7 +319,7 @@ flowchart TB
     N[Model providers]
     O[Local files + shell]
     P[(JSONL sessions)]
-    Q[October Bus]
+    Q[Agent Intercom]
 
     A --> E
     B --> E
@@ -397,7 +397,7 @@ This repository contains the usable harness:
 - session persistence, branching, compaction, and export;
 - project trust and October permission modes;
 - October inference and standalone authentication;
-- October Bus integration, agent-to-agent tools, lifecycle hooks, and context handling;
+- Agent Intercom integration, agent-to-agent tools, lifecycle hooks, and context handling;
 - the extension, skill, prompt, theme, and package systems needed to customize it.
 
 It does **not** contain October backend secrets, private inference credentials, internal admin tooling, proprietary Autopilot or team-staffing logic, quota-routing intelligence, enterprise controls, or October's hosted cloud control plane.
@@ -444,13 +444,13 @@ Our upstream policy is straightforward:
 
 For substantial October-specific work, open an issue before implementation. If a change belongs cleanly in Pi, contributors are encouraged to coordinate it upstream first and then bring it back through the normal sync path.
 
-The scheduled `Sync Upstream Pi` workflow fetches upstream `main`, validates a merge with `npm run check` and `./test.sh`, and opens a review branch and pull request. It never merges automatically. The daily `October Compatibility` workflow builds the requested October Bus revision, runs its MCP adapter conformance profile, exercises active two-harness delivery, and stores the exact Harness and Bus revisions as evidence.
+The scheduled `Sync Upstream Pi` workflow fetches upstream `main`, validates a merge with `npm run check` and `./test.sh`, and opens a review branch and pull request. It never merges automatically. The daily `October Compatibility` workflow builds the requested Agent Intercom revision, runs its MCP adapter conformance profile, exercises active two-harness delivery, and stores the exact Harness and Bus revisions as evidence.
 
 October release tags publish the npm package through trusted publishing, build checksummed native archives, attach GitHub build-provenance attestations, and create a GitHub Release. If `OCTOBER_DESKTOP_REPOSITORY` and `OCTOBER_DESKTOP_TOKEN` are configured, the same workflow sends an `october-release` repository dispatch after publication so Desktop can verify and stage the new version. GitHub provenance does not replace Apple notarization or Windows code signing; those require platform signing identities in the release environment.
 
 ## Roadmap
 
-- Make the October Harness the clearest reference implementation of the October Bus compatibility contract.
+- Make the October Harness the clearest reference implementation of the Agent Intercom compatibility contract.
 - Publish compatibility evidence for every released Harness and Bus pair.
 - Expand adapter and conformance examples for mixed-harness teams.
 - Keep provider and model support current without coupling the harness to one inference backend.
